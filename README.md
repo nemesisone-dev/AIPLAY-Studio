@@ -4,6 +4,8 @@
 
 <h1 align="center">AIPLAY Studio</h1>
 
+> **RunPod preview in this fork:** keep the studio on your PC and send generation workflows to your own GPU Pod. Start with `npm run start:remote` or **AIPLAY RunPod.cmd**. See [setup, tests and limitations](docs/RUNPOD_SETUP.md). This optional mode uploads the selected workflow/references and uses paid RunPod resources; live GPU validation and Windows desktop packaging are still pending.
+
 <p align="center">
   <b>Write a song, draw the cover, cut the video and mix it, all on your own machine.</b><br>
   No account. No credits. No upload.
@@ -28,8 +30,9 @@ lyrics and a style, press **Create**, and a finished song lands in your library.
 From there the same app can draw its cover art, turn it into a music video, and
 mix it in a real DAW.
 
-Everything runs on your own computer. Nothing is uploaded, nothing is billed,
-and you never need an account.
+In the default local mode, everything runs on your own computer. Nothing is uploaded,
+nothing is billed, and you never need an account. The optional RunPod preview above
+uses a remote worker instead.
 
 <p align="center">
   <img src="GitHubAssets/AIPLAY_banner_1_make-music.png" alt="The Music screen: lyrics, styles and a library of finished songs." width="100%">

@@ -44,6 +44,7 @@ import { qwenImageGraph, QWEN_IMAGE_PRESET } from "./qwen-image.js";
 import { validateVideoLoras } from "./video-lora-validation.js";
 import { qwenImageStatus, stageQwenReferences, QWEN_IMAGE_ENGINE } from "./qwen-status.js";
 import { createEngineRoutes } from "./engine/routes.js";
+import { createRemoteRoutes } from "./engine/remote-routes.js";
 import { JobRunner } from "./jobs.js";
 import { Library } from "./library.js";
 import { BatchRunner } from "./batch.js";
@@ -1407,7 +1408,7 @@ const onAmd = () => config.torchBackend === "rocm" || config.gpu?.vendor === "am
 /* Whether this process starts ComfyUI. Always in full Studio; in music-only
  * only when a YuE2 checkpoint makes YuE2-through-ComfyUI possible. Sent in
  * /api/status so the launcher knows whether to wait for the engine. */
-let comfyWanted = !config.musicOnly;
+let comfyWanted = config.comfyAutoStart;
 
 /** YuE2 checkpoints in any checkpoints folder the engine loads from. */
 async function findYue2Checkpoints() {
@@ -2326,6 +2327,18 @@ const engineRoutes = createEngineRoutes({
  * injected at construction because the client is a module-level singleton and
  * CLIP_DIR, IMAGE_DIR and the closure above are all built in this file. */
 engineDoor.setAdopter(engineRoutes.adopt);
+const remoteRoutes = createRemoteRoutes({ config, getSecret, setSecret, append: prov.append, actorFrom: prov.actorFrom,
+  adopt: async (details) => {
+    if (/\.(wav|flac|mp3|ogg|opus)$/i.test(details.output.file)) {
+      const name = `runpod-${details.runId}-${path.basename(details.output.file)}`;
+      await rename(path.join(config.outputDir, details.output.subfolder, details.output.file), path.join(config.outputDir, name));
+      library.remember(name, { title: details.record.label || name, engine: "runpod", runId: details.runId });
+      await library.save();
+      return name;
+    }
+    return engineRoutes.adopt(details);
+  },
+});
 
 /* ⚠ MODULE SCOPE, BECAUSE THE HANDLER BELOW RUNS PER REQUEST. This was first
  * written beside adoptEngineImage, which READS like module scope and is not -
@@ -2348,6 +2361,9 @@ const server = http.createServer(async (req, res) => {
   const p = url.pathname;
 
   try {
+    if (p === "/api/runpod" || p.startsWith("/api/runpod/")) {
+      if (await remoteRoutes(req, res, url)) return;
+    }
     /* Video Workflow — the whole music-video pipeline, additive. Claims only
      * its own prefix and returns false otherwise, so upstream routing below is
      * untouched and a rebase never has to reason about it. */
@@ -2504,6 +2520,7 @@ const server = http.createServer(async (req, res) => {
           musicAceLoraStrength: config.music.aceLoraStrength,
           musicModels: await musicModelChoices(),
           musicOnly: config.musicOnly,
+          remoteOnly: config.remoteOnly,
           engineExpected: comfyWanted,
           /* The real-audio tokenizer (musicYue2Tokenizer): with it on disk,
            * Continue works on any track in the library, not only on takes. */
@@ -10591,11 +10608,12 @@ server.listen(config.uiPort, "127.0.0.1", async () => {
    * (tests, headless runs, a restart in place) leaves it unset and keeps its
    * browser to itself. */
   if (process.env.AIPLAY_OPEN === "1") {
-    spawn("cmd", ["/c", "start", "", `http://127.0.0.1:${config.uiPort}`],
+    spawn("cmd", ["/c", "start", "", `http://127.0.0.1:${config.uiPort}${config.remoteOnly ? "/runpod.html" : ""}`],
       { detached: true, stdio: "ignore", windowsHide: true }).unref();
   }
 
   await library.load();
+  await remoteRoutes.start().catch(error => console.warn(`  [runpod] ${error.message}`));
   // Clip provenance, so a clip you liked is still reusable after a restart.
   await loadClipStore();
   // The lab's knobs and comparison groups, applied back into config on the way in.
@@ -10604,6 +10622,10 @@ server.listen(config.uiPort, "127.0.0.1", async () => {
   await batch.load();
   const b = batch.status().run;
   if (b) console.log(`  batch "${b.name}": ${b.done}/${b.total} done, ${b.state}`);
+  if (process.env.AIPLAY_REMOTE_ONLY === "1") {
+    console.log("  remote mode: open /runpod.html to connect your worker. Local ComfyUI is not started.");
+    return;
+  }
   if (config.musicOnly) {
     /* Music-only starts no ComfyUI — unless this machine has a ComfyUI install
      * AND a YuE2 checkpoint, and native GGUF is not the chosen, installed

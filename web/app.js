@@ -18349,7 +18349,8 @@ function applyStatus(s) {
   }
   state.engineReady = s.engine.ready;
   state.engineExpected = !!s.config?.engineExpected;
-  $("engineLine").textContent = state.musicOnly
+  $("engineLine").textContent = s.config?.remoteOnly ? "REMOTE MODE · OPEN RUNPOD"
+    : state.musicOnly
     ? (s.config?.musicEngine === "yue2-comfy"
         ? (s.engine.ready ? "MUSIC ONLY · YUE2 VIA COMFYUI" : "MUSIC ONLY · STARTING COMFYUI…")
         : s.config?.musicEngines?.["yue2-gguf"]?.ready ? "NATIVE MUSIC READY" : "NATIVE MUSIC · SETUP NEEDED")

@@ -11,6 +11,8 @@
 # declaration there passed every check and was only caught by trying to boot
 # the app by hand. One syntax check closes that hole for the price of nothing.
 node --check server/index.js || exit 1
+# RunPod transport: mock HTTP services only; no GPU or paid cloud resources.
+node --test server/engine/remote_test.js || exit 1
 # suites_test: THE REGISTRATION CENSUS, first because it is instant and because
 # what it catches makes every later lane a lie by omission. On 2026-09-06 four
 # suites were added and registered NOWHERE — including the seventy-six

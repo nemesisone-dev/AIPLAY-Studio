@@ -30,8 +30,9 @@ try { saved = JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf-8")) || {}; } catch
 // The optional native music entry point never needs a ComfyUI/Python rig.
 const MUSIC_ONLY = process.env.AIPLAY_MUSIC_ONLY !== undefined
   ? process.env.AIPLAY_MUSIC_ONLY === "1" : saved.musicOnly === true;
+const REMOTE_ONLY = process.env.AIPLAY_REMOTE_ONLY === "1";
 const RIG = process.env.AIPLAY_RIG || saved.rig
-  || (MUSIC_ONLY ? path.join(APPDATA, "rig") : "D:\\AI\\aiplay-studio-bench");
+  || (MUSIC_ONLY || REMOTE_ONLY ? path.join(APPDATA, "rig") : "D:\\AI\\aiplay-studio-bench");
 /* Where model weights live. A ComfyUI Desktop install keeps them outside the
  * rig (its extra_model_paths default), so this can be PINNED, by env or by
  * settings. Unpinned, it is the rig's own models folder — and `config.modelsDir`
@@ -85,7 +86,8 @@ export const config = {
   rig: RIG,
   dataDir: APPDATA,
   musicOnly: MUSIC_ONLY,
-  comfyAutoStart: !MUSIC_ONLY,
+  remoteOnly: REMOTE_ONLY,
+  comfyAutoStart: !MUSIC_ONLY && !REMOTE_ONLY,
   // Optional external-audio RVQ preprocessing. Explicit opt-in; never download
   // or execute a research workspace just because one exists on this machine.
   musicInput: {
@@ -158,7 +160,7 @@ export const config = {
    * coupling is why changing it needs an engine restart rather than taking
    * effect on the next render. */
   outputDir: process.env.AIPLAY_OUTPUT || saved.outputDir
-    || (MUSIC_ONLY ? path.join(APPDATA, "output") : path.join(RIG, "ComfyUI", "output")),
+    || (MUSIC_ONLY || REMOTE_ONLY ? path.join(APPDATA, "output") : path.join(RIG, "ComfyUI", "output")),
   settingsFile: SETTINGS_FILE,
   // Where `LoadLatent` looks. Its `latent` input is a name RELATIVE to this, so
   // the encoder writes here and the graph refers to the basename only.
