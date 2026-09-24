@@ -4,7 +4,7 @@
 
 <h1 align="center">AIPLAY Studio</h1>
 
-> **RunPod preview in this fork:** keep the studio on your PC and send generation workflows to your own GPU Pod. Start with `npm run start:remote` or **AIPLAY RunPod.cmd**. See [setup, tests and limitations](docs/RUNPOD_SETUP.md). This optional mode uploads the selected workflow/references and uses paid RunPod resources; live GPU validation and Windows desktop packaging are still pending.
+> **RunPod preview in this fork:** keep the studio on your PC and send generation workflows to your own GPU Pod. Start with `npm run start:remote` or **AIPLAY RunPod.cmd**. See [setup, tests and limitations](docs/RUNPOD_SETUP.md). This optional mode uploads the selected workflow/references and uses paid RunPod resources. The complete image path has been validated on a live RunPod GPU; video models and a signed Windows installer are still pending.
 
 <p align="center">
   <b>Write a song, draw the cover, cut the video and mix it, all on your own machine.</b><br>
