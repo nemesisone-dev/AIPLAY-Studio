@@ -24,7 +24,9 @@ async function loadModels() {
   models = await api("/models");
   const previous = $("checkpoint").value;
   $("checkpoint").replaceChildren(new Option("Select a remote checkpoint", ""));
-  for (const name of models.CheckpointLoaderSimple?.input?.required?.ckpt_name?.[0] || []) $("checkpoint").add(new Option(name, name));
+  const spec = models.CheckpointLoaderSimple?.input?.required?.ckpt_name;
+  const choices = Array.isArray(spec?.[0]) ? spec[0] : spec?.[0] === "COMBO" && Array.isArray(spec?.[1]?.options) ? spec[1].options : [];
+  for (const name of choices) $("checkpoint").add(new Option(name, name));
   if ([...$("checkpoint").options].some(o => o.value === previous)) $("checkpoint").value = previous;
   if ($("graph").value.trim()) validate();
 }

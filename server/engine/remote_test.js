@@ -8,7 +8,7 @@ import { mkdtemp, mkdir, readFile, writeFile, readdir, rename, rm } from "node:f
 import { Readable } from "node:stream";
 import { createWorker } from "../../worker/runpod-worker.js";
 import { createRemoteClient } from "./remote-client.js";
-import { endpoint, relativeFile, sendJSON, readBody, validateGraph } from "./remote-common.js";
+import { endpoint, relativeFile, sendJSON, readBody, validateGraph, inputChoices } from "./remote-common.js";
 
 const TOKEN = "test-only-worker-token-32-characters-long";
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64");
@@ -171,6 +171,18 @@ test("unknown model is rejected before spending GPU time", async t => {
   await r.client.submit({ graph: g }); await r.client.tick(); await r.worker.tick(); await r.client.tick();
   assert.equal(r.submissions, 0); assert.equal(r.client.status().jobs[0].state, "failed");
   assert.match(r.client.status().jobs[0].error, /does not offer/);
+});
+
+test("ComfyUI 0.37 COMBO descriptors preserve model validation", () => {
+  const current = ["COMBO", { multiselect: false, options: ["demo.safetensors"] }];
+  assert.deepEqual(inputChoices(current), ["demo.safetensors"]);
+  assert.deepEqual(inputChoices([["demo.safetensors"]]), ["demo.safetensors"]);
+  const info = { TestSave: { input: { required: {
+    model: current, text: ["STRING"], filename_prefix: ["STRING"],
+  } } } };
+  assert.doesNotThrow(() => validateGraph(graph(), info));
+  const missing = graph(); missing["1"].inputs.model = "missing.safetensors";
+  assert.throws(() => validateGraph(missing, info), /does not offer/);
 });
 
 test("authentication, redirect policy and worker identity are enforced", async t => {

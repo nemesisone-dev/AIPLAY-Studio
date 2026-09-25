@@ -85,6 +85,14 @@ export function sendJSON(res, code, body) {
   res.end(JSON.stringify(body));
 }
 
+/** Accept both ComfyUI's legacy list choices and its 0.37+ COMBO descriptor. */
+export function inputChoices(spec) {
+  if (!Array.isArray(spec)) return null;
+  if (Array.isArray(spec[0])) return spec[0];
+  if (spec[0] === "COMBO" && Array.isArray(spec[1]?.options)) return spec[1].options;
+  return null;
+}
+
 export function validateGraph(graph, info) {
   if (!graph || Array.isArray(graph) || typeof graph !== "object" || !Object.keys(graph).length || Object.keys(graph).length > 500) {
     throw new Error("Choose a ComfyUI workflow exported in API format (1–500 nodes).");
@@ -101,7 +109,7 @@ export function validateGraph(graph, info) {
       if (!(name in node.inputs)) throw new Error(`Node ${id} (${node.class_type}) needs ${name}.`);
     }
     for (const [name, value] of Object.entries(node.inputs)) {
-      const choices = (required[name] || def.input?.optional?.[name])?.[0];
+      const choices = inputChoices(required[name] || def.input?.optional?.[name]);
       if (Array.isArray(value)) {
         if (value.length !== 2 || !graph[String(value[0])] || !Number.isInteger(value[1]) || value[1] < 0) throw new Error(`Invalid link at node ${id}.${name}.`);
       } else if (Array.isArray(choices) && !choices.includes(value)) {
