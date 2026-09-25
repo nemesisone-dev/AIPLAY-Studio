@@ -7,17 +7,27 @@ upload, no credits, no per-song cost.
 
 **Same public repository, two launch modes—not a separate YuE2 edition.**
 One launcher — `AIPLAY Studio.exe`, or `AIPLAY Studio.cmd` if you would rather
-read the script — offers both: **Music only** and **Full Studio**. Downloading
-the app does not install every AI model.
+read the script — offers **Music only** and **Full Studio**, plus **Use Comfy
+API** (cloud models on your own Comfy key; every run uses Comfy credits; no
+ComfyUI needed, or `npm run start:cloud`). Downloading the app does not install
+every AI model.
 
-For native lyric-to-song generation, install **Node.js 20+ and Studio**. You do
-**not** need ComfyUI, Python, MiniMax or any image/video model.
+For native lyric-to-song generation, install **Studio** (Setup.exe brings
+Node.js 20+ when this PC has none). You do **not** need ComfyUI, Python,
+MiniMax or any image/video model.
 
-1. Install [Node.js](https://nodejs.org), then download Studio from
-   [Senzube4n/AIPLAY-Studio](https://github.com/Senzube4n/AIPLAY-Studio)
+1. Download and run **[AIPLAY Studio Setup.exe](https://github.com/Senzube4n/AIPLAY-Studio/releases/latest/download/AIPLAY.Studio.Setup.exe)**.
+   Windows may say “Windows protected your PC” because the installer is not
+   signed yet: click **More info**, then **Run anyway**. When it asks which
+   build, choose **Senzu's**; then a folder (the default is right). It
+   installs Studio plus, when this PC has no Node.js 20+, a private copy of
+   it. No admin prompt. Section 3 says exactly what it does.
+   *For developers:* install [Node.js](https://nodejs.org), then download the
+   source from [Senzube4n/AIPLAY-Studio](https://github.com/Senzube4n/AIPLAY-Studio)
    using **Code → Download ZIP**, or [download the ZIP directly](https://github.com/Senzube4n/AIPLAY-Studio/archive/refs/heads/main.zip).
    Unblock the ZIP in Windows Properties before extracting if Windows requires it.
-2. Double-click **`AIPLAY Studio.exe`** and choose **Music only**. Or run these from the extracted folder:
+2. Start **AIPLAY Studio** (the shortcut Setup made, or **`AIPLAY Studio.exe`** in the
+   folder) and choose **Music only**. Or run these from the extracted source folder:
 
    ```text
    npm ci --omit=dev
@@ -27,7 +37,9 @@ For native lyric-to-song generation, install **Node.js 20+ and Studio**. You do
 3. In **Models → Review Q4 / Q8 setup**, explicitly install **YuE2 GGUF Q4**: about **2.93 GB** for the
    Q4 model, F16 VAE and four sidecars, plus **833 MB** for the native runtime.
    Read the licence/source notices and wait for verification to complete.
-4. Open **Music**, enter a style and nonempty lyrics, then press **Create**.
+4. Open **Music**. A new install opens it on **Simple**: choose one of the
+   **Presets…** and press **Make song**. For your own words, press
+   **Advanced**, enter a style and nonempty lyrics, then press **Create**.
 
 Keep the launcher window open. If another Studio is already running, wait for
 its jobs to finish and close it before changing modes; both use port 4173 by default.
@@ -59,8 +71,11 @@ Studio runs the interface and the queue; ComfyUI runs the models. You install
 ComfyUI yourself. That split is deliberate — ComfyUI is gigabytes of Python
 before a single model weight, and it updates on its own schedule.
 
-So the install is three things, in order: **Node.js**, then **ComfyUI**, then
-**Studio**. Perhaps twenty minutes of your attention, and then a long download
+The short way is two steps: **Setup.exe** installs Studio (and Node.js when the
+PC has none), then the launcher installs the engine, ComfyUI and PyTorch, when
+you answer *What should Studio run on?*; models come next, from the Models
+screen. By hand, the install is three things, in order: **Node.js**, then
+**ComfyUI**, then **Studio**. Perhaps twenty minutes of your attention, and then a long download
 you can leave running. Once it is done, the first song takes about five minutes:
 measured on a 16 GB RTX 4070 Ti SUPER, 0.07 s for the launcher's checks, ~15 s
 for the engine to start, and 264 s to render 4 min 22 s of audio from the caption
@@ -82,9 +97,9 @@ Other platforms are covered at the end, honestly.
 
 | You need | Why |
 |---|---|
-| **An NVIDIA or AMD graphics card.** 6 GB of VRAM minimum, 12 GB recommended. | The music model's first stage needs a GPU device: CUDA on NVIDIA, or ROCm on AMD (a ROCm torch presents the card as `cuda:0`). There is no CPU fallback — it stops with `Expected a cuda device, but got: cpu`. Intel and Apple graphics will not run this. The AMD path is measured on one card — see [NVIDIA, AMD, Intel or CPU](README.md#nvidia-amd-intel-or-cpu). |
+| **A graphics card for the music model Studio picks, or none.** YuE2 3B through ComfyUI (the build Studio recommends): an NVIDIA or AMD card, 8 GB of VRAM minimum, 12 GB recommended. The native YuE2 GGUF: any card (CUDA on NVIDIA, Vulkan on AMD and Intel) or the CPU, which is slow; Studio picks it with no card, on an Intel card, or on a PC under the ComfyUI build's card or RAM minimum. MiniMax Music 3, if you pick it: an NVIDIA or AMD card, 6 GB minimum, 12 GB recommended. | The ComfyUI music models' first stage needs a GPU device: CUDA on NVIDIA, or ROCm on AMD (a ROCm torch presents the card as `cuda:0`). There is no CPU fallback for them — MiniMax stops with `Expected a cuda device, but got: cpu`. Intel and Apple graphics will not run them. The AMD path is measured on one card — see [NVIDIA, AMD, Intel or CPU](README.md#nvidia-amd-intel-or-cpu). |
 | **16 GB of system RAM**, 32 GB recommended. | On smaller cards the model is streamed out of system RAM, so RAM does the work VRAM cannot. |
-| **Free disk space.** 12 GB for music alone. About 62 GB if you eventually want every feature. | The weights are large and they live inside your ComfyUI folder. Studio shows you the free space on that drive before any download. |
+| **Free disk space.** About 4 GB for music alone (YuE2 3B through ComfyUI, the build Studio recommends; MiniMax Music 3, if you pick it instead, is about 12 GB). About 64 GB more for music videos (MiniMax H3 and its reference build), and about 329 GB if you downloaded every model in the catalogue (a file two features share counted once). | The weights are large and they live inside your ComfyUI folder. Studio shows you the free space on that drive before any download. |
 | **Node.js 20 or newer.** | Studio's server is written in it. |
 | **A ComfyUI install.** | Studio drives one. It does not contain one. |
 
@@ -112,9 +127,18 @@ You want `v20` or higher. Anything older and Studio will not start.
 
 **Easiest: let the launcher do it.** Start `AIPLAY Studio.exe`. If it finds no
 ComfyUI it asks *What should Studio run on?* (NVIDIA / AMD / Intel Arc / CPU
-only) and installs its own ComfyUI with the right PyTorch into
-`%USERPROFILE%\.aiplay-studio\engine`. If that fails it cleans up and asks
-again with the exact error. Skip to step 3 if you use it.
+only) and installs its own ComfyUI (v0.36.0, the version this Studio is tested
+with) with the right PyTorch into `%USERPROFILE%\.aiplay-studio\engine`, plus
+the Python packages Studio itself uses there (OpenCV, librosa and soundfile,
+about 0.3 GB, and SciPy, which ComfyUI brings; if only those fail, the engine
+is kept and the launcher's "Studio's own packages" row has **Try again**;
+inside Studio, a feature that finds one missing names it, the python and the
+pip line, and the setup that installs it into Studio's own engine). Nothing
+outside Studio's folder changes: the
+Python it fetches gets no ~/.local/bin copy and no registry entry. If the
+install fails it removes the half-built engine, keeps what it downloaded so the
+next try is quicker, and asks again with the exact error. Models come next,
+from the Models screen. Skip to step 3 if you use it.
 
 Or install ComfyUI yourself — Studio then drives the copy you already have and
 never changes it.
@@ -216,7 +240,9 @@ D:\AI\my-comfy\venv\Scripts\python.exe
 
 ### The easy way: AIPLAY Studio Setup.exe
 
-Download **[AIPLAY Studio Setup.exe](https://github.com/Senzube4n/AIPLAY-Studio/releases/latest)**, run it, pick Senzu's build (the original, and the
+Download **[AIPLAY Studio Setup.exe](https://github.com/Senzube4n/AIPLAY-Studio/releases/latest/download/AIPLAY.Studio.Setup.exe)**, run it (Windows may say
+“Windows protected your PC” because it is not signed yet: click **More info**,
+then **Run anyway**), pick Senzu's build (the original, and the
 default) or Bucky's, and press **Install**. It shows how far apart the two are
 (ahead / behind) before you choose. It then:
 
@@ -271,20 +297,36 @@ you will read is comments explaining each one. Here is what that is.
 
 1. **Checks for Node.js.** If it is missing, it says so and stops. Nothing else
    happens.
-2. **Fetches three dependencies** on first run. That is the entire list — they
-   pull nothing else in behind them — and it takes a few seconds:
+2. **Fetches npm dependencies** on first run. The four direct packages are:
 
    | Package | Licence | What it is for |
    | --- | --- | --- |
    | `ws` | MIT | WebSockets: following a ComfyUI job's progress, and the live panels in the app |
-   | `three` | MIT | The 3D renderer for the avatar review viewer. Served to your browser from `node_modules`, not bundled |
-   | `gltf-validator` | Apache-2.0 (Khronos) | The official glTF validator every uploaded avatar GLB is checked with |
+   | `three` | MIT | The 3D renderer, served to your browser from `node_modules` |
+   | `gltf-validator` | Apache-2.0 (Khronos) | The official glTF validator used for uploaded avatars |
+   | `@pixiv/three-vrm` | MIT (pixiv Inc.) | Local VRM avatars, expressions, MToon materials and spring bones |
 
-   **All three are required to start.** None of them is an optional extra: the
-   server imports the validator at the top of `server/mesh/avatar.js`, which
-   `server/index.js` imports, so Studio does not boot without them. If you
-   updated an older copy of this repository in place, delete `node_modules` and
-   let the launcher fetch them again.
+   The VRM package also installs these thirteen transitive packages, all at
+   version 3.5.5 under the MIT licence (copyright 2019-2026 pixiv Inc.):
+
+   - `@pixiv/three-vrm-core`
+   - `@pixiv/three-vrm-materials-hdr-emissive-multiplier`
+   - `@pixiv/three-vrm-materials-mtoon`
+   - `@pixiv/three-vrm-materials-v0compat`
+   - `@pixiv/three-vrm-node-constraint`
+   - `@pixiv/three-vrm-springbone`
+   - `@pixiv/types-vrm-0.0`
+   - `@pixiv/types-vrmc-materials-hdr-emissive-multiplier-1.0`
+   - `@pixiv/types-vrmc-materials-mtoon-1.0`
+   - `@pixiv/types-vrmc-node-constraint-1.0`
+   - `@pixiv/types-vrmc-springbone-1.0`
+   - `@pixiv/types-vrmc-springbone-extended-collider-1.0`
+   - `@pixiv/types-vrmc-vrm-1.0`
+
+   The server imports the glTF validator at startup; the VRM packages provide
+   the browser's avatar runtime. Both launchers fetch missing direct packages.
+   After updating an older copy, run `npm install --omit=dev` in the Studio
+   folder to reconcile the complete dependency graph with `package-lock.json`.
 3. **Finds your ComfyUI.** It looks in your home folder, Documents, Desktop, and
    on every drive from C: to F: for `ComfyUI`, `AI`, `AI\ComfyUI`,
    `ComfyUI_windows_portable` and `StabilityMatrix` — and one level inside each
@@ -324,31 +366,35 @@ you want and when.
 | capability | download | licence | your card | your RAM |
 |---|---|---|---|---|
 | Music engine — MiniMax Music 3 | 11.9 GB | MiniMax Music3 Community | 6 GB (12 rec) | 16 GB (32 rec) |
-| Music engine — YuE2 GGUF Q4 / optional Q8 (experimental) | ~2.9 GB | CC BY-NC 4.0 (weights) · Apache-2.0/MIT (native code) · NVIDIA CUDA runtime terms on NVIDIA only · ⚠ not for sale | Unknown (experimental) | Unknown (experimental) |
+| Music engine — YuE2 GGUF Q4 / optional Q8 (experimental) | ~2.9 GB | CC BY-NC 4.0 (weights) · Apache-2.0/MIT (native code) · NVIDIA CUDA runtime terms on NVIDIA only · ⚠ sellable by individuals | Unknown (experimental) | Unknown (experimental) |
 | Cover — SheetSage2 song-to-score (ComfyUI) | 1.4 GB | CC BY-NC 4.0 (weights) · ⚠ not for sale | 4 GB (8 rec) | 8 GB (16 rec) |
-| Video clips — TaoMate 3-step LoRA (H3) | 2.5 GB | MiniMax H3 Community Licence (derived from H3) · ⚠ territory | 12 GB (16 rec) | 16 GB (32 rec) |
+| Video clips — TaoMate 3-step LoRA (H3) | 2.5 GB | MiniMax H3 Community Licence (derived from H3) · ⚠ territory | 8 GB (12 rec) | 16 GB (32 rec) |
 | Video clips — video-to-video control (H3 Fun ControlNet) | 2.3 GB | MiniMax H3 Community Licence (a patch on H3's weights) · ⚠ territory | 12 GB (16 rec) | 16 GB (32 rec) |
-| Video clips — TaoMate 3-step, rank-19 average (H3, small) | 182 MB | MiniMax H3 Community Licence (derived from H3) · ⚠ territory | 12 GB (16 rec) | 16 GB (32 rec) |
+| Video clips — Fast setting for H3 (TaoMate 3-step, 182 MB) | 182 MB | MiniMax H3 Community Licence (derived from H3) · ⚠ territory | 8 GB (12 rec) | 16 GB (32 rec) |
+| Video clips — 4-step speed-up for H3 (1.96 GB) | 2.0 GB | MiniMax H3 Community Licence (derived from H3) · ⚠ territory | 8 GB (12 rec) | 16 GB (32 rec) |
+| Video clips — 8-step speed-up for H3 (1.96 GB) | 2.0 GB | MiniMax H3 Community Licence (derived from H3) · ⚠ territory | 8 GB (12 rec) | 16 GB (32 rec) |
 | H3 conditioning bridge — BUNNY (action logic) | 22.0 MB | MiniMax H3 Community Licence (derived from H3) · ⚠ territory | none (0 rec) | 0 GB (0 rec) |
 | H3 conditioning bridge — Semantic Bridge v1 | 11.0 MB | MiniMax H3 Community Licence (derived from H3) · ⚠ territory | none (0 rec) | 0 GB (0 rec) |
-| Music engine — YuE2 3B for ComfyUI (int8) | 4.0 GB | CC BY-NC 4.0 (weights) · ⚠ not for sale | 8 GB (12 rec) | 16 GB (32 rec) |
+| Music engine — YuE2 3B for ComfyUI (int8) | 4.0 GB | CC BY-NC 4.0 (weights) · ⚠ sellable by individuals | 8 GB (12 rec) | 16 GB (32 rec) |
 | YuE2 instrumental planner LoRA (ComfyUI) | 213 MB | CC BY-NC 4.0 (weights, derived from YuE2-3B) · ⚠ not for sale | 8 GB (12 rec) | 16 GB (32 rec) |
 | YuE2 real-audio NAR LoRA (ComfyUI) | 108 MB | CC BY-NC 4.0 (weights, derived from YuE2-3B) · ⚠ not for sale | 8 GB (12 rec) | 16 GB (32 rec) |
 | YuE2 real-audio tokenizer (head + MERT-v2-FullSong) | 2.7 GB | CC BY-NC 4.0 (head from YuE2-3B; MERT-v2-FullSong) · ⚠ not for sale | none (4 rec) | 8 GB (16 rec) |
 | Music engine — ACE-Step 1.5 turbo (ComfyUI) | 14.7 GB | MIT (ACE-Step's LICENSE; the ComfyUI repack's card tags apache-2.0 with no licence text) | 8 GB (16 rec) | 16 GB (32 rec) |
-| Music engine — YuE2 3B | 7.8 GB | CC BY-NC 4.0 (weights) · ⚠ not for sale | 16 GB (24 rec) | 24 GB (32 rec) |
+| Music engine — YuE2 3B | 7.8 GB | CC BY-NC 4.0 (weights) · ⚠ sellable by individuals | 16 GB (24 rec) | 24 GB (32 rec) |
 | Audio reference — MiniMax Music 3 DAV encoder | 306 MB | MiniMax Music3 Community · +pip | 4 GB (6 rec) | 8 GB (16 rec) |
 | Cover art — FLUX.2 klein 4B | 12.5 GB | Apache-2.0 | 8 GB (12 rec) | 16 GB (32 rec) |
 | Chat — Qwen3 4B | 8.0 GB | Apache-2.0 | 8 GB (12 rec) | 16 GB (32 rec) |
 | Stem separation — HTDemucs (fine-tuned) | ~336 MB | MIT · pip | 4 GB (6 rec) | 8 GB (16 rec) |
-| Video clips — MiniMax H3 (quantised) | 42.9 GB | MiniMax H3 Community · ⚠ territory | 16 GB (24 rec) | 32 GB (64 rec) |
-| Video references — MiniMax H3 ref2va | 22.9 GB | MiniMax H3 Community · ⚠ territory | 16 GB (24 rec) | 32 GB (64 rec) |
+| Video clips — MiniMax H3 (quantised) | 41.0 GB | MiniMax H3 Community · ⚠ territory | 8 GB (12 rec) | 16 GB (32 rec) |
+| Video clips — FastH3 (8 steps, experimental) | 42.1 GB | MiniMax H3 Community Licence (derived from H3) · ⚠ territory | 8 GB (12 rec) | 16 GB (32 rec) |
+| Video references — MiniMax H3 ref2va | 22.9 GB | MiniMax H3 Community · ⚠ territory | 8 GB (12 rec) | 16 GB (32 rec) |
 | Background removal — BiRefNet | 444 MB | MIT | 4 GB (6 rec) | 8 GB (16 rec) |
 | Images — Ideogram 4 (open 9B) | 25.2 GB | Ideogram Non-Commercial Model Agreement · ⚠ terms unread | 12 GB (16 rec) | 32 GB (32 rec) |
 | Narration — TTS voices (Kokoro + Qwen3-TTS) | ~15.5 GB | Apache-2.0 (both engines) · pip | none (8 rec) | 16 GB (32 rec) |
 | Sound effects — Stable Audio 3 Small SFX | 3.5 GB | Stability AI Community License | 6 GB (8 rec) | 16 GB (32 rec) |
 | Images — Z-Image Turbo (Apache-2.0) | 14.6 GB | Apache-2.0 | 8 GB (12 rec) | 16 GB (32 rec) |
 | Images — Qwen Image 2.1 (research licence) | 17.3 GB | Qwen Research License Agreement · ⚠ not for sale | Unknown (experimental) | Unknown (experimental) |
+| Images — Fast draft for Qwen Image 2.1 (Viggle turbo LoRA) | 680 MB | Qwen Research License Agreement · ⚠ not for sale | Unknown (experimental) | Unknown (experimental) |
 | Images — Krea 2 Turbo (community licence) | 19.0 GB | Krea 2 Community License Agreement | 12 GB (16 rec) | 32 GB (48 rec) |
 | Images — Z-Image base (Apache-2.0) | 14.6 GB | Apache-2.0 | 8 GB (12 rec) | 16 GB (32 rec) |
 | Images — Anima (non-commercial model, sellable pictures) | 1.4 GB | CircleStone Labs Non-Commercial v1.2 | 6 GB (10 rec) | 16 GB (32 rec) |
@@ -365,13 +411,13 @@ you want and when.
 | CLIP vision tower — ViT-H/14 (LAION-2B) | 2.5 GB | MIT | 4 GB (8 rec) | 8 GB (16 rec) |
 | 3D mesh from a picture — TripoSG 1.5B | 7.9 GB | MIT | 4 GB (12 rec) | 16 GB (32 rec) |
 | Skeleton and skin for a mesh — UniRig | 5.8 GB | MIT | 4 GB (8 rec) | 8 GB (16 rec) |
-| Timed lyrics — Whisper large-v3 | ~3.1 GB | MIT · pip | 4 GB (6 rec) | 8 GB (16 rec) |
+| Whisper: transcription and timed lyrics | ~3.1 GB | MIT · pip | 4 GB (6 rec) | 8 GB (16 rec) |
 | Smooth motion — RIFE 4.26 | 22.7 MB | MIT | 4 GB (6 rec) | 8 GB (16 rec) |
 | Upscale — Real-ESRGAN 2x | 67.1 MB | BSD-3-Clause | 4 GB (8 rec) | 16 GB (32 rec) |
 
-45 capabilities. **Choose one music engine** and install the runtime and models for the features you want. Native YuE2 music-only does not require MiniMax, ComfyUI or Python. Hardware figures are capability-specific guidance, not a guarantee; an experimental Unknown means no minimum has been established. Streaming support and memory measurements from other engines must not be applied to native GGUF.
+49 capabilities. **Choose one music engine** and install the runtime and models for the features you want. Native YuE2 music-only does not require MiniMax, ComfyUI or Python. Hardware figures are capability-specific guidance, not a guarantee; an experimental Unknown means no minimum has been established. Streaming support and memory measurements from other engines must not be applied to native GGUF.
 
-⚠ **territory** — **TaoMate 3-step LoRA (H3) and TaoMate 3-step, rank-19 average (H3, small) and BUNNY (action logic) and Semantic Bridge v1.** Derived from MiniMax H3, so its Community Licence applies: rights only inside the Applicable Territory, which excludes the EU, the UK, the Republic of Korea and the United States of America. The download goes straight to the publisher. **video-to-video control (H3 Fun ControlNet).** A patch on MiniMax H3, so its Community Licence applies unchanged: rights only inside the Applicable Territory, which excludes the EU, the UK, the Republic of Korea and the United States of America. MiniMax's hosted API is available everywhere; it is running the open weights locally that is limited. The download goes straight to the publisher. **MiniMax H3 (quantised) and MiniMax H3 ref2va.** MiniMax grants H3 rights only inside its Applicable Territory, which excludes the EU, the UK, the Republic of Korea and the United States of America. If you are in one of those places you may not use these weights — and §V.4 says the same about anything they generate. AIPLAY Studio does not host them — the download goes straight to the publisher, and the licence is between you and MiniMax. Studio treats this as a blocking acknowledgement and refuses the download without it.
+⚠ **territory** — **TaoMate 3-step LoRA (H3) and Fast setting for H3 (TaoMate 3-step, 182 MB) and 4-step speed-up for H3 (1.96 GB) and 8-step speed-up for H3 (1.96 GB) and BUNNY (action logic) and Semantic Bridge v1.** Derived from MiniMax H3, so its Community Licence applies: rights only inside the Applicable Territory, which excludes the EU, the UK, the Republic of Korea and the United States of America. The download goes straight to the publisher. **video-to-video control (H3 Fun ControlNet).** A patch on MiniMax H3, so its Community Licence applies unchanged: rights only inside the Applicable Territory, which excludes the EU, the UK, the Republic of Korea and the United States of America. MiniMax's hosted API is available everywhere; it is running the open weights locally that is limited. The download goes straight to the publisher. **MiniMax H3 (quantised) and MiniMax H3 ref2va.** MiniMax grants H3 rights only inside its Applicable Territory, which excludes the EU, the UK, the Republic of Korea and the United States of America. If you are in one of those places you may not use these weights — and §V.4 says the same about anything they generate. AIPLAY Studio does not host them — the download goes straight to the publisher, and the licence is between you and MiniMax. **FastH3 (8 steps, experimental).** Derived from MiniMax H3, so its Community Licence applies: rights only inside the Applicable Territory, which excludes the EU, the UK, the Republic of Korea and the United States of America. AIPLAY Studio does not host the weights; the download goes straight to the publisher. Studio treats this as a blocking acknowledgement and refuses the download without it.
 
 ⚠ **gated** — **LTX 2.5 (quantised).** The repository is access-gated, so the built-in downloader cannot fetch it — it has no token and deliberately nowhere to keep one. Accept the licence on the model page, then in the ComfyUI python environment run `hf auth login` followed by `python scripts/fetch_ltx25.py`. About 40 GB. Licence and access: https://huggingface.co/Lightricks/LTX-2.5
 
@@ -383,20 +429,23 @@ The Ideogram Non-Commercial Model Agreement is behind a gate: the URL above retu
 
 Half of this capability is verified and half is not, and the unread half is the one that makes the skeleton, so the row answers with the weaker of the two. The detector (yolox_l.torchscript.pt) is Apache-2.0: Megvii's own LICENSE was diffed against the canonical text and every operative clause is identical. The estimator (dw-ll_ucoco_384_bs5.torchscript.pt) has no readable terms at all — its redistributor's entire model card is 28 bytes of frontmatter with no LICENSE file, and so is the card of the yzd-v/DWPose repository usually named as its origin. The Apache-2.0 licence linked above, IDEA-Research's, is reached only by a filename match, and a filename is not a grant. In practice a skeleton is a measurement of a video you supplied, and the clip it goes on to steer carries the RENDERING model's terms — WAN 2.1 VACE's, which are settled Apache-2.0 — so this is narrower than it sounds. Read the chain yourself before relying on the skeleton itself being licensed. Separately, and binding whoever trained the model rather than whoever runs it: DWPose was trained on COCO-WholeBody and UBody, which carry dataset terms of their own.
 
-⚠ **not for sale** — **YuE2 GGUF Q4 / optional Q8 (experimental).** Studio retains a conservative noncommercial / not-for-sale classification. This does not establish that every generated output is governed by the weights' licence. Review the source terms and output scope: https://huggingface.co/m-a-p/YuE2-3B/blob/main/LICENSE. **SheetSage2 song-to-score (ComfyUI).** Studio retains a conservative noncommercial / not-for-sale classification. This does not establish that every generated output is governed by the weights' licence. Review the source terms and output scope: https://huggingface.co/m-a-p/SheetSage2/blob/main/LICENSE. **YuE2 3B for ComfyUI (int8).** Studio retains a conservative noncommercial / not-for-sale classification. This does not establish that every generated output is governed by the weights' licence. Review the source terms and output scope: https://huggingface.co/m-a-p/YuE2-3B/blob/main/LICENSE. **YuE2 instrumental planner LoRA (ComfyUI).** Studio retains a conservative noncommercial / not-for-sale classification. This does not establish that every generated output is governed by the weights' licence. Review the source terms and output scope: https://huggingface.co/m-a-p/YuE2-3B/blob/main/LICENSE. **YuE2 real-audio NAR LoRA (ComfyUI).** Studio retains a conservative noncommercial / not-for-sale classification. This does not establish that every generated output is governed by the weights' licence. Review the source terms and output scope: https://huggingface.co/m-a-p/YuE2-3B/blob/main/LICENSE. **YuE2 real-audio tokenizer (head + MERT-v2-FullSong).** Studio retains a conservative noncommercial / not-for-sale classification. This does not establish that every generated output is governed by the weights' licence. Review the source terms and output scope: https://huggingface.co/m-a-p/YuE2-3B/blob/main/LICENSE. **YuE2 3B.** Studio retains a conservative noncommercial / not-for-sale classification. This does not establish that every generated output is governed by the weights' licence. Review the source terms and output scope: https://huggingface.co/m-a-p/YuE2-3B/blob/main/LICENSE. **Qwen Image 2.1 (research licence).** Studio retains a conservative noncommercial / not-for-sale classification. This does not establish that every generated output is governed by the weights' licence. Review the source terms and output scope: https://huggingface.co/Qwen/Qwen-Image-2.1/blob/790c92633540aa0cb11d9abf19eb46d861714758/LICENSE. **Depth Anything V2 Large (non-commercial).** Studio retains a conservative noncommercial / not-for-sale classification. This does not establish that every generated output is governed by the weights' licence. Review the source terms and output scope: https://github.com/DepthAnything/Depth-Anything-V2#license.
+⚠ **not for sale** — **SheetSage2 song-to-score (ComfyUI).** Studio retains a conservative noncommercial / not-for-sale classification. This does not establish that every generated output is governed by the weights' licence. Review the source terms and output scope: https://huggingface.co/m-a-p/SheetSage2/blob/main/LICENSE. **YuE2 instrumental planner LoRA (ComfyUI).** Studio retains a conservative noncommercial / not-for-sale classification. This does not establish that every generated output is governed by the weights' licence. Review the source terms and output scope: https://huggingface.co/m-a-p/YuE2-3B/blob/main/LICENSE. **YuE2 real-audio NAR LoRA (ComfyUI).** Studio retains a conservative noncommercial / not-for-sale classification. This does not establish that every generated output is governed by the weights' licence. Review the source terms and output scope: https://huggingface.co/m-a-p/YuE2-3B/blob/main/LICENSE. **YuE2 real-audio tokenizer (head + MERT-v2-FullSong).** Studio retains a conservative noncommercial / not-for-sale classification. This does not establish that every generated output is governed by the weights' licence. Review the source terms and output scope: https://huggingface.co/m-a-p/YuE2-3B/blob/main/LICENSE. **Qwen Image 2.1 (research licence).** Studio retains a conservative noncommercial / not-for-sale classification. This does not establish that every generated output is governed by the weights' licence. Review the source terms and output scope: https://huggingface.co/Qwen/Qwen-Image-2.1/blob/790c92633540aa0cb11d9abf19eb46d861714758/LICENSE. **Fast draft for Qwen Image 2.1 (Viggle turbo LoRA).** Studio retains a conservative noncommercial / not-for-sale classification. This does not establish that every generated output is governed by the weights' licence. Review the source terms and output scope: https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo/blob/2b85c1fcb7b2584c4133fe0c547ec968ff2ae20e/LICENSE. **Depth Anything V2 Large (non-commercial).** Studio retains a conservative noncommercial / not-for-sale classification. This does not establish that every generated output is governed by the weights' licence. Review the source terms and output scope: https://github.com/DepthAnything/Depth-Anything-V2#license.
+
+⚠ **sellable by individuals** — **YuE2 GGUF Q4 / optional Q8 (experimental).** Sellable by individuals (YuE2 authors' statement, 15 Sep 2026) · companies need a commercial licence. The licence file shipped with the weights still reads CC BY-NC 4.0; Studio's label follows the authors' statement: https://huggingface.co/m-a-p/YuE2-3B/discussions/5. **YuE2 3B for ComfyUI (int8).** Sellable by individuals (YuE2 authors' statement, 15 Sep 2026) · companies need a commercial licence. The licence file shipped with the weights still reads CC BY-NC 4.0; Studio's label follows the authors' statement: https://huggingface.co/m-a-p/YuE2-3B/discussions/5. **YuE2 3B.** Sellable by individuals (YuE2 authors' statement, 15 Sep 2026) · companies need a commercial licence. The licence file shipped with the weights still reads CC BY-NC 4.0; Studio's label follows the authors' statement: https://huggingface.co/m-a-p/YuE2-3B/discussions/5.
 
 **pip, not a download** — Some capabilities are Python packages that fetch their own weights, so Studio has no file to verify and no button to press. They belong in a Python that is **not** ComfyUI's: installing them there can pull the torch build the engine depends on back down, which costs about 5× the speed of everything (INSTALL.md §5).
 
   · **MiniMax Music 3 DAV encoder** — `python -m pip install numpy torch av` (on top of the 306 MB of weights in the table)
   · **HTDemucs (fine-tuned)** — `python -m pip install demucs`
   · **TTS voices (Kokoro + Qwen3-TTS)** — kokoro + qwen-tts (sidecar venv at tts-venv/) — no single command; see the Models screen
-  · **Whisper large-v3** — `python -m pip install faster-whisper`
+  · **Whisper: transcription and timed lyrics** — `python -m pip install faster-whisper stable-ts`
+    → Into Studio's own whisper venv, not the python on your PATH: `%USERPROFILE%\aiplay-whisper\venv` (or the python chosen in Settings > Songs > "timed lyrics python", or AIPLAY_WHISPER_PYTHON). With Python 3.11 or newer, in a new Command Prompt or PowerShell window (both open in your user folder): `python -m venv "aiplay-whisper\venv"`, then `aiplay-whisper\venv\Scripts\python.exe -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu126`, then `aiplay-whisper\venv\Scripts\python.exe -m pip install faster-whisper stable-ts`. The torch line is for an NVIDIA card only. On Linux the venv's python is `aiplay-whisper/venv/bin/python`.
 
 `node scripts/extras_setup.mjs` prints the exact command for your machine, aimed at the interpreter Studio will actually invoke, and says which are already installed.
 
-**selling what you make** — Model licences and rights in generated material are separate questions. The catalogue records them separately. 19 of 45 are classified as placing no licence conditions on generated material (ACE-Step 1.5 turbo (ComfyUI), FLUX.2 klein 4B, Qwen3 4B, HTDemucs (fine-tuned), BiRefNet, TTS voices (Kokoro + Qwen3-TTS), Z-Image Turbo (Apache-2.0), Z-Image base (Apache-2.0), WAN 2.1 VACE 1.3B, Depth Anything V2 Small, AnimateDiff v3 (SD1.5), SparseCtrl RGB (AnimateDiff v3), IP-Adapter Plus (SD1.5), ViT-H/14 (LAION-2B), TripoSG 1.5B, UniRig, Whisper large-v3, RIFE 4.26, Real-ESRGAN 2x). 15 say you may and attach conditions (MiniMax Music 3, TaoMate 3-step LoRA (H3), video-to-video control (H3 Fun ControlNet), TaoMate 3-step, rank-19 average (H3, small), BUNNY (action logic), Semantic Bridge v1, MiniMax Music 3 DAV encoder, MiniMax H3 (quantised), MiniMax H3 ref2va, Stable Audio 3 Small SFX, Krea 2 Turbo (community licence), Anima (non-commercial model, sellable pictures), LTX 2.5 (quantised), DreamShaper 8 (the Motion look's painter), depth and line art (SD1.5, fp16)). 9 are conservatively classified noncommercial / not for sale; that label does not resolve every output's legal status. 2 — Ideogram 4 (open 9B), DWPose (TorchScript) — nobody here has read. For MiniMax Music 3: §3.1 — a commercial product or service that uses it must show “MiniMax-Music3” prominently in its interface. That is why the name sits in Studio's corner rather than on a credits page. The operative sentence is quoted verbatim in `server/models.js` and shown on the Models screen before you download anything.
+**selling what you make** — Model licences and rights in generated material are separate questions. The catalogue records them separately. 19 of 49 are classified as placing no licence conditions on generated material (ACE-Step 1.5 turbo (ComfyUI), FLUX.2 klein 4B, Qwen3 4B, HTDemucs (fine-tuned), BiRefNet, TTS voices (Kokoro + Qwen3-TTS), Z-Image Turbo (Apache-2.0), Z-Image base (Apache-2.0), WAN 2.1 VACE 1.3B, Depth Anything V2 Small, AnimateDiff v3 (SD1.5), SparseCtrl RGB (AnimateDiff v3), IP-Adapter Plus (SD1.5), ViT-H/14 (LAION-2B), TripoSG 1.5B, UniRig, Whisper: transcription and timed lyrics, RIFE 4.26, Real-ESRGAN 2x). 21 say you may and attach conditions (MiniMax Music 3, YuE2 GGUF Q4 / optional Q8 (experimental), TaoMate 3-step LoRA (H3), video-to-video control (H3 Fun ControlNet), Fast setting for H3 (TaoMate 3-step, 182 MB), 4-step speed-up for H3 (1.96 GB), 8-step speed-up for H3 (1.96 GB), BUNNY (action logic), Semantic Bridge v1, YuE2 3B for ComfyUI (int8), YuE2 3B, MiniMax Music 3 DAV encoder, MiniMax H3 (quantised), FastH3 (8 steps, experimental), MiniMax H3 ref2va, Stable Audio 3 Small SFX, Krea 2 Turbo (community licence), Anima (non-commercial model, sellable pictures), LTX 2.5 (quantised), DreamShaper 8 (the Motion look's painter), depth and line art (SD1.5, fp16)). 7 are conservatively classified noncommercial / not for sale; that label does not resolve every output's legal status. 2 — Ideogram 4 (open 9B), DWPose (TorchScript) — nobody here has read. For MiniMax Music 3: §3.1 — a commercial product or service that uses it must show “MiniMax-Music3” prominently in its interface. That is why the name sits in Studio's corner rather than on a credits page. The operative sentence is quoted verbatim in `server/models.js` and shown on the Models screen before you download anything.
 
-**shared files** — 4 files are used by more than one capability, so picking two of those costs less than adding their rows — up to 9.0 GB less. `qwen_3_4b.safetensors` (8.0 GB) is shared by FLUX.2 klein 4B, Qwen3 4B, Z-Image Turbo (Apache-2.0), Z-Image base (Apache-2.0); `flux2-vae.safetensors` (336 MB) is shared by FLUX.2 klein 4B, Ideogram 4 (open 9B); `ae.safetensors` (335 MB) is shared by Z-Image Turbo (Apache-2.0), Z-Image base (Apache-2.0); `qwen_image_vae.safetensors` (254 MB) is shared by Krea 2 Turbo (community licence), Anima (non-commercial model, sellable pictures). The Models screen quotes the deduplicated figure.
+**shared files** — 7 files are used by more than one capability, so picking two of those costs less than adding their rows — up to 29.0 GB less. `qwen3vl_32b_minimax_h3-int4_convrot.safetensors` (14.2 GB) is shared by MiniMax H3 (quantised), FastH3 (8 steps, experimental); `qwen_3_4b.safetensors` (8.0 GB) is shared by FLUX.2 klein 4B, Qwen3 4B, Z-Image Turbo (Apache-2.0), Z-Image base (Apache-2.0); `minimax_h3_video_vae_fp16.safetensors` (5.2 GB) is shared by MiniMax H3 (quantised), FastH3 (8 steps, experimental); `minimax_h3_audio_vae_fp32.safetensors` (605 MB) is shared by MiniMax H3 (quantised), FastH3 (8 steps, experimental); `flux2-vae.safetensors` (336 MB) is shared by FLUX.2 klein 4B, Ideogram 4 (open 9B); `ae.safetensors` (335 MB) is shared by Z-Image Turbo (Apache-2.0), Z-Image base (Apache-2.0); `qwen_image_vae.safetensors` (254 MB) is shared by Krea 2 Turbo (community licence), Anima (non-commercial model, sellable pictures). The Models screen quotes the deduplicated figure.
 
 Studio hosts no weights and mirrors none: every download goes straight to the publisher, and the licence is between you and them.
 <!-- MODELS:END -->
@@ -419,6 +468,15 @@ Some things worth knowing before you click:
   16 GB card it says three models; on an 8 GB card it says two and explains, per
   row, why video is not among them. On a machine with no NVIDIA card it says so
   and refuses to recommend anything, rather than guessing.
+- **Timed lyrics set themselves up.** Press **Set up timed lyrics** (Settings >
+  Songs, or on the timed lyrics row of the Models screen). Studio builds a
+  private Python 3.12 in `%USERPROFILE%\.aiplay-studio\venvs\lyrics` with the
+  PyTorch that fits your card (CUDA 12.6 on NVIDIA, the CPU build otherwise;
+  the choice beside the button changes it) and faster-whisper and stable-ts,
+  checks both import, and only then makes it the timed lyrics python. The button
+  says the download size before anything starts (roughly 2.6 GB on NVIDIA, an
+  estimate); no system Python is needed. Already working, it installs nothing
+  and says so. The manual lines in the table above still work if you prefer them.
 - **The pip half has its own script.** Some capabilities need a Python package
   that Studio cannot fetch — two of them ARE the package rather than a file, and
   audio reference wants one on top of its weights. The table above names each
@@ -700,24 +758,33 @@ than the weights — see the pip line in section 4.
 
 ---
 
-## Optional: the audio-reactive engine
+## Optional: the audio-reactive page
 
-Nothing above is affected by this, and you do not need it.
+Nothing above is affected by this, and you do not need to install anything for
+most of it.
 
-The Reactive page renders on a **second ComfyUI** that you set up yourself,
-because the node pack behind it is GPL-3.0 and cannot ship inside an Apache-2.0
-application. It is a separate install with its own node packs and about 8.7 GB
-of additional weights, and Studio downloads none of it.
+> **This section used to describe a second ComfyUI.** Reactive was once a client
+> for a separate engine running a GPL-3.0 node pack, which meant a second
+> install and about 8.7 GB of extra weights. That is gone: since 2026-09-18 the
+> page renders on Studio's own compositor, and the two diffusion looks run on
+> the engine you already have. If you set one up because this page told you to,
+> nothing in Studio uses it.
 
-If you never set it up, the page tells you so and everything else works exactly
-as described above.
+**Cuts, Crossfade, Pulse, Film and Psychedelic need nothing extra.** They are
+comps built out of ordinary layers and keyframes, rendered by `server/vfx` on
+the CPU with numpy doing the pixels and ffmpeg muxing the song. They run on an
+AMD card, or on no GPU at all.
 
-Two traps worth knowing before you start:
+**Paint and Motion are diffusion, and they need an NVIDIA card** and the engine
+you installed above — not a second one. Motion additionally wants the SD1.5 and
+AnimateDiff v3 weights, which sit in the Models screen with everything else and
+download the same way; the page names what is missing rather than failing at
+render time.
 
-- The pack fails to import on Windows unless UTF-8 is forced, and reports it as
-  one warning line rather than an error.
-- Installing the usual ControlNet preprocessors can replace your PyTorch build,
-  which costs about 5× the speed of everything — see section 5.
+One trap worth knowing: installing the usual ControlNet preprocessors can
+replace your PyTorch build, which costs about 5× the speed of everything — see
+section 5. Studio's depth and line-art hints come from its own nodes and do not
+need that pack.
 
 ---
 

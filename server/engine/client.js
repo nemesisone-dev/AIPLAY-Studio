@@ -62,6 +62,13 @@ import { TOOL, normalizeActor } from "../provenance.js";
 import { buildRecord, graphProblems, sha256, sortedJSON } from "./record.js";
 import { store as defaultStore } from "./store.js";
 import { applyModelOverrides } from "../localmodels.js";
+import { checkGraph } from "../safety/graph.js";
+import { refusalEvent, safetyError } from "../safety/refusal.js";
+
+/** Where the Studio's safety node inside ComfyUI says whether it is armed. */
+export const BACKSTOP_STATUS_PATH = "/aiplay/safety_status";
+export const BACKSTOP_NOT_ARMED = "The engine's port is not handed out: the Studio's safety check inside the engine "
+  + "is not running, so graphs posted there directly would not be checked. Restart the engine from the Studio.";
 
 /**
  * ⚠ EVERY WAIT IN THE POLL LOOP IS BOUNDED, and these numbers are not fresh
@@ -239,7 +246,11 @@ export function createEngineClient(deps = {}) {
   }
 
   /** Identity, not a port: THIS child owns the engine. */
-  function attachChild(proc) { child = proc || null; return child; }
+  /* Renders this engine process has run, reset whenever the supervisor
+   * attaches a new one: art.js starts an H3 clip on a fresh process where a
+   * used one runs at half speed (config.js video.freeBeforeClip). */
+  let ranSinceStart = 0;
+  function attachChild(proc) { child = proc || null; ranSinceStart = 0; return child; }
   function detachChild() { child = null; }
   const isOurs = () => !!child && child.exitCode === null && child.signalCode === null;
 
@@ -254,6 +265,22 @@ export function createEngineClient(deps = {}) {
    * names nobody must not inherit that choice by omission (SPEC D1.0).
    */
   async function reveal({ actor = "system" } = {}) {
+    /* ⚠ NOT TO AN ENGINE WHOSE MINORS BACKSTOP IS NOT ARMED. A revealed port
+     * takes graphs that never pass through this process; the only check on
+     * them is the Studio's own node inside ComfyUI
+     * (server/comfy_nodes/aiplay_safety_gate.py), which reports whether it
+     * loaded and was told where to ask. If it did not, the number is not
+     * handed out, and the sentence says why. */
+    if (ready()) {
+      let armed = false;
+      try { armed = (await getJSON(BACKSTOP_STATUS_PATH, 3000))?.armed === true; } catch { armed = false; }
+      if (!armed) {
+        const e = new Error(BACKSTOP_NOT_ARMED);
+        e.status = 409;
+        e.reason = "backstop-not-armed";
+        throw e;
+      }
+    }
     /* ⚠ RECORDED FIRST, AND A THROW ABORTS — the same inversion `dispatch()`
      * makes, for the same reason. Revealing the port is acceptable precisely
      * BECAUSE the ledger can afterwards say "at 02:14 this was revealed;
@@ -491,6 +518,8 @@ export function createEngineClient(deps = {}) {
    *
    *   1. validate the graph, and say which of the two ComfyUI save formats
    *      this is when it is the wrong one
+   *      …and refuse sexual content involving minors (server/safety), filing
+   *      only a wordless `refused` event: nothing below runs for such a graph
    *   2. build the record — pure
    *   3. store the graph under its own hash
    *   4. AWAIT the delegate event, AND LET A THROW ABORT
@@ -515,6 +544,33 @@ export function createEngineClient(deps = {}) {
       const err = new Error(`this graph cannot be run: ${problems[0]}`);
       err.problems = problems;
       throw err;
+    }
+    /* ⚠ SEXUAL CONTENT INVOLVING MINORS IS NEVER SENT, AND NEVER FILED.
+     *
+     * Every local render reaches the engine through this function, and this is
+     * the one place that sees the FINAL words: after wildcards, the persona
+     * fold, covers written from lyrics, MV clip prompts built from bibles,
+     * editor prefixes, custom workflows and raw graphs from /api/engine. So the
+     * check is here, before the record is built, before a dry run returns,
+     * before the graph is stored and before the delegate line — a refused graph
+     * leaves no copy of its words anywhere, only a `refused` event that names
+     * the door and the code (server/safety/refusal.js).
+     *
+     * It applies whatever `private`, `dryRun`, the actor or `via` say, and
+     * nothing in `deps` reaches it: there is no switch. `safetyContext` and
+     * `safetyFlags` only ADD (an MV cast member's description behind a
+     * <Picture n>, the stored prompt of a reference picture, the wordless
+     * fingerprint a library picture or clip carries); they can never remove
+     * anything. A graph whose words are written while it runs is refused too
+     * (graph.js UNVERIFIABLE). The throw is what every waiter already hears:
+     * art.js emits `failed`, MV's awaitArt rejects, engine/routes.js answers
+     * 422. */
+    const safety = checkGraph(graph, { context: spec.safetyContext, flags: spec.safetyFlags });
+    if (!safety.ok) {
+      await prov.append("library", refusalEvent({
+        door: "engine.dispatch", via: String(spec.via ?? "").trim() || null, actor: normalizeActor(spec.actor), code: safety.code,
+      })).catch((e) => console.error(`  [engine] a refusal was not recorded: ${e.message}`));
+      throw safetyError({ door: "engine.dispatch", hint: safety.hint, code: safety.code, reason: safety.reason, found: safety.found });
     }
     const via = String(spec.via ?? "").trim();
     if (!via) {
@@ -546,6 +602,8 @@ export function createEngineClient(deps = {}) {
 
     const record = buildRecord(graph, {
       runId, via, actor,
+      /* A private run: the ledger line still happens, with no words in it. */
+      private: spec.private === true,
       label: spec.label ?? null, note: spec.note ?? null,
       project: spec.project ?? null, shot: spec.shot ?? null,
       enginePort: portMode(),
@@ -578,7 +636,15 @@ export function createEngineClient(deps = {}) {
         + "submit, because whatever else might answer would render into another install's library.");
     }
 
-    const stored = await store.putGraph(record.graphHash, graph);
+    /* ⚠ THE GRAPH IS NOT FILED FOR A PRIVATE RUN. It is the widest plaintext
+     * prompt store in the app — the text sits in the CLIPTextEncode node — and
+     * store.js's own header says this directory is never pruned and may not be
+     * given a prune setting. Redacting the text nodes instead would file a graph
+     * whose hash no longer matches its contents, which is a worse lie than an
+     * absent file. `graphStored: null` already means "not on the shelf". */
+    const stored = spec.private === true
+      ? { path: null, existed: false }
+      : await store.putGraph(record.graphHash, graph);
     record.graphStored = stored.path;
 
     const t0 = Date.now();
@@ -959,6 +1025,7 @@ export function createEngineClient(deps = {}) {
 
     inFlight.delete(runId);
     cancelling.delete(promptId);
+    if (status === "completed" && !data.cached) ranSinceStart++;
     const generate = await prov.append("library", { actor, type: "generate", asset: `engine/${runId}`, data })
       .catch((e) => { console.error(`  [engine] ${runId} completion not recorded: ${e.message}`); return null; });
 
@@ -1016,8 +1083,14 @@ export function createEngineClient(deps = {}) {
           };
           /* `claim` means the caller files this asset itself under its own name
            * (art.js registers a clip; jobs.js a song). Adopting it again here
-           * would write a second library entry for one file. */
-          if (spec.claim) row.adoptedAs = String(spec.claim);
+           * would write a second library entry for one file.
+           *
+           * Only a row of type "output" is claimed or shelved. An "input" echo
+           * names the file the graph READ and a "temp" preview lives in the
+           * engine's temp folder; the adopter resolves every name against the
+           * OUTPUT folder, where a same-named file would be moved instead. */
+          if (row.type !== "output") { /* recorded, never claimed or adopted */ }
+          else if (spec.claim) row.adoptedAs = String(spec.claim);
           else if (spec.adopt !== false && adopter) {
             try { row.adoptedAs = (await adopter({ runId, record, output: row, actor, spec })) ?? null; }
             catch (e) { console.warn(`  [engine] ${runId}: could not adopt ${o.filename}: ${e.message}`); }
@@ -1097,6 +1170,7 @@ export function createEngineClient(deps = {}) {
     dispatch, run, submit, socket, cancelRun, interrupt, clearQueue, freeMemory,
     history, queue, objectInfo, systemStats, identity, probePort, refreshFacts,
     status, activity, runRecord, reveal,
+    ranSinceStart: () => ranSinceStart,
     // events
     on: (...a) => bus.on(...a), off: (...a) => bus.off(...a), once: (...a) => bus.once(...a),
     // for the supervisor's spawn line only; never for building a URL

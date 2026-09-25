@@ -17,8 +17,10 @@ import { readdir, stat, readFile, writeFile, mkdir, unlink, rename } from "node:
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import { isNativeLibraryWav, readNativeWavTags, tagNativeWav } from "./library-wav.js";
+import { songRights } from "./models.js";
 
 const SIDECAR = path.join(config.paths.appData, "library.json");
 // "api_" lists hosted renders made before they were named aiplay_api_…
@@ -117,7 +119,7 @@ export class Library {
     try {
       const out = await new Promise((resolve) => {
         const proc = spawn(config.python, [
-          path.join(path.dirname(new URL(import.meta.url).pathname.slice(1)), "tag_audio.py"),
+          path.join(path.dirname(fileURLToPath(import.meta.url)), "tag_audio.py"),
           target, metaPath,
           /* The cover, when there is one to embed.
            *
@@ -150,7 +152,7 @@ export class Library {
     }
     const out = await new Promise((resolve) => {
       const proc = spawn(config.python, [
-        path.join(path.dirname(new URL(import.meta.url).pathname.slice(1)), "tag_audio.py"),
+        path.join(path.dirname(fileURLToPath(import.meta.url)), "tag_audio.py"),
         path.join(config.outputDir, file),
       ]);
       let so = "";
@@ -174,7 +176,7 @@ export class Library {
    */
   async joinExtension(originalFile, extensionFile, atSeconds, { from = 0 } = {}) {
     const out = `extend_${Date.now()}.flac`;
-    const here = path.dirname(new URL(import.meta.url).pathname.slice(1));
+    const here = path.dirname(fileURLToPath(import.meta.url));
     /* `from` skips the head of the incoming file. A YuE2 continuation is a whole
      * song (the kept part re-rendered, then the new material), so only its
      * tail past the seam is taken; a MiniMax extension holds the new section
@@ -208,7 +210,7 @@ export class Library {
    */
   async replaceSection(originalFile, newFile, atSeconds, toSeconds, { from = 0, report = false } = {}) {
     const out = `replace_${Date.now()}_${randomUUID().slice(0, 8)}.flac`;
-    const here = path.dirname(new URL(import.meta.url).pathname.slice(1));
+    const here = path.dirname(fileURLToPath(import.meta.url));
     const ops = JSON.stringify([{
       op: "replace",
       with: path.join(config.outputDir, newFile),
@@ -254,7 +256,7 @@ export class Library {
   async spliceTrajectory(priorCodes, newCodes, keepFrames) {
     if (!priorCodes || !newCodes) return null;
     const out = path.join(config.outputDir, ".codes", `joined_${Date.now()}.npz`);
-    const here = path.dirname(new URL(import.meta.url).pathname.slice(1));
+    const here = path.dirname(fileURLToPath(import.meta.url));
     const code = await new Promise((resolve) => {
       const proc = spawn(config.python, [
         path.join(here, "splice_codes.py"), priorCodes, newCodes, String(keepFrames), out,
@@ -271,7 +273,7 @@ export class Library {
    *  lyrics and style the sidecar never stored. */
   async readTags(file) {
     if (isNativeLibraryWav(file)) return readNativeWavTags(path.join(config.outputDir, file));
-    const here = path.dirname(new URL(import.meta.url).pathname.slice(1));
+    const here = path.dirname(fileURLToPath(import.meta.url));
     const out = await new Promise((resolve) => {
       const proc = spawn(config.python, [
         path.join(here, "tag_audio.py"), path.join(config.outputDir, file), "--read",
@@ -378,6 +380,24 @@ export class Library {
       }
     } catch { /* no covers drawn yet */ }
 
+    /* RIGHTS, ONCE PER RECIPE. /api/status carries the whole library every
+     * four seconds, so each row gets the B4 shape only (no credit lines and no
+     * engine id: songCredit reads those where a file is tagged), and songs made
+     * the same way share one songRights() per list(). */
+    const rightsMemo = new Map();
+    const parentOf = (f) => this.meta.get(f);
+    const rightsOf = (m) => {
+      const key = JSON.stringify([m.engine || null, m.lora || null, m.loraClip || null, m.tokenized ? 1 : 0,
+        m.imported === true ? 1 : 0, m.engine ? null : m.extendedFrom || null]);
+      let r = rightsMemo.get(key);
+      if (!r) {
+        const { attribution, engineCapability, ...row } = songRights(m, { parentOf });
+        r = row;
+        rightsMemo.set(key, r);
+      }
+      return { ...r, addOns: [...r.addOns] };
+    };
+
     const out = [];
     for (const e of entries) {
       if (!e.isFile()) continue;
@@ -441,7 +461,20 @@ export class Library {
         generationLimits: m.generationLimits ?? null,
         cot: m.cot,
         quantization: m.quantization,
-        rights: m.rights,
+        /* MAY THIS BE SOLD — worked out from the catalogue as it is NOW
+         * (models.js songRights), never from the words the sidecar stored when
+         * the song was made: a label that changed (YuE2's did, 2026-09-24)
+         * must reach every song, and a LoRA or the real-audio tokenizer the
+         * song used can only make the answer stricter. One object for the
+         * song panel, the receipt, the export line and list_songs alike. */
+        rights: rightsOf(m),
+        /* Whether the file's own tags were written: true once a tagging pass
+         * succeeded, false while one is owed (the first pass failed: a locked
+         * file, a missing python), null for songs from before this was
+         * recorded. A FLAC or MP3 that is owed is re-tagged by its next cover
+         * pass; a native YuE2 WAV is not retried automatically (it holds no
+         * picture, so no cover pass rewrites it). */
+        tagged: m.tagPending ? false : m.taggedAt ? true : null,
         /* The lead sheet this track was rendered from, when the engine wrote
          * one (YuE2 does; MiniMax does not). Both halves, because the sheet
          * route resolves a version id, and web/app.js rowHtml links only when

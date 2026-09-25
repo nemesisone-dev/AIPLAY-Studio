@@ -7,15 +7,21 @@ import { videoLoraInput, validateVideoLoras } from "./video-lora-validation.js";
 import { modelTools } from "./mcp-models.js";
 import { TOOLS } from "./mcp.js";
 import { ROUTABLE } from "./chat/router.js";
+import { emptyResultNote } from "./art-wait.js";
 
 const src = (file) => readFileSync(new URL(file, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const index = src("./index.js"), app = src("../web/app.js");
 const adapters = [{ name: "look.safetensors", strength: 0.6 }, { name: "motion.safetensors", strength: 0 }];
 const tool = (name) => TOOLS.find((t) => t.name === name);
+/* The tool's run() is evaluated against exactly these names, so every
+ * module-scope name it calls must be listed here. emptyResultNote joined the
+ * list when the four render tools stopped pointing an empty result at the
+ * queue's last error; it is the REAL one from art-wait.js, not a stub, so the
+ * note this lane sees is the note an agent sees. */
 function mockedRun(name, api) {
   const code = String(tool(name).run).replace(/^async run\(/, "async function(");
-  return new Function("api", "safeName", "waitForArt", "videoLoraInput", `return (${code});`)(
-    api, (v) => { if (/[/\\]|\.\./.test(v)) throw new Error("bad name"); return v; }, async () => {}, videoLoraInput);
+  return new Function("api", "safeName", "waitForArt", "videoLoraInput", "emptyResultNote", `return (${code});`)(
+    api, (v) => { if (/[/\\]|\.\./.test(v)) throw new Error("bad name"); return v; }, async () => {}, videoLoraInput, emptyResultNote);
 }
 
 test("video adapter input refuses silent drops, path rewriting and truncation", () => {
@@ -31,10 +37,10 @@ test("video adapter input refuses silent drops, path rewriting and truncation", 
 test("the API verifies shelf presence and architecture before queueing, including retained model folders", async () => {
   const files = adapters.map((a) => ({ name: a.name, folder: "loras", full: `old-models/loras/${a.name}` }));
   const read = [];
-  const opts = { engine: "h3", shelf: async () => files, probe: async (p) => { read.push(p); return { family: "lora", variant: "MiniMax H3" }; } };
+  const opts = { engine: "h3", loraBase: "MiniMax H3", shelf: async () => files, probe: async (p) => { read.push(p); return { family: "lora", variant: "MiniMax H3" }; } };
   assert.deepEqual(await validateVideoLoras(adapters, opts), adapters);
   assert.deepEqual(read, files.map(f => f.full));
-  await assert.rejects(validateVideoLoras(adapters, { ...opts, engine: "ltx" }), /not LTX/);
+  await assert.rejects(validateVideoLoras(adapters, { ...opts, engine: "ltx", loraBase: "LTX" }), /not LTX/);
   await assert.rejects(validateVideoLoras(adapters, { ...opts, shelf: async () => [] }), /No such file/);
   await assert.rejects(validateVideoLoras(adapters, { ...opts, probe: async () => ({ family: "checkpoint" }) }), /not a recognized LoRA/);
   await assert.rejects(validateVideoLoras(adapters, { ...opts, automatic: [adapters[0].name] }), /loads automatically/);
@@ -79,13 +85,18 @@ test("model-folder MCP exposes new-folder creation and removal without download 
   const t = modelTools(api).find(t => t.name === "models_folder");
   await t.run({ action: "use", dir: "F:\\Models", force: true, create: true });
   await t.run({ action: "drop", dir: "D:\\OldModels" });
+  // The Models screen's "Add as extra", as a tool: plain control, number, tool.
+  await t.run({ action: "also", dir: "E:\\MoreModels" });
   assert.deepEqual(calls, [
     ["POST", "/api/models", { action: "setModelsDir", dir: "F:\\Models", force: true, create: true }],
     ["POST", "/api/models", { action: "dropAlso", dir: "D:\\OldModels" }],
+    ["POST", "/api/models", { action: "addAlso", dir: "E:\\MoreModels" }],
   ]);
+  assert.ok(t.inputSchema.properties.action.enum.includes("also"));
   await assert.rejects(t.run({ action: "use", dir: "F:\\Missing", create: true }), /force/);
   await assert.rejects(t.run({ action: "drop", dir: " " }), /folder/);
-  assert.equal(calls.length, 2);
+  await assert.rejects(t.run({ action: "move", dir: "F:\\Models" }), /scan, use, also or drop/);
+  assert.equal(calls.length, 3);
 });
 
 test("typed load/unload and video-enable actions preserve the API contracts and chat classification", async () => {
@@ -136,7 +147,7 @@ test("a late LoRA list cannot repaint the newly selected engine", async () => {
   const fn = app.match(/async function vidLoadLoras\(\) \{[\s\S]*?\n\}/)[0];
   const pending = [], els = { vidLoraPick: {}, vidEngine: { value: "h3" }, vidLoraNote: {} };
   const context = vm.createContext({ $: id => els[id], state: { video: { engines: {} } }, esc: x => x,
-    VID_LORA_BASE: { h3: "MiniMax H3", ltx: "LTX" }, vidLoraFit: () => "yes", vidPaintLoras: () => {},
+    vidLoraFit: () => "yes", vidPaintLoras: () => {},
     fetch: () => new Promise(resolve => pending.push(resolve)) });
   vm.runInContext(`let vidLoraRequest=0, vidLoraShelf=[]; ${fn}`, context);
   const old = vm.runInContext("vidLoadLoras()", context);

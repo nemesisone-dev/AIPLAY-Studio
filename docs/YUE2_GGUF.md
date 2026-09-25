@@ -112,13 +112,15 @@ CUDA compatibility or ability to render.
 | Precision | `q4_0` by default, or optional `q8_0`. Both use F16 VAE; the selected main model must be installed. |
 | CoT | `full` by default; `melody` and `off` are alternatives. |
 | Synthesis / NAR steps | **32** by default. **16** is an experimental faster setting, not a measured quality-equivalent preset. |
-| Seed | **831001** by default; a nonnegative safe integer. It is not a cross-version determinism guarantee. |
+| Seed | Random for each request that names none (it was a fixed 831001, so the same words gave the same song); a nonnegative safe integer. It is not a cross-version determinism guarantee. |
+| Sampler | Optional `temperature` / `topP` (the performance) and `planTemperature` / `planTopP` (the planner), passed to the runtime as `semantic_temperature`, `semantic_top_p`, `abc_temperature`, `abc_top_p`; blank keeps the vendor defaults (1.0 / 0.95 and 0.7 / 0.9). The planner's two are refused with a supplied score or CoT `off`, where the planner does not run; the Music page shows Planner temperature disabled then, with the reason, and does not send it. |
+| Key, tempo, meter | Not on this runtime (it has no open-score option); the Music page hides those rows on GGUF. |
 | Guidance | Optional `cfgScale` / `cfg_scale`, from 0 to 20. |
 | ABC input | Optional notation with CoT `melody` or `full`; no generated editable-score export is provided by this native integration. |
 
 ### Supplied scores and length planning
 
-Open **Music → Score input & length planning** to paste or load a reviewed
+Open **Music → Melody & score** to hum a melody into the box, or paste or load a reviewed
 two-voice `.abc` score. **Check score** validates the supported notation dialect.
 Enable **Use this score with Create** to send that draft through the same native
 ABC input available to MCP. CoT must be `full` or `melody`; choose either this
@@ -189,11 +191,14 @@ project; its bundled third-party components retain their own terms. A permissive
 runtime licence does not change the model licence.
 
 The [original YuE2 model licence](https://huggingface.co/m-a-p/YuE2-3B/blob/main/LICENSE)
-applies **CC BY-NC 4.0 to the weights**. Studio retains a conservative
-**noncommercial / not-for-sale** output label. Whether particular generated
-audio is covered adapted material is not resolved here: the label is neither
-commercial clearance nor an assertion that all outputs automatically fall under
-the weight licence. Review the source terms before distribution.
+applies **CC BY-NC 4.0 to the weights**. Since 2026-09-24 Studio's output label
+follows the model authors' own statement of 15 Sep 2026
+([discussion #5](https://huggingface.co/m-a-p/YuE2-3B/discussions/5)):
+**sellable by individuals; companies need a commercial licence**. That statement
+is a discussion comment, not the licence file, which has not changed.
+Whether particular generated audio is covered adapted material is not resolved
+here: the label is neither legal advice nor a change to the weight licence.
+Review the source terms before distribution; a company should ask the authors.
 
 Keep model/source attribution, AI disclosure and creator credits. Studio records
 delegation before generation, validates the WAV and records its digest and

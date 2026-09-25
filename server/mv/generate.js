@@ -24,11 +24,73 @@ import { updateProject, readProject, assetsDir, stageAsset, noteRun } from "./st
  * — is decided there, as a pure function, so a human can look at it BEFORE
  * spending the GPU and get the same answer the renderer will act on. */
 import { resolveShot, markBoardRefsChanged, refreshBoardStale } from "./shot.js";
+/* The size list and the matched step count, each from its one source. */
+import { renderSizeOf } from "./sizes.js";
+import { clipStepsFor } from "./clipsteps.js";
 /* The relationship map draws the undeclared-object finding as a ghost node in
  * the prop lane. The SCAN itself stays in bible.js, beside the lint that also
  * reports it — two copies would disagree the first time anybody added a noun,
  * and the map would then be quietly kinder than the lint. */
 import { undeclaredRecurring, declaredAssets, namesAsset, saidWords } from "./bible.js";
+import { safetyError, CODE as SAFETY_CODE } from "../safety/refusal.js";
+import { UNVERIFIABLE_CODE } from "../safety/graph.js";
+
+/**
+ * THE WORDS BEHIND THE PICTURES A RENDER IS HANDED, for the minors rule.
+ *
+ * A board or clip prompt names its cast only BY NAME ("<Picture 1> is Mara"),
+ * and who Mara is reaches the model as her sheet, a picture no text check can
+ * read. So a child described in a character's description, rendered to a
+ * sheet, and then put in a sexual board action would pass a check of the
+ * prompt alone. Each render here therefore hands the art queue the named
+ * rows' own descriptions as `safetyContext`: words that are never sent to the
+ * model, and that count on both sides of the check exactly like the prompt
+ * (server/safety/minors.js). The engine door checks them again.
+ */
+export function castContext(doc, names = []) {
+  const rows = [...(doc?.characters || []), ...(doc?.backgrounds || []), ...(doc?.props || [])];
+  const out = [];
+  for (const n of new Set(names)) {
+    const row = rows.find((r) => r?.name === n);
+    if (!row) continue;
+    for (const k of ["description", "sheetPrompt", "platePrompt"]) {
+      if (typeof row[k] === "string" && row[k].trim()) out.push(row[k]);
+    }
+  }
+  return out;
+}
+
+/**
+ * THE SAME, WITHOUT WORDS AND WITHOUT A WAY ROUND IT.
+ *
+ * A description can be edited after its sheet is drawn, so the words above
+ * say what a row is NOW and not what its picture was MADE as. Every take
+ * carries the wordless fingerprint of what it was rendered from
+ * (server/safety/lineage.js), and this returns the fingerprint of the take
+ * each named row has ADOPTED, which is the picture a render is actually handed.
+ * A board's own adopted still counts too (pass the board as `board`).
+ */
+export function castFlags(doc, names = [], { board = null } = {}) {
+  const rows = [...(doc?.characters || []), ...(doc?.backgrounds || []), ...(doc?.props || [])];
+  /* A row may also carry `safety` itself: a friend's errand (collab/errand.js)
+   * has no takes, only the flags the sender's Studio put on each picture. */
+  const adopted = (row) => {
+    const flags = [];
+    if (row?.safety && typeof row.safety === "object") flags.push(row.safety);
+    if (!row?.imageFile) return flags;
+    const take = (row.takes || []).find((t) => t?.file === row.imageFile);
+    if (take?.safety && typeof take.safety === "object") flags.push(take.safety);
+    return flags;
+  };
+  const out = [];
+  for (const n of new Set(names)) out.push(...adopted(rows.find((r) => r?.name === n)));
+  if (board) out.push(...adopted(board));
+  return out;
+}
+
+const boardCast = (board) => [
+  ...(board?.characterRefs || []), ...(board?.backgroundRefs || []), ...(board?.propRefs || []),
+];
 
 const rollSeed = () => Math.floor(Math.random() * 4294967296);
 
@@ -37,7 +99,13 @@ const rollSeed = () => Math.floor(Math.random() * 4294967296);
  * Resolves with the success payload, rejects on the runner's `failed` emit —
  * and on a deadline, because a wedged queue must not wedge the route forever.
  */
-export function awaitArt(art, file, events, timeoutMs = 20 * 60e3) {
+export function awaitArt(art, file, events, timeoutMs = 20 * 60e3, { pollMs = 30e3 } = {}) {
+  /* A job the queue REFUSED under the minors rule was never queued, and its
+   * `failed` event went out inside request() — before this wait began. Every
+   * MV caller ignores request()'s return, so without asking here it would wait
+   * the whole deadline for an answer that has already been given. */
+  const refused = typeof art?.refusalFor === "function" ? art.refusalFor(file) : null;
+  if (refused) return Promise.reject(safetyError({ door: "art.request", hint: refused.hint }));
   return new Promise((resolve, reject) => {
     const done = (fn) => (payload) => {
       if (payload.file !== file) return;
@@ -45,19 +113,88 @@ export function awaitArt(art, file, events, timeoutMs = 20 * 60e3) {
       fn(payload);
     };
     const ok = done(resolve);
-    const bad = done((p) => reject(new Error(p.error || "render failed")));
+    /* A refusal keeps its own words (the sentence and any hint after it) and
+     * its code, so the MV routes answer it as a 422 like every other door. */
+    const bad = done((p) => {
+      if (p.code !== SAFETY_CODE && p.code !== UNVERIFIABLE_CODE) return reject(new Error(p.error || "render failed"));
+      const e = safetyError({ door: "engine.dispatch", code: p.code });
+      if (p.error) e.message = String(p.error);
+      return reject(e);
+    });
     const timer = setTimeout(() => {
       cleanup();
-      reject(new Error("render timed out — check the queue on the Music tab"));
+      /* Tagged, so a caller can tell "still rendering past my wait" from a
+       * render that failed (generateClip files a late clip when it lands). */
+      reject(Object.assign(new Error("render timed out — check the queue on the Music tab"), { timedOut: true }));
     }, timeoutMs);
+    /* ⚠ A JOB TAKEN OFF THE QUEUE NAMES NO EVENT. art.drop() (the rail's Stop,
+     * a plan's Stop) removes a waiting job and emits only "update", so this
+     * waited out its whole deadline for a render that would never run: two
+     * hours of a plan item, or a route, hanging on nothing. On every update the
+     * job must still be queued, running, or finished (its event then fired, or
+     * is about to); none of the three is a job that is gone. A stand-in runner
+     * without a queue keeps the events alone. */
+    const gone = () => {
+      if (!Array.isArray(art.queue)) return;
+      if (art.queue.some((j) => j.file === file) || art.current?.file === file) return;
+      if (Array.isArray(art.done) && art.done.some((j) => j.file === file)) return;
+      cleanup();
+      reject(new Error("the render was taken off the queue before it ran (Stop was pressed, or the queue was cleared)"));
+    };
+    /* AND ONE THAT EMPTIES THE QUEUE SAYS NOTHING AT ALL. art.stopAll() (the
+     * Engine panel's) clears the queue without an "update", so the same
+     * question is also asked every half minute (`pollMs`, shorter in a test). */
+    const poll = setInterval(gone, pollMs);
+    poll.unref?.();
     const cleanup = () => {
       clearTimeout(timer);
+      clearInterval(poll);
       for (const ev of events) art.off(ev, ok);
       art.off("failed", bad);
+      art.off("update", gone);
     };
     for (const ev of events) art.on(ev, ok);
     art.on("failed", bad);
+    art.on("update", gone);
   });
+}
+
+/**
+ * art.request, with its refusal said out loud. art.js answers null for a
+ * render it will not queue and keeps the reason in `lastRefusal`; the wait
+ * above would otherwise read the job that never arrived as one taken off the
+ * queue ("Stop was pressed"), which is the wrong sentence. A stand-in runner
+ * without `lastRefusal` is taken at its word.
+ */
+function requestArt(art, job) {
+  const queued = art.request(job);
+  /* ⚠ A MINORS REFUSAL KEEPS ITS SHAPE: the sentence, the hint and the code,
+   * so the MV routes answer 422 like every other door rather than wrapping
+   * the sentence in "the queue refused this render". */
+  const refused = !queued && typeof art.refusalFor === "function" ? art.refusalFor(job.file) : null;
+  if (refused) throw safetyError({ door: "art.request", hint: refused.hint });
+  if (!queued && typeof art.lastRefusal === "string" && art.lastRefusal) {
+    throw new Error(`The picture and video queue refused this render: ${art.lastRefusal}.`);
+  }
+  return queued;
+}
+
+/* HOW LONG A CLIP'S CALLER WAITS, and how long the take is still filed after.
+ * The caller's two hours are the old wait (see generateClip); the day is only
+ * a ceiling on a listener, because art.js ends every render with an event of
+ * its own long before that. */
+const CLIP_WAIT_HOURS = 2;
+const CLIP_WAIT_MS = CLIP_WAIT_HOURS * 60 * 60e3;
+const CLIP_LATE_CEILING_MS = 24 * 60 * 60e3;
+
+/** `promise`, or the error `onLate()` builds once `ms` pass. The promise
+ *  carries on either way; the race only decides what the caller hears. */
+function withinWait(promise, ms, onLate) {
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => { Promise.resolve().then(onLate).then(reject, reject); }, ms);
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
 }
 
 /** Copy a project asset into ComfyUI's input dir so LoadImage can read it. */
@@ -387,7 +524,7 @@ export async function generateAsset(deps, slug, { target, id, count = 4, seed, r
    * in art.js, so this is the whole mechanism — see brief.imageEngine. */
   const imgEngine = doc.brief?.imageEngine || undefined;
   const imgCkpt = doc.brief?.imageCheckpoint || undefined;
-  art.request({
+  requestArt(art, {
     file, title: `${doc.title} · ${row.name || target}`, kind: "cover", force: true,
     engine: imgEngine, checkpoint: imgCkpt,
     seed: usedSeed,
@@ -396,6 +533,8 @@ export async function generateAsset(deps, slug, { target, id, count = 4, seed, r
       count: Math.min(Math.max(Number(count) || 1, 1), 4),
       width: wide ? 1344 : 768, height: wide ? 768 : 1344,
       refImages,
+      safetyContext: castContext(doc, target === "board" ? boardCast(row) : [row.name]),
+      safetyFlags: castFlags(doc, target === "board" ? boardCast(row) : []),
     },
   });
   /* HOW LONG IT TOOK, kept on the take.
@@ -407,7 +546,7 @@ export async function generateAsset(deps, slug, { target, id, count = 4, seed, r
    * survives whatever art.js does internally, and it is the number a person
    * actually means by "how long did that take". */
   const askedAt = Date.now();
-  const { covers } = await awaitArt(art, file, ["cover"]);
+  const { covers, safety } = await awaitArt(art, file, ["cover"]);
   const tookMs = Date.now() - askedAt;
 
   return updateProject(slug, async (doc2) => {
@@ -421,7 +560,10 @@ export async function generateAsset(deps, slug, { target, id, count = 4, seed, r
         // asset folder for the picture that is keeping a car the same car.
         target === "character" ? "char" : target === "background" ? "bg"
           : target === "prop" ? "prop" : "board");
-      row2.takes.push({ file: staged, seed: usedSeed, at: Date.now(), ms: tookMs });
+      /* `safety`: the wordless minors fingerprint of what this take was drawn
+       * from, which castFlags reads however the row's words change later. */
+      row2.takes.push({ file: staged, seed: usedSeed, at: Date.now(), ms: tookMs,
+                        ...(safety ? { safety: { minor: safety.minor === true, sexual: safety.sexual === true } } : {}) });
       if (!row2.imageFile) row2.imageFile = staged;   // first take auto-selects
     }
     row2.status = "rendered";
@@ -514,6 +656,7 @@ export async function generateBoardFrames(deps, slug, { id, seed } = {}) {
   const noCast = (row.characterRefs || []).length === 0;
 
   const frames = [];
+  const frameFlags = [];               // each beat's minors fingerprint, beside it
   let prev = null;
   let beatMs = 0;                      // the whole sequence, not one frame
   for (let i = 0; i < shots.length; i++) {
@@ -554,19 +697,23 @@ export async function generateBoardFrames(deps, slug, { id, seed } = {}) {
 
     const file = `image:mv_${slug}_${row.id}_b${i}_${Date.now().toString(36)}`;
     const usedSeed = Number.isFinite(seed) ? Number(seed) + i : rollSeed();
-    art.request({
+    requestArt(art, {
       file, title: `${doc.title} · ${row.name || "board"} · beat ${i + 1}`, kind: "cover", force: true,
       engine: doc.brief?.imageEngine || undefined, checkpoint: doc.brief?.imageCheckpoint || undefined,
       seed: usedSeed,
-      video: { prompt, count: 1, width: wide ? 1344 : 768, height: wide ? 768 : 1344, refImages },
+      video: { prompt, count: 1, width: wide ? 1344 : 768, height: wide ? 768 : 1344, refImages,
+               safetyContext: castContext(doc, boardCast(row)),
+               /* Each beat after the first is drawn FROM the one before it. */
+               safetyFlags: [...castFlags(doc, boardCast(row)), ...frameFlags] },
     });
     const beatAt = Date.now();
-    const { covers } = await awaitArt(art, file, ["cover"]);
+    const { covers, safety } = await awaitArt(art, file, ["cover"]);
     beatMs += Date.now() - beatAt;
     const made = (covers || [])[0];
     if (!made) throw new Error(`Beat ${i + 1} of ${row.name || id} produced nothing — check studio_status.`);
     const staged = await stageAsset(slug, path.join(config.outputDir, "images", made), "board");
     frames.push(staged);
+    frameFlags.push(safety ? { minor: safety.minor === true, sexual: safety.sexual === true } : null);
     prev = staged;
   }
 
@@ -577,7 +724,8 @@ export async function generateBoardFrames(deps, slug, { id, seed } = {}) {
      * folding them into takes would lose it. */
     row2.shotFrames = frames;
     row2.takes = row2.takes || [];
-    for (const f of frames) row2.takes.push({ file: f, seed: null, at: Date.now(), beat: true });
+    frames.forEach((f, i) => row2.takes.push({ file: f, seed: null, at: Date.now(), beat: true,
+      ...(frameFlags[i] ? { safety: frameFlags[i] } : {}) }));
     row2.beatMs = beatMs;
     /* The opening beat stays the board's representative still, so every existing
      * reader (the grid, the clip's firstFrame fallback) keeps working. */
@@ -793,7 +941,7 @@ export async function generateClip(deps, slug, { segmentId, seed, loop: wantLoop
   const songConditioned = engine === "ltx" || !useRefs || Boolean(board?.lipSync)
     || doc.brief?.songConditioning === "always";
 
-  art.request({
+  requestArt(art, {
     file, title: `${doc.title} · scene ${seg.index + 1}`, kind: "video", force: true,
     seed: usedSeed,
     video: {
@@ -807,10 +955,12 @@ export async function generateClip(deps, slug, { segmentId, seed, loop: wantLoop
       prompt,
       seconds: Math.min(Math.max(seg.durationSec, 1), 15),
       width: aw, height: ah,
-      /* 8 is the turbo path and stays the default. A project may ask for 4,
-       * which selects H3's 4-step distillation — the LoRA follows the step
-       * count in workflow.js, so this is one number rather than two. */
-      steps: Number.isFinite(doc.brief?.videoSteps) ? Number(doc.brief.videoSteps) : 8,
+      /* A project may name a count, and the LoRA follows it in workflow.js, so
+       * this is one number rather than two. Left on "default" it is the count
+       * the speed-up files ON THIS DISK were made for (clipsteps.js
+       * defaultClipSteps), with or without cast pictures. It was a literal 8,
+       * which ran a 4-step file at 8 on a disk set up from the Models screen. */
+      steps: clipStepsFor(doc.brief, { refs: useRefs }),
       /* Sample at the delivered size instead of half-then-upscale. Only reaches
        * LTX, and only matters on an UNGUIDED clip — a board-pinned one is
        * already single-pass at full size. See videoGraphLtx's note above lowW. */
@@ -829,17 +979,25 @@ export async function generateClip(deps, slug, { segmentId, seed, loop: wantLoop
       /* THE SONG UNDER THE CLIP — frozen into the AV latent and anchored on
        * the conditioning at frame 0 (workflow.js, "SOUNDTRACK"), on BOTH
        * engines. On LTX it is the parity path and stays. On H3's reference
-       * path it now travels only where someone sings on camera: every
-       * cond_audio row is attended on every step of every block, the clip's
-       * own audio is discarded anyway (`keepAudio` below), and the promo's
-       * clips were rendered with a full song frozen under three references
-       * that never open their mouths — a cost nothing had measured. A brief
-       * can ask for it back with `songConditioning: "always"`; the A/B that
-       * decides the default has an arm for exactly that. */
+       * path it travels where the brief's `songConditioning` is "always" or
+       * the board sings (lipSync). NEW projects start on "always" since
+       * 2026-09-24 (store.js blankProject): the REWIND A/B put the song under
+       * every reference shot and the sung line followed the words (DIRECTING.md
+       * §2). An older project keeps what it stored (no value reads as "auto").
+       * The song's own render-time cost was never measured alone; the clip's
+       * own audio is discarded either way (`keepAudio` below). */
       audioTrack: (doc.song?.file && songConditioned)
         ? { name: await stageSongForComfy(doc.song.file), start: seg.startSec }
         : undefined,
       keepAudio: false,
+      /* Who is behind each <Picture n>, and the board still the clip may open
+       * on — see castContext above. */
+      safetyContext: [
+        ...castContext(doc, board ? boardCast(board) : (doc.characters || []).map((c) => c.name)),
+        ...(typeof board?.boardPrompt === "string" && board.boardPrompt.trim() ? [board.boardPrompt] : []),
+      ],
+      /* ...and what those pictures were drawn as, whatever their words say now. */
+      safetyFlags: castFlags(doc, board ? boardCast(board) : (doc.characters || []).map((c) => c.name), { board }),
     },
   });
   const clipAt = Date.now();
@@ -853,104 +1011,158 @@ export async function generateClip(deps, slug, { segmentId, seed, loop: wantLoop
    * artefact exists on disk and the project says the scene was never rendered.
    *
    * Two hours, because the ceiling should be "something is genuinely wrong",
-   * not "this render is slower than the ones I happened to measure". */
-  const { clip } = await awaitArt(art, file, ["clip"], 120 * 60e3);
-  const clipMs = Date.now() - clipAt;
+   * not "this render is slower than the ones I happened to measure".
+   *
+   * ⚠ AND TWO HOURS WAS STILL A DEADLINE ON THE RECORD, NOT ON THE RENDER. The
+   * same loss one size up: a card that spills into shared memory, or a clip
+   * queued behind other renders (this clock starts at the REQUEST), passed two
+   * hours, the wait gave up, and the scene was recorded as never rendered while
+   * its file landed anyway. So the take is filed by ONE promise, whenever the
+   * clip lands, with a day as the ceiling that means "something is genuinely
+   * wrong"; the CALLER still waits two hours for it. Past that it is told the
+   * scene is still rendering and will be filed when it lands, and it is, by
+   * the same code, with the same evidence. Only a restart of the app before it
+   * lands loses it: the listener lives in this process. */
+  let waitedOut = false;
+  const filed = (async () => {
+    const { clip, seconds: ranSeconds, meta: clipMade } = await awaitArt(art, file, ["clip"], CLIP_LATE_CEILING_MS);
+    const clipMs = Date.now() - clipAt;
+    /* `clipMs` runs from the request to the finish, so it includes every job
+     * queued ahead of this one. The art queue's own clock (the "clip" event's
+     * `seconds`, from when this job started running) is the render alone — the
+     * number a lender's minutes a day are charged in (collab/lending.js). */
+    const runMs = typeof ranSeconds === "number" && Number.isFinite(ranSeconds) ? Math.round(ranSeconds * 1000) : null;
+    const clipSafety = clipMade?.safety && typeof clipMade.safety === "object"
+      ? { minor: clipMade.safety.minor === true, sexual: clipMade.safety.sexual === true } : null;
 
-  return updateProject(slug, (doc2) => {
-    const seg2 = doc2.segments.find((s) => s.id === seg.id);
-    let row = doc2.clips.find((c) => c.segmentId === seg.id);
-    if (!row) {
-      row = { id: `c_${seg.id}`, segmentId: seg.id, clipIndex: seg.index,
-              boardId: board?.id ?? null, mode: "generate", takes: [] };
-      doc2.clips.push(row);
-    }
-    row.takes = row.takes || [];
-    // The engine rides ON the take: once takes can be switched (pick_take
-    // target "clip"), "which engine made the one that is playing" must survive
-    // the switch — the row-level field alone forgets it.
-    row.takes.push({ clip, seed: usedSeed, at: Date.now(), ms: clipMs,
-                     engine,
-                     /* WHICH picture this take opened on, recorded for the same
-                      * reason the seed and the engine are: without it, "why does
-                      * scene 4 hold its face and scene 9 not" has no answer on
-                      * disk. null is a real answer — it means text only. */
-                     openedOn: boardFrame ? board.imageFile : null,
-                     /* ⚠ THE EVIDENCE, PER TAKE — and this is the whole reason
-                      * the take strip is worth keeping.
-                      *
-                      * `row.prompt` below has existed for a while and is
-                      * OVERWRITTEN by the next render, so "keep the old take"
-                      * kept the video and threw away the reason for it: switch
-                      * back to take 2 and the project shows you take 5's
-                      * prompt, which is worse than showing nothing because it
-                      * looks like an answer.
-                      *
-                      * `refs` is the half that was never recorded anywhere. A
-                      * board naming three people and a render receiving one is
-                      * the failure DIRECTING.md keeps describing, and until now
-                      * the fact was computed, used, and discarded inside this
-                      * function. `refsMissing` is the same fact from the other
-                      * side — the names that reached this render as nothing. */
-                     prompt,
-                     promptSource: plan.promptSource,
-                     refs: plan.refs.map((r) => ({ name: r.name, kind: r.kind, file: r.file })),
-                     /* ⚠ RESOLVED IS NOT THE SAME AS SENT, AND THE TAKE HAS TO
-                      * SAY WHICH. `refs` above is what RESOLVED; the pictures
-                      * are attached as `refImages: useRefs ? refImages :
-                      * undefined`. On the 11 ltx projects in this library
-                      * useRefs is always false, so every one of those takes
-                      * recorded a list of sheets it was never handed — and the
-                      * map drew each of them as a solid, carried edge from the
-                      * cast row into the clip. One boolean is the difference
-                      * between "this face is in that clip" and "this face was
-                      * named at it over no attachment". */
-                     refsSent: plan.refsSent,
-                     refsMissing: plan.refsMissing.map((r) => ({ name: r.name, why: r.why })) });
-    row.clipFile = clip;           // the newest take plays until someone picks
-    row.status = "done";
-    /* A render answers every reason the clip was stale. Leaving the list behind
-     * would keep a repaired shot flagged forever. */
-    delete row.staleWhy;
-    /* AND THE SECOND HALF OF THE SAME SENTENCE. `staleRefs` lives on the BOARD,
-     * not the clip, so deleting staleWhy left "Drawn before its references
-     * changed" on the map beside a clip that had just re-rendered on the
-     * redrawn picture. This is the moment the map is read, so this is where the
-     * answer has to be current — and it clears only what it can prove, which is
-     * a board whose adopted picture really is newer than its references. */
-    refreshBoardStale(doc2.boards?.find((x) => x.id === board?.id) ?? null);
-    row.prompt = prompt;
-    row.engine = engine;
-    row.openedOn = boardFrame ? board.imageFile : null;
-    /* How many pictures actually steered this clip. 1 is the weak path, 2+ is
-     * the guided one — and knowing which is the difference between "the face
-     * drifted" and "the face drifted AND nothing was pinning it". */
-    row.guidedBy = keyframes ? keyframes.length : (boardFrame ? 1 : 0);
-    /* A looped single beat is pinned at BOTH ends by one picture — guided, but
-     * from one source. Recorded distinctly so "why does this one breathe rather
-     * than travel" has an answer that is not guesswork. */
-    row.guideMode = keyframes ? "beats" : loop ? "loop" : boardFrame ? "open-only" : "none";
-    row.durationSeconds = seg2?.durationSec ?? null;
-    /* ⚠ THE SILENT DROP GETS SAID OUT LOUD, at the only moment anybody is
-     * looking. A reference that resolved to nothing is not an error — you can
-     * legitimately render before every sheet exists — but it is the single
-     * most expensive thing to discover afterwards, and the run log is the one
-     * place both surfaces already read. A hand-edited prompt is flagged for
-     * the same reason: a scene that no longer follows its board should not
-     * look identical to one that does. */
-    const gone = plan.refsMissing.map((r) => r.name);
-    noteRun(doc2, { tool: "generate_clip",
-      /* ⚠ THE ENGINE AS A FIELD, not only as a word inside the sentence. The
-       * measured estimate is a median of the gaps between these timestamps, and
-       * a gap is a number about the engine that rendered the clip on its later
-       * side — regen.js parses it out of the outcome for every document written
-       * before this line, which is all of them. */
-      engine,
-      outcome: `scene ${seg.index + 1} → ${clip} (seed ${usedSeed}, ${engine}`
-        + `, ${plan.refs.length} ref${plan.refs.length === 1 ? "" : "s"})`
-        + (plan.promptSource !== "computed" ? " · hand-edited prompt" : "")
-        + (gone.length ? ` · ⚠ ${gone.join(", ")} had no sheet and reached the render as nothing` : "") });
-    return doc2;
+    return updateProject(slug, (doc2) => {
+      const seg2 = doc2.segments.find((s) => s.id === seg.id);
+      let row = doc2.clips.find((c) => c.segmentId === seg.id);
+      if (!row) {
+        row = { id: `c_${seg.id}`, segmentId: seg.id, clipIndex: seg.index,
+                boardId: board?.id ?? null, mode: "generate", takes: [] };
+        doc2.clips.push(row);
+      }
+      row.takes = row.takes || [];
+      // The engine rides ON the take: once takes can be switched (pick_take
+      // target "clip"), "which engine made the one that is playing" must survive
+      // the switch — the row-level field alone forgets it.
+      row.takes.push({ clip, seed: usedSeed, at: Date.now(), ms: clipMs, runMs,
+                       engine,
+                       ...(clipSafety ? { safety: clipSafety } : {}),
+                       /* WHICH picture this take opened on, recorded for the same
+                        * reason the seed and the engine are: without it, "why does
+                        * scene 4 hold its face and scene 9 not" has no answer on
+                        * disk. null is a real answer — it means text only. */
+                       openedOn: boardFrame ? board.imageFile : null,
+                       /* ⚠ THE EVIDENCE, PER TAKE — and this is the whole reason
+                        * the take strip is worth keeping.
+                        *
+                        * `row.prompt` below has existed for a while and is
+                        * OVERWRITTEN by the next render, so "keep the old take"
+                        * kept the video and threw away the reason for it: switch
+                        * back to take 2 and the project shows you take 5's
+                        * prompt, which is worse than showing nothing because it
+                        * looks like an answer.
+                        *
+                        * `refs` is the half that was never recorded anywhere. A
+                        * board naming three people and a render receiving one is
+                        * the failure DIRECTING.md keeps describing, and until now
+                        * the fact was computed, used, and discarded inside this
+                        * function. `refsMissing` is the same fact from the other
+                        * side — the names that reached this render as nothing. */
+                       prompt,
+                       promptSource: plan.promptSource,
+                       refs: plan.refs.map((r) => ({ name: r.name, kind: r.kind, file: r.file })),
+                       /* ⚠ RESOLVED IS NOT THE SAME AS SENT, AND THE TAKE HAS TO
+                        * SAY WHICH. `refs` above is what RESOLVED; the pictures
+                        * are attached as `refImages: useRefs ? refImages :
+                        * undefined`. On the 11 ltx projects in this library
+                        * useRefs is always false, so every one of those takes
+                        * recorded a list of sheets it was never handed — and the
+                        * map drew each of them as a solid, carried edge from the
+                        * cast row into the clip. One boolean is the difference
+                        * between "this face is in that clip" and "this face was
+                        * named at it over no attachment". */
+                       refsSent: plan.refsSent,
+                       refsMissing: plan.refsMissing.map((r) => ({ name: r.name, why: r.why })) });
+      row.clipFile = clip;           // the newest take plays until someone picks
+      row.status = "done";
+      /* A render answers every reason the clip was stale. Leaving the list behind
+       * would keep a repaired shot flagged forever. */
+      delete row.staleWhy;
+      /* AND THE SECOND HALF OF THE SAME SENTENCE. `staleRefs` lives on the BOARD,
+       * not the clip, so deleting staleWhy left "Drawn before its references
+       * changed" on the map beside a clip that had just re-rendered on the
+       * redrawn picture. This is the moment the map is read, so this is where the
+       * answer has to be current — and it clears only what it can prove, which is
+       * a board whose adopted picture really is newer than its references. */
+      refreshBoardStale(doc2.boards?.find((x) => x.id === board?.id) ?? null);
+      row.prompt = prompt;
+      row.engine = engine;
+      row.openedOn = boardFrame ? board.imageFile : null;
+      /* How many pictures actually steered this clip. 1 is the weak path, 2+ is
+       * the guided one — and knowing which is the difference between "the face
+       * drifted" and "the face drifted AND nothing was pinning it". */
+      row.guidedBy = keyframes ? keyframes.length : (boardFrame ? 1 : 0);
+      /* A looped single beat is pinned at BOTH ends by one picture — guided, but
+       * from one source. Recorded distinctly so "why does this one breathe rather
+       * than travel" has an answer that is not guesswork. */
+      row.guideMode = keyframes ? "beats" : loop ? "loop" : boardFrame ? "open-only" : "none";
+      row.durationSeconds = seg2?.durationSec ?? null;
+      /* ⚠ THE SILENT DROP GETS SAID OUT LOUD, at the only moment anybody is
+       * looking. A reference that resolved to nothing is not an error — you can
+       * legitimately render before every sheet exists — but it is the single
+       * most expensive thing to discover afterwards, and the run log is the one
+       * place both surfaces already read. A hand-edited prompt is flagged for
+       * the same reason: a scene that no longer follows its board should not
+       * look identical to one that does. */
+      const gone = plan.refsMissing.map((r) => r.name);
+      noteRun(doc2, { tool: "generate_clip",
+        /* ⚠ THE ENGINE AS A FIELD, not only as a word inside the sentence. The
+         * measured estimate is a median of the gaps between these timestamps, and
+         * a gap is a number about the engine that rendered the clip on its later
+         * side — regen.js parses it out of the outcome for every document written
+         * before this line, which is all of them. */
+        engine,
+        outcome: `scene ${seg.index + 1} → ${clip} (seed ${usedSeed}, ${engine}`
+          + `, ${plan.refs.length} ref${plan.refs.length === 1 ? "" : "s"})`
+          + (plan.promptSource !== "computed" ? " · hand-edited prompt" : "")
+          + (gone.length ? ` · ⚠ ${gone.join(", ")} had no sheet and reached the render as nothing` : "")
+          + (waitedOut ? ` · landed after the ${CLIP_WAIT_HOURS}-hour wait and was filed when it did` : "") });
+      return doc2;
+    });
+  })();
+  /* A late render that then fails, or is stopped, is said on the project too:
+   * the caller that was told "still rendering" has gone. Before the deadline
+   * the caller gets the error itself, so nothing is written twice. */
+  filed.catch(async (err) => {
+    if (!waitedOut) return;
+    console.error(`  [mv] ${slug} scene ${seg.index + 1}: the clip still out past the ${CLIP_WAIT_HOURS}-hour wait was not filed: ${err?.message || err}`);
+    await updateProject(slug, (d) => {
+      /* Its own tool name, so the Activity headline says it was lost rather
+       * than "still waiting" over a failure (web/runwords.js). */
+      noteRun(d, { tool: "clip_late_lost",
+        outcome: `scene ${seg.index + 1}: the render still out past the ${CLIP_WAIT_HOURS}-hour wait was not filed (${String(err?.message || err).slice(0, 160)})` });
+      return d;
+    }).catch(() => {});
+  });
+  /* `deps.clipWaitMs` is for a test, which cannot wait two hours. */
+  const waitMs = Number(deps.clipWaitMs) > 0 ? Number(deps.clipWaitMs) : CLIP_WAIT_MS;
+  return withinWait(filed, waitMs, async () => {
+    waitedOut = true;
+    /* The clock started at the REQUEST, so past it the clip may be rendering
+     * or still waiting its turn (ComfyUI down, other renders ahead). Say
+     * which, from the queue's own answer. */
+    const where = art.current?.file === file ? "still rendering" : "still waiting in the queue";
+    await updateProject(slug, (d) => {
+      noteRun(d, { tool: "clip_late",
+        outcome: `scene ${seg.index + 1} is ${where} after ${CLIP_WAIT_HOURS} hours; it is filed onto the scene when it lands` });
+      return d;
+    }).catch(() => {});
+    return new Error(`Scene ${seg.index + 1} is ${where} after ${CLIP_WAIT_HOURS} hours. It has not been `
+      + "dropped: Studio files it onto the scene when it lands, as long as the app keeps running "
+      + "until then. The Activity list says when it does.");
   });
 }
 
@@ -967,13 +1179,13 @@ export async function generateClip(deps, slug, { segmentId, seed, loop: wantLoop
  * asking for 1080 silently returns 1024. So the 8 rows between 1080 and 1088 are
  * GENERATED CONTENT, not padding, and an export that crops to 1080 is discarding
  * real picture. Export at the rendered size.
+ *
+ * The sizes themselves are server/mv/sizes.js's one list now, which reads the
+ * card tiers (Full size, Smaller size, Preview) out of server/h3tier.js beside the
+ * two older values (budget, high). This stays the generator's own door to it.
  */
 export function renderSize(doc) {
-  const budget = doc.brief?.qualityMode === "budget";
-  const hi = doc.brief?.qualityMode === "high";
-  return (doc.brief?.aspectRatio === "9:16")
-    ? (budget ? [480, 864] : hi ? [1088, 1920] : [768, 1344])
-    : (budget ? [864, 480] : hi ? [1920, 1088] : [1344, 768]);
+  return renderSizeOf(doc?.brief);
 }
 
 /* ───────────────────────────────────────────── the timeline handoff */

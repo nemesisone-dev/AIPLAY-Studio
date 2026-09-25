@@ -82,7 +82,7 @@ export async function createRemoteClient({ dataDir, outputDir, getToken, setToke
     return json(`/v1/assets?name=${encodeURIComponent(name)}`, { method: "POST", body, duplex: "half",
       signal: AbortSignal.timeout(300000), headers: { "Content-Type": "application/octet-stream" } });
   }
-  async function submit({ graph, bindings = [], label = "Remote render", actor = "user" }) {
+  async function submit({ graph, bindings = [], label = "Remote render", actor = "system" }) {
     if (connecting) throw new Error("Connection is changing; try again.");
     validateGraph(graph);
     await verify();

@@ -6,16 +6,14 @@ This is a source-level preview, not a signed Windows installer. RunPod is availa
 
 ## Start on Windows
 
-Install Node.js 22 or newer from [Node.js](https://nodejs.org/) if it is not already available. From this checkout:
+In the launcher, press **Launch RunPod GPU**. It starts the full local interface without a local ComfyUI; the same mode from a terminal is:
 
 ```powershell
 npm ci --omit=dev
 npm run start:remote
 ```
 
-Open `http://127.0.0.1:4173/`. This entry point keeps the full local UI and skips automatic local ComfyUI startup. With `AIPLAY_OPEN=1`, it opens the normal studio once the server is listening.
-
-On Images or Video, choose **RunPod GPU** under **Render on**. The Images path renders standard ComfyUI checkpoints installed on the Pod. The Video path uses the installed LTX 2.5 distilled bundle for text-to-video. The **RunPod** navigation link opens the advanced graph panel. Native GGUF music, image references, video frames/references/soundtracks, mesh tools, compositor processing and final timeline export have not been connected to the integrated presets. Local editing/export tools can still have their own CPU, media-tool or Python requirements.
+In this mode the Images and Video screens render on the Pod: each shows a RunPod box (model on the Pod, remote size, **Connection…**) above the prompt. Full Studio, Music only and Comfy API show none of it, and /api/runpod answers only in this mode, because a Pod bills by the hour. The Images path renders standard ComfyUI checkpoints installed on the Pod. The Video path uses the installed LTX 2.5 distilled bundle for text-to-video. **Advanced workflow panel** in the connection window opens the graph panel (`/runpod.html`). Native GGUF music, image references, video frames/references/soundtracks, mesh tools, compositor processing and final timeline export have not been connected to the integrated presets. Local editing/export tools can still have their own CPU, media-tool or Python requirements.
 
 ## Prepare one dedicated Pod
 
@@ -23,8 +21,8 @@ Choose a ComfyUI environment and GPU for one specific first workflow. A model-sp
 
 1. Keep ComfyUI, model weights, its `input`/`output` folders, and worker state on persistent storage. A network volume can outlive the Pod, but has separate storage charges and placement constraints. See [RunPod storage options](https://docs.runpod.io/pods/storage/types) and [network volumes](https://docs.runpod.io/storage/network-volumes).
 2. Install the selected models/custom nodes and prove a small workflow directly in that ComfyUI installation first. Start with a standard SD/SDXL checkpoint image to test transport cheaply. For video/music, install the exact files and nodes referenced by the chosen graph. The remote model list and graph validation report missing names; they do not install models or prove GPU memory is sufficient.
-3. Keep ComfyUI on the Pod's loopback interface, normally `127.0.0.1:8188`. Use the template's Python environment, for example `python main.py --listen 127.0.0.1 --port 8188`. Configure the template to avoid launching a second ComfyUI instance. The worker input/output directories must match ComfyUI's actual directories. RunPod's current ComfyUI template uses `/workspace/runpod-slim/ComfyUI`; check the live Pod instead of assuming `/workspace/ComfyUI`.
-4. Install Node.js 22 or newer in the Pod. Copy this checkout there, or clone this fork's `feature/runpod-rendering` branch once it is published. The gateway itself uses only Node built-ins: no `npm install` is required on the Pod. Required source files are `worker/runpod-worker.js`, `server/engine/remote-common.js`, and a root `package.json` with `"type": "module"`.
+3. Keep ComfyUI on the Pod's loopback interface, normally `127.0.0.1:8188`. Use the template's Python environment, for example `python main.py --listen 127.0.0.1 --port 8188`. Configure the template so exactly one ComfyUI runs on the Pod. The worker input/output directories must match ComfyUI's actual directories. RunPod's current ComfyUI template uses `/workspace/runpod-slim/ComfyUI`; check the live Pod instead of assuming `/workspace/ComfyUI`.
+4. Install Node.js 22 or newer in the Pod. Copy this checkout there, or clone this repository's `main` branch (the bootstrap below does). The gateway itself uses only Node built-ins: no `npm install` is required on the Pod. Required source files are `worker/runpod-worker.js`, `server/engine/remote-common.js`, and a root `package.json` with `"type": "module"`.
 5. Expose only worker HTTP port **8787** for rendering. Keep raw ComfyUI port 8188 private. RunPod provides an HTTPS proxy such as `https://POD_ID-8787.proxy.runpod.net`; use the actual URL from the Pod's Connect panel. Public proxy services require their own authentication, and the proxy has a 100-second response timeout. The worker returns job IDs quickly and is polled separately. [RunPod port documentation](https://docs.runpod.io/pods/configuration/expose-ports).
 
 On the Pod, generate a worker secret once and save it outside the source checkout:

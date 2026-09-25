@@ -210,11 +210,12 @@ function read() {
 }
 
 /** Never blocks a request: returns the last reading and refreshes behind it. */
+let pending = null;
 export function gpuStatus() {
   const now = Date.now();
   if (!inflight && now - lastAt > MIN_GAP_MS) {
     inflight = true;
-    read().then((r) => {
+    pending = read().then((r) => {
       if (r) cached = r;
       lastAt = Date.now();
       inflight = false;
@@ -222,6 +223,26 @@ export function gpuStatus() {
   }
   return cached;
 }
+
+/**
+ * THE FIRST READING, WAITED FOR. gpuStatus() answers null until nvidia-smi
+ * (or the AMD read) has come back once, about 2.5 s after start, and a
+ * decision taken in that window treats every card as no card: the defaults
+ * (server/fit.js defaultFor) picked native GGUF on NVIDIA and the int8 YuE2
+ * build on AMD. Resolves with the reading, or null for a machine with no card
+ * once the read has finished; never waits longer than `maxMs`. Instant after
+ * the first read.
+ */
+export function gpuFirstReading(maxMs = 8000) {
+  gpuStatus();
+  if (lastAt) return Promise.resolve(cached);
+  return Promise.race([
+    (pending || Promise.resolve()).then(() => cached),
+    new Promise((resolve) => setTimeout(() => resolve(cached), maxMs).unref?.()),
+  ]);
+}
+/** Whether the first reading has finished (a null gpuStatus() then means no card). */
+export const gpuReadOnce = () => lastAt > 0;
 
 /**
  * System memory, alongside the card.
@@ -244,5 +265,41 @@ export function ramStatus() {
     usedMb: totalMb - freeMb,
     note: "System RAM. The low-VRAM tiers stream model weights from here, so "
         + "headroom matters as much as the card.",
+  };
+}
+
+/* ── the processor ────────────────────────────────────────────────────────
+ *
+ * The rail shows VRAM and system RAM because both explain "why is this slow".
+ * The CPU is the third answer, and on the CPU builds (audio.cpp without a
+ * usable card, ffmpeg, Demucs) it is the ONLY one.
+ *
+ * `os.loadavg()` is always 0 on Windows, so the figure comes from the busy /
+ * idle split of `os.cpus()` DIFFERENCED between calls: the absolute numbers are
+ * totals since boot, which say nothing about now. The first call has nothing to
+ * difference against and reports null rather than a made-up number. No child
+ * process: this is one syscall, unlike nvidia-smi.
+ */
+let cpuMark = null;
+export function cpuStatus() {
+  const cores = os.cpus() || [];
+  const sum = cores.reduce((acc, c) => {
+    for (const [k, v] of Object.entries(c.times || {})) acc[k] = (acc[k] || 0) + v;
+    return acc;
+  }, {});
+  const total = Object.values(sum).reduce((a, b) => a + b, 0);
+  const idle = sum.idle || 0;
+  const was = cpuMark;
+  cpuMark = { total, idle };
+  const dTotal = was ? total - was.total : 0;
+  const dIdle = was ? idle - was.idle : 0;
+  return {
+    cores: cores.length,
+    model: cores[0]?.model?.trim() || null,
+    /* Between two polls with no time in between there is nothing to measure;
+     * null means "not yet", which the bar draws as empty rather than as 0%. */
+    percent: dTotal > 0 ? Math.min(100, Math.max(0, Math.round((1 - dIdle / dTotal) * 100))) : null,
+    note: `${cores.length} logical core${cores.length === 1 ? "" : "s"}. Busy since the last reading, `
+        + "not since boot. The CPU builds (audio.cpp with no usable card, ffmpeg, stem splitting) live here.",
   };
 }

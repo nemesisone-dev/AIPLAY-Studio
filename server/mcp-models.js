@@ -68,13 +68,14 @@ export function modelTools(api) {
     },
     {
       name: "models_folder",
-      description: "Scan a local models folder, use it for future downloads, or stop using a previous folder. scan reads only. use saves the preference and keeps models from the previous folder available after restart; force:true permits an empty folder and create:true also creates a missing folder under an existing parent. drop stops searching a previous folder after restart, without deleting its files. No model move, download or restart occurs in this tool.",
-      inputSchema: { type: "object", required: ["action", "dir"], properties: { action: { type: "string", enum: ["scan", "use", "drop"] }, dir: { type: "string", minLength: 1 }, force: { type: "boolean" }, create: { type: "boolean", description: "With use and force:true, create a missing folder whose parent exists." } }, additionalProperties: false },
+      description: "Scan a local models folder, use it for future downloads, or stop using a previous folder. scan reads only. use saves the preference and keeps models from the previous folder available after restart; force:true permits an empty folder and create:true also creates a missing folder under an existing parent. drop stops searching a previous folder after restart, without deleting its files. also adds a second folder of models that already exist, to check and load from after a restart; downloads still go to the models folder, and the main folder itself is refused. No model move, download or restart occurs in this tool.",
+      inputSchema: { type: "object", required: ["action", "dir"], properties: { action: { type: "string", enum: ["scan", "use", "also", "drop"] }, dir: { type: "string", minLength: 1 }, force: { type: "boolean" }, create: { type: "boolean", description: "With use and force:true, create a missing folder whose parent exists." } }, additionalProperties: false },
       async run(a) {
         if (typeof a.dir !== "string" || !a.dir.trim()) throw new Error("Give a models folder.");
         if (a.action === "scan") return await api("POST", "/api/models", { action: "scanFolder", dir: a.dir });
         if (a.action === "drop") return await api("POST", "/api/models", { action: "dropAlso", dir: a.dir });
-        if (a.action !== "use") throw new Error("Choose scan, use or drop.");
+        if (a.action === "also") return await api("POST", "/api/models", { action: "addAlso", dir: a.dir });
+        if (a.action !== "use") throw new Error("Choose scan, use, also or drop.");
         if (a.create && !a.force) throw new Error("Creating a new models folder requires force:true as well as create:true.");
         return await api("POST", "/api/models", { action: "setModelsDir", dir: a.dir, force: a.force === true, ...(a.create === true ? { create: true } : {}) });
       },
@@ -103,15 +104,23 @@ export function modelTools(api) {
         + "Read this BEFORE recommending any model, any engine or any download. The catalogue holds "
         + "capabilities ranging from a 22 MB frame interpolator to a 43 GB video engine, and "
         + "the difference between them is entirely the machine you are standing on.\n\n"
-        + "EVERY CAPABILITY CARRIES A `fit`, one of four:\n"
+        + "EVERY CAPABILITY CARRIES A `fit`, one of five:\n"
         + "  • fits      at or above the recommended VRAM and RAM.\n"
         + "  • streams   above the minimum, under the recommendation. It RUNS — Studio's low-VRAM "
         + "tiers stream weights from system RAM — and it is slower. Not a refusal.\n"
-        + "  • wont-run  below the publisher's stated floor.\n"
-        + "  • unknown   the required hardware information could not be read. Windows AMD and Intel "
-        + "cards may be detected too; unreadable usage is not zero usage. This is NOT 'no'. Do not turn it into one.\n\n"
+        + "  • smaller   it RUNS at a smaller picture size and clip length MEASURED to fit a card this "
+        + "size (the H3 family); `why` names the size. The Video screen starts there, and make_clip "
+        + "uses it when no width and height are given (its reply says so). Not a refusal.\n"
+        + "  • wont-run  below the stated floor (the publisher's, or for the H3 family the smallest card "
+        + "and the RAM Studio offers it on).\n"
+        + "  • unknown   the required hardware information could not be read, OR nobody has run it on a "
+        + "machine like this (H3's experimental 6 GB preview, H3 on an AMD card). Windows AMD and Intel "
+        + "cards may be detected too; unreadable usage is not zero usage. This is NOT 'no'. Do not turn it into one.\n"
+        + "A fit with `recommendable: false` is offered and never recommended (H3 under 32 GB of RAM, on "
+        + "AMD, or as the preview); `why` says which, and `warning` carries the RAM or AMD sentence.\n\n"
         + "`recommended` names one pick per slot with a reason: the required music engine, ONE video "
-        + "engine, ONE image model, and the fit of the pip-installed extras. The video pick is always "
+        + "engine and, beside it, the file that turns on its Fast setting (slot `video-fast`), ONE "
+        + "image model, and the fit of the pip-installed extras. The video pick is always "
         + "one Studio can actually download — LTX 2.5 is faster and better and its repository is "
         + "access-gated, so it is reported under `notes` with the publisher's hand-fetch steps and is "
         + "never recommended. The image pick is chosen by LICENCE among those that fit, not by quality: "
@@ -141,6 +150,11 @@ export function modelTools(api) {
           label: c.label,
           fit: c.fit?.state,
           why: c.fit?.why,
+          /* The line the Models screen shows under the badge (H3's RAM and AMD
+           * sentences), and H3's size for this card; null elsewhere. */
+          warning: c.fit?.warning || null,
+          h3Size: c.fit?.h3 || null,
+          recommendable: c.fit?.recommendable ?? null,
           ready: c.ready,
           gigabytes: Number(((c.totalBytes || 0) / 1e9).toFixed(1)),
           licence: c.licence,
@@ -151,7 +165,11 @@ export function modelTools(api) {
           territoryExcluded: c.region?.excluded || null,
           downloadable: !c.gated,
           gatedHow: c.gated?.how || null,
-          needsPackage: c.packageReady === false ? c.needsPackage : null,
+          /* The module(s) actually missing: timed lyrics needs stable_whisper as
+           * well as faster_whisper, and naming the one that imports sent an
+           * agent to reinstall it. */
+          needsPackage: c.packageReady === false
+            ? (c.packageMissing?.length ? c.packageMissing.join(" and ") : c.needsPackage) : null,
           install: c.packageReady === false ? c.packageInstall : null,
           /* WHAT A POLL NEEDS TO SEE. `ready` alone cannot tell "still
            * fetching" from "failed ten seconds ago", and the route already

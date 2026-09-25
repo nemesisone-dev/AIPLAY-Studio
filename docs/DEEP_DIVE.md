@@ -42,20 +42,35 @@ was measured on a real machine, and the scripts that measured them ship in
 ComfyUI, it asks **What should Studio run on?** — **NVIDIA**, **AMD**, **Intel Arc**
 or **CPU only** (the card it detected is marked). Pick one and Studio installs
 its own ComfyUI into `%USERPROFILE%\.aiplay-studio\engine` — nothing else on the
-PC is touched, and an existing ComfyUI is never modified:
+PC is touched (uv's Python is installed with no ~/.local/bin copy and no
+registry entry), and an existing ComfyUI is never modified:
 
-1. a standalone Python (via [uv](https://github.com/astral-sh/uv), so no system Python is needed);
-2. the latest ComfyUI release;
+1. a standalone Python (via [uv](https://github.com/astral-sh/uv), pinned and
+   checked against its published SHA-256, kept in `.aiplay-studio\tools\uv`;
+   so no system Python is needed);
+2. ComfyUI **v0.36.0**, the version this Studio is tested with
+   (`server/setup/pins.js`); a newer upstream release is not taken until that
+   pin changes;
 3. PyTorch for your choice, using **the exact command in that ComfyUI's own
    README** — CUDA 13.0 for NVIDIA (CUDA 12.6 on Python 3.12 for GTX 10-series and
    older), AMD's ROCm packages on Windows with only your card's kernels where the
    README's table names it (an RX 9060 XT gets `device-gfx1200`), ROCm 7.2 on
    Linux, XPU for Intel Arc, the CPU build otherwise;
-4. ComfyUI's requirements, then a check that PyTorch can see the card, and a
-   test start of ComfyUI (`--quick-test-for-ci`).
+4. ComfyUI's requirements, then Studio's own packages (OpenCV, librosa,
+   soundfile and SciPy, only those that do not import, with every package
+   already installed pinned at its version so none of them moves), then a
+   check that PyTorch can see the card, and a test start of ComfyUI
+   (`--quick-test-for-ci`).
+   If only Studio's packages fail, the engine is kept and the launcher's
+   "Studio's own packages" row offers **Try again**. From inside a running
+   Studio the same repair only adds what is missing; a package that is
+   installed but does not import is put back at its version by the
+   launcher's Try again, with Studio stopped, since the running engine holds
+   its files open.
 
-**If any step fails**, the partial install and its download cache are deleted,
-and the launcher asks again showing the exact error (for example pip's own
+**If any step fails**, the half-built engine folder is deleted and its download
+cache is kept (so the next try does not fetch the same gigabytes again), and
+the launcher asks again showing the exact error (for example pip's own
 message). A folder the installer did not create is never deleted or reused.
 Measured on a clean profile: CPU install, 5 min 52 s, 2.1 GB, Studio then started
 on it. `node scripts/install-engine.mjs --backend amd --gpu-name "AMD Radeon RX
@@ -203,9 +218,10 @@ Three network exceptions exist and all three
 are named where they live: model downloads go straight to the publisher (Studio
 hosts no weights and mirrors none; the native runtime is an attributed AIPlay
 package on GitHub), the Community screen is a window onto a
-website and is the only screen that wants a connection, and **API mode** is an
-opt-in switch for machines that cannot run the music model — off by default, and
-it cannot switch itself on.
+website and is the only screen that wants a connection, and **the hosted engine**
+(Settings → No strong graphics card?) is an opt-in switch for machines that
+cannot run the music model — off by default, it cannot switch itself on, and
+every paid song asks first.
 
 **Every render is written down before it is asked for.** On 2026-09-02 the output
 folder held 426 files written since the previous noon, and **424 of them had no
@@ -394,6 +410,12 @@ the Models screen, and found no button. H3 is also the one trained with a first 
 last frame, which is what a seamless loop wants. If you go and fetch LTX by hand,
 Studio renders on it — the engine resolves to weights that are present, preferring
 your setting.
+
+**Keeping a character.** On the Video screen, *Keep my character* takes a saved
+character or 1–3 pictures of them and runs the reference build at its own step
+count; on MiniMax H3, with pictures of the singer, *Song under the clip* is
+lip-sync (on LTX mouths do not follow it). Measured 2026-09-24 (DIRECTING.md §2):
+without pictures a person changes from clip to clip.
 
 The full suite also offers a separate **Python YuE2** integration. Its editable
 scores, memory figures and duration controls below do **not** describe native
@@ -753,7 +775,14 @@ exactly what a second copy of this app, a stale script with a number baked in, o
 a person following an old note actually does. Two exceptions are named rather
 than hidden: the 3D stack is a deliberate **second door** with its own Python
 that writes the same two ledger events and carries a `door` field saying so, and
-the optional Reactive engine on its own port writes **no** provenance at all.
+the engine's own port is the only one anything renders on.
+
+> That sentence used to end "and the optional Reactive engine on its own port
+> writes **no** provenance at all." Both halves stopped being true on
+> 2026-09-18, when Reactive became a recipe over `server/vfx` and its two
+> diffusion looks moved onto the main engine. There is no second port, and
+> `/api/reactive/run` stamps the actor from the request like every other door —
+> `server/provenance_test.js` fails if it stops.
 
 ---
 
@@ -1040,7 +1069,9 @@ face across a three-minute video. References are dropped in order of
 *prominence* when a scene names more than the engine can take. A cast row can
 also carry a **mesh** and, where the machine allows it, a **rig** — see *A
 picture becomes a 3D model* above; a mesh does not replace the sheet, because
-the clip engine takes pictures.
+the clip engine takes pictures. New projects put the song under every scene
+(Song under the clip: always), so sung shots follow the words, and the lint
+offers a one-click tick where a board names a character it does not carry.
 
 Also here: a **crime board** view of the whole production, **b-roll** scenes fed
 from your own clip library, per-scene **regeneration** that keeps every earlier
@@ -1399,7 +1430,7 @@ and documented there. It opens as its own page rather than a tab, because it own
 a window's worth of chrome and its own transport.
 
 It needs three Python packages Studio can only partly check for you: numpy (which
-it probes), plus SciPy and soundfile (which it cannot) — python -m pip install scipy soundfile, in the same system Python. Fifty `daw_*` MCP tools, and a census
+it probes), plus SciPy and soundfile (which it cannot), installed with the engine's own python, not a system Python: `"<engine python>" -m pip install scipy soundfile` (the path under the launcher's "ComfyUI install" row; an engine Studio installed already has both). Fifty `daw_*` MCP tools, and a census
 fails the build if a DAW route ships without one.
 
 ---
@@ -1459,6 +1490,18 @@ slow app with no explanation is worse than a failure.
 
 ## No GPU? API mode
 
+**Ask a friend first.** Without a strong graphics card, the first answer is a
+friend who has one: on **Collab** you add each other once, press **Ask friend**
+beside a scene (Music video → Video clips) and send them the sealed file it makes;
+they send the finished clip back as a file for you to look at before you keep
+it. It is free, nothing connects to anybody, both of you run Full Studio, and it
+lends video scenes, not songs. Lending is built but not yet tried between two
+PCs ([Collab](COLLAB.md),
+[Ask a friend to render](FRIEND_RENDERING.md)). A paid
+service on your own key is the second answer. Both live on one Settings card,
+**No strong graphics card?**, in that order; `cloud_status` gives an agent the
+same answer.
+
 Studio can drive a **hosted** MiniMax Music 3 instead of a local one, for
 machines that cannot run the model. Same model, someone else's hardware, **your**
 API key — Studio calls the provider directly from your machine, so nothing is
@@ -1469,23 +1512,57 @@ studio timeline, overnight runs.
 
 Two things do change, and Studio says both in the UI rather than in a footnote:
 
-- **It costs money per song.** About $0.36 for three minutes. Overnight runs are
-  the feature most worth having and the one most able to run up a bill
-  unattended, so there is a **hard monthly cap** — default $20 — checked
-  immediately before every call, not just when a batch is queued.
+- **It costs money per song, and every song asks first.** About $0.36 for three
+  minutes. With the hosted engine on, a song is refused until that song's own
+  confirmation says yes: the question names the cost, the key it bills and how
+  much of the month's cap is spent. An overnight run on the hosted engine is
+  asked for once, with the whole night's estimate. There is also a **hard
+  monthly cap** — default $20 — checked immediately before every call, not just
+  when a batch is queued. Nothing ever switches to a paid service on its own.
 - **Audio reference and music input stop working.** Both encode a real recording
   into the model's own latent; hosted endpoints take text and return audio, with
   no latent to hand them. The control is disabled and labelled, not left to fail
   at submit.
 
-Your key is stored with **Windows DPAPI**, tied to your Windows account and that
-machine — a copied `secrets.json` is inert anywhere else. It is write-only across
-Studio's own HTTP boundary: the browser is told a key exists, how it is
-protected, and its last four characters, never the key. On platforms without
-DPAPI it falls back to a `0600` file and says so plainly, because file
-permissions are not encryption.
+Your key is stored with **Windows DPAPI** when DPAPI works, tied to your Windows
+account and that machine — a copied `secrets.json` is inert anywhere else. It is
+write-only across Studio's own HTTP boundary: the browser is told a key exists,
+how it is protected, when it was saved and its last four characters, never the
+key. If DPAPI fails, or on platforms without it, the key is kept as plain text in
+`secrets.json` and the card says so, with where the file is and who can read it,
+because file permissions are not encryption.
 
 Off by default, and it cannot switch itself on.
+
+### Your own key, and only yours
+
+Studio uses a key only if you typed it into Studio: the Hosted engine's key and
+the Comfy API key on the **No strong graphics card?** card (or the Comfy API
+page), and the Agent page's language-model keys. Nothing reads a key from another
+program's settings or from an environment variable — an exported `FAL_KEY`,
+`MINIMAX_API_KEY` or `OPENAI_API_KEY` is never looked at. (`FAL_KEY` is also the
+name Studio's own store files the fal key under; that is a record name, not a
+variable.)
+
+The store is `%USERPROFILE%\.aiplay-studio\secrets.json`, one per Windows
+account, so every Studio folder on the account shares it. A key saved by another
+copy of Studio is still yours, and it is shown rather than silently reused:
+"Using the key …abcd saved on 21 Sep 2026 by another copy of Studio on this
+Windows account", with Replace and Forget beside it.
+
+The `AIPLAY_` variables near the paid path are switches you set yourself, and
+none of them carries a key:
+
+| variable | what it does |
+|---|---|
+| `AIPLAY_CLOUD_ONLY=1` | starts the Comfy API mode (the launcher's **Use Comfy API**, or `npm run start:cloud`) |
+| `AIPLAY_FAL_BASE`, `AIPLAY_MINIMAX_BASE` | where hosted-music requests go, for a local mock or a relay you run; your key goes there too, so point them only at something you control |
+| `AIPLAY_APPDATA` | where settings and `secrets.json` live (tests use it to stay off your real profile) |
+
+The one credential Studio's own code reads from outside itself is Hugging Face's
+login for the gated LTX 2.5 download: `scripts/fetch_ltx25.py`, which you run by
+hand after `hf auth login`, asks `huggingface_hub` for the token that login
+stored. It downloads, it bills nothing, and nothing in the running Studio uses it.
 
 ## Settings that are not up for negotiation
 
@@ -1974,12 +2051,16 @@ door this is Yvann's audio-reactive video-to-video effect on our own engines.
 Everything below has a door (`API.md`), an MCP tool and a control on the page,
 and each was measured on the 16 GB card this is developed on.
 
-**YuE2 takes direction.** Under *Advanced Options*: **key, tempo and meter**
+**YuE2 takes direction.** Under *More Options*: **key, tempo and meter**
 (an open seed score the planner continues — asked for E minor at 92 in 4/4,
 the score came back with exactly that header and the song followed), and the
 **sampler's dials** (temperature, top-p, top-k, repetition penalty, and the
 planner's own temperature). MCP: `make_song` gained `key`, `bpm`, `meter`,
-`temperature`, `top_p`, `plan_temperature`.
+`temperature`, `top_p`, `plan_temperature`. Key, tempo and meter are the
+Python kit's: the native GGUF runtime and the ComfyUI nodes cannot seed an open
+score, so on those builds the rows are not shown (they used to be, and did
+nothing). The dials reach all three builds; on GGUF as the runtime's own
+`semantic_temperature`, `semantic_top_p` and `abc_temperature`.
 
 **Extend and replace, on both engines.** A YuE2 take extends by replaying its
 own performance behind the words (365 s of wall for 33 s of new song, the
@@ -1991,8 +2072,9 @@ both seams crossfaded. MCP: `extend_song`, `replace_section`.
 **Hum it, or cover it.** A hummed line goes through a pitch tracker (no model)
 and becomes the two-voice score YuE2 sings verbatim; a whole song goes through
 SheetSage2 (a 1.4 GB row on the Models screen) and comes back as a score to
-re-sing under a new style line — a cover with the melody kept. *Voice only*
-transcribes the separated vocal stem instead of the mix, which on the test song
+re-sing under a new style line — a cover with the melody kept. *Read the tune
+from: its separated voice* transcribes the separated vocal stem instead of the
+mix (it starts off until stem separation is set up on the PC), which on the test song
 recovered the right key and tempo where the mix had not. MCP: `hum_to_score`,
 `song_to_score` (with `stem`).
 
@@ -2023,6 +2105,9 @@ company-wide revenue. No references (FLUX.2's trick) and no negative prompt
 **"fast" means 3 steps now.** `make_clip`'s fast preset renders on the TaoMate
 build where it is installed (measured as coherent and as sharp as the 8-step
 build on three prompts, at 25–40% less wall time) and 8 steps where it is not.
+(Since 2026-09-23 every quality word follows the disk instead: where TaoMate
+is missing, fast is the 4-step build, and the default is 8 only where both
+8-step turbo files are on disk, else 4. `studio_status` shows the numbers.)
 
 **A conditioning bridge, as the Studio's own node.** BUNNY (action logic) and
 the original Semantic Bridge rewrite H3's text conditioning before the
@@ -2032,13 +2117,18 @@ choose them, and `make_clip` / `extend_clip` can override per render.
 was clearly fixed, which is also what the publishers' own figures say.
 
 **LoRAs on YuE2 (ComfyUI build) and the fixed Krea 2 shelf.** The LoRA row
-under Advanced Options lists what fits the loaded music model; the
+at the foot of *Melody & score* lists what fits the loaded music model; the
 image LoRA shelf recognises Krea 2 checkpoints again.
 
-**YuE2's rights, as its authors put it.** Beside the unchanged CC BY-NC label,
-the Models card and NOTICE quote the m-a-p authors' statement that individuals
-may use the model and its outputs commercially and only companies should
-license — a discussion comment, dated and sourced, not the licence.
+**YuE2's rights, as its authors put it.** Since 2026-09-24 Studio's label for
+YuE2 follows the m-a-p authors' statement (a discussion comment of 15 September
+2026, dated and sourced): *sellable by individuals · companies need a commercial
+licence*. The licence file shipped with the weights still reads CC BY-NC 4.0,
+and the chip's detail says so and links both. The chip is on the Models card,
+under every YuE2 song's title and on the receipt under Create; the add-ons
+whose own authors said nothing of the kind (the CC BY-NC LoRAs and the
+real-audio tokenizer) keep their not-for-sale answer, and a song that used one
+carries it.
 
 ### What's new (September 2026)
 
@@ -2050,7 +2140,7 @@ just says *YuE2* or *MiniMax*; click it for the full list, ⓘ for the details,
 and **Load** / **Unload** beside it), a **Song | Instrumental** bar, then
 **Lyrics**, **Styles** and **More Options** as cards that fold open, and the
 **song title** last. Everything technical (seed, sampler settings, audio
-reference, score planning) lives under More Options and **Advanced Options**,
+reference, score planning) lives under More Options and, for YuE2, **Melody & score**,
 so a first song is: type, press Create.
 
 - **Reuse a song's lyrics and style.** Drag any song from the Library onto the

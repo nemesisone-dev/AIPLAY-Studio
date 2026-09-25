@@ -89,11 +89,12 @@ export function workspaceTools(api, safeName) {
     },
     {
       name: "qwen_image_status",
-      description: "Read Qwen Image 2.1 readiness, installed native weights, runtime nodes and supported reference/alpha capabilities. No download or generation. Use download_model for the catalogue weights and make_image for text/reference generation.",
-      inputSchema: { type: "object", properties: { dit: { type: "string" }, encoder: { type: "string" }, vae: { type: "string" }, refs: { type: "integer", minimum: 0, maximum: 10 }, transparent: { type: "boolean" } }, additionalProperties: false },
+      description: "Read Qwen Image 2.1 readiness, installed native weights, runtime nodes and supported reference/alpha capabilities. No download or generation. Use download_model for the catalogue weights and make_image for text/reference generation. "
+        + "Every answer carries `draft`: whether make_image's Fast draft can run (its LoRA on disk, its nodes in ComfyUI) and its numbers; `draft: true` here makes `ready` answer for a draft render.",
+      inputSchema: { type: "object", properties: { dit: { type: "string" }, encoder: { type: "string" }, vae: { type: "string" }, refs: { type: "integer", minimum: 0, maximum: 10 }, transparent: { type: "boolean" }, draft: { type: "boolean" } }, additionalProperties: false },
       async run(a = {}) {
         const q = new URLSearchParams();
-        for (const [key, value] of Object.entries({ dit: a.dit, encoder: a.encoder, vae: a.vae, refs: a.refs, transparent: a.transparent })) if (value !== undefined) q.set(key, String(value));
+        for (const [key, value] of Object.entries({ dit: a.dit, encoder: a.encoder, vae: a.vae, refs: a.refs, transparent: a.transparent, draft: a.draft })) if (value !== undefined) q.set(key, String(value));
         return await api("GET", `/api/images/qwen-status${q.size ? `?${q}` : ""}`);
       },
     },
@@ -142,7 +143,8 @@ export function workspaceTools(api, safeName) {
         refImages: { type: "array", maxItems: 9, items: { type: "string" }, description: "Extra library references: max9 for edit/style, max8 for inpaint because image2 is the selection mask." },
         selection: { type: "object", description: "The editor selection specification; required for inpaint. Read image_tools_catalog for selection shapes." },
         seed: { type: "integer" }, steps: { type: "integer", minimum: 1, maximum: 50 }, cfg: { type: "number", minimum: 1, maximum: 10 },
-        refResolution: { type: "integer", minimum: 0, maximum: 4096, multipleOf: 32 }, transparent: { type: "boolean" },
+        refResolution: { type: "integer", minimum: 0, maximum: 4096, multipleOf: 32 },
+        transparent: { type: "boolean", description: "Ask for alpha (edit/style only). Without it, references with transparency are flattened onto white." },
         dit: { type: "string" }, encoder: { type: "string" }, vae: { type: "string" },
       }, additionalProperties: false },
       async run(a) {

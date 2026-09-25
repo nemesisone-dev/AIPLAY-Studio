@@ -36,7 +36,8 @@
  * that has no `cant`.
  */
 import { config } from "../config.js";
-import { CATALOG, MODEL_TO_CAPABILITY, isPictureModel } from "../models.js";
+import { RUNGS as YUE_RUNGS } from "../music/yue_fit.js";
+import { CATALOG, MODEL_TO_CAPABILITY, isPictureModel, modulesOf } from "../models.js";
 /* The compositor's own vocabulary. "Ten kinds of layer" was TYPED here while
  * the list had grown to eleven — an audio layer was added to vfx/store.js and
  * this sentence went on saying ten, because nothing checks a word. A count in
@@ -45,7 +46,9 @@ import { LAYER_TYPES } from "../vfx/store.js";
 /* Where the commit point is computed for the Video lab's panel. The sigma
  * figures in the quality block are that same arithmetic rather than a second
  * copy of a table, so they follow the sigma shift if it is ever re-measured. */
-import { commitSigma } from "../videolab/catalog.js";
+import { commitSigma, COMPARE_CONFIGS } from "../videolab/catalog.js";
+/* No strong card? Friend first, then your own key: the order is one list. */
+import { NO_STRONG_CARD, LENDING_UNTRIED } from "../cloud-switch.js";
 
 /* ── counts, spelled ─────────────────────────────────────────────────────────
  *
@@ -206,9 +209,13 @@ export const NEED_STATES = {
   },
   "absent": {
     tone: "bad", chip: "Not installed", inline: true,
+    /* "the interpreter named below", not "your SYSTEM Python": every package
+     * row carries the python it was probed in (routes.js interpreterLine), and
+     * for timed lyrics that is Studio's whisper venv. "SYSTEM Python" there
+     * sent people to install into the python that never runs it. */
     line: "A pip install rather than a download — Studio cannot fetch this one for you. It goes in "
-        + "your SYSTEM Python, never ComfyUI's, because installing it there can move the torch build "
-        + "the engine depends on.",
+        + "the interpreter named below, never ComfyUI's, because installing it there can move the "
+        + "torch build the engine depends on.",
   },
   "unknown": {
     tone: "unknown", chip: "Cannot tell", inline: true,
@@ -272,7 +279,10 @@ const videoEngine = need("engine");
 const pkg = (id, why, install) => ({ kind: "package", id, for: why, install });
 
 /* Found by `required`, not by id — the same way fit.js finds it, so a second
- * required capability is picked up rather than quietly left off every panel. */
+ * required capability is picked up rather than quietly left off every panel.
+ * Since the music need follows the SELECTED engine (selectedMusicCapability
+ * below), this is only its fallback: the catalogue's default engine, for a
+ * saved engine name that maps to no row. */
 const REQUIRED_IDS = CATALOG.filter((c) => c.required).map((c) => c.id);
 const VIDEO_ENGINE_KEYS = Object.keys(config.video.engines);
 /* THE ROWS THAT SAY THEY MAKE PICTURES — the same one rule fit.js asks, so the
@@ -287,12 +297,44 @@ const VIDEO_ENGINE_KEYS = Object.keys(config.video.engines);
  * models.js for why the rule is positive now. */
 const IMAGE_CAP_IDS = CATALOG.filter(isPictureModel).map((c) => c.id);
 
-const MUSIC_NEEDS = REQUIRED_IDS.map((id) =>
-  model(id, "the song itself — the one download that is not optional"));
+/* THE MUSIC ENGINE THIS INSTALL HAS PICKED, not the catalogue's default one.
+ * This was REQUIRED_IDS, i.e. always MiniMax Music 3, under "the one download
+ * that is not optional"; the Models screen badges the selected engine, so on a
+ * YuE2 install the panel named MiniMax as not optional beside no required chip
+ * and never mentioned YuE2. Kind "music" is resolved in resolveNeeds() at the
+ * moment the panel is asked, because the selection changes while Studio runs. */
+const MUSIC_NEEDS = [need("music")("selected",
+  "the song itself: Studio needs one music engine, the one picked in Music, not every one")];
+/* The video engines whose licence leaves out whole territories, by their own
+ * rows' `region`: the Video card names them rather than saying "one of them". */
+const REGION_LOCKED_VIDEO = VIDEO_ENGINE_KEYS
+  .filter((k) => CATALOG.find((c) => c.id === MODEL_TO_CAPABILITY[k])?.region?.excluded?.length)
+  .map((k) => config.video.engines[k].label);
+const REGION_CLAUSE = !REGION_LOCKED_VIDEO.length ? ""
+  : REGION_LOCKED_VIDEO.length === 1 ? `, and ${REGION_LOCKED_VIDEO[0]} excludes whole territories`
+  : `, and ${REGION_LOCKED_VIDEO.slice(0, -1).join(", ")} and ${REGION_LOCKED_VIDEO.at(-1)} each exclude whole territories`;
 const VIDEO_NEEDS = VIDEO_ENGINE_KEYS.map((k) =>
   videoEngine(k, "whichever engine you render with; one is enough"));
 const IMAGE_NEEDS = IMAGE_CAP_IDS.map((id) =>
   model(id, "any one picture model will do — this is the whole choice"));
+
+/**
+ * The capability row of the music engine config.music.engine names, through the
+ * same MODEL_TO_CAPABILITY map every other engine need goes through. A saved
+ * name that maps to nothing falls back to the catalogue's default engine, so the
+ * panel still names a real download rather than none.
+ */
+function selectedMusicCapability(music = config.music) {
+  return MODEL_TO_CAPABILITY[music?.engine] ?? REQUIRED_IDS[0] ?? null;
+}
+
+/* The "music" placeholder, made an ordinary model need for the selected row.
+ * ONE resolution for BOTH doors a need leaves by: resolveNeeds() (the Info
+ * panel, studio_screen_info) and catalogue() (the tour, /api/welcome and
+ * studio_capabilities). The catalogue used to hand TABS out raw, so an agent
+ * reading studio_capabilities got {kind:"music", id:"selected"}, which is not a
+ * capability id, where the same entry had named the real row before. */
+const resolveMusicNeed = (n) => (n?.kind === "music" ? model(selectedMusicCapability(), n.for) : n);
 
 /**
  * One need, resolved to WHAT IT POINTS AT — never to what this machine can run.
@@ -301,7 +343,9 @@ const IMAGE_NEEDS = IMAGE_CAP_IDS.map((id) =>
  * catalogue_test.js can prove every need on every screen names something real
  * without a server, a card or a disk. The other half — is it downloaded, does
  * it fit this card, is the package importable — is live, belongs to
- * /api/models, and is joined on in server/welcome/routes.js.
+ * /api/models, and is joined on in server/welcome/routes.js. The one input
+ * read at call time is config.music.engine, for the music need: a choice the
+ * person made, not a fact about the machine, and still no disk is touched.
  *
  * A model whose capability declares `needsPackage` expands into TWO needs: the
  * weights and the pip install. Reading it off the capability is what keeps the
@@ -324,7 +368,9 @@ export function resolveNeeds(tab) {
     seen.add(key);
     out.push(n);
   };
-  for (const n of tab?.needs || []) {
+  for (const raw of tab?.needs || []) {
+    // The selected music engine becomes an ordinary model need for its row.
+    const n = resolveMusicNeed(raw);
     if (n.kind === "package") {
       push({
         kind: "package", id: n.id, for: n.for, package: n.id, capability: null,
@@ -342,9 +388,13 @@ export function resolveNeeds(tab) {
     const capability = n.kind === "engine" ? (MODEL_TO_CAPABILITY[n.id] ?? null) : n.id;
     const cap = CATALOG.find((c) => c.id === capability) || null;
     push({ kind: n.kind, id: n.id, for: n.for, capability, package: null });
-    if (cap?.needsPackage) {
+    /* One row per module that must import (`needsModules`, else the one
+     * `needsPackage`): timed lyrics needs stable_whisper as well as
+     * faster_whisper, and a panel showing only the second said "installed"
+     * over a feature that could not run. */
+    for (const mod of modulesOf(cap)) {
       push({
-        kind: "package", id: cap.needsPackage, package: cap.needsPackage, capability: null,
+        kind: "package", id: mod, package: mod, capability: null,
         /* Derived from the capability that declares it, so this sentence names
          * whatever model the map points at rather than a label typed beside a
          * module name that could stop being true. */
@@ -385,16 +435,21 @@ const IDENTITY = {
 /* ── where do I start ───────────────────────────────────────────────────── */
 
 const START = [
-  { what: "Or just say what you want", where: "Chat",
-    detail: "The screen the app opens on. Describe what you want to make and it uses the studio for you, asking before it spends time on the graphics card." },
+  { what: "Or just say what you want", where: "Chat, under More tools",
+    detail: "Describe what you want to make and it uses the studio for you, asking before it spends time on the graphics card." },
   { what: "Get the music model", where: "Models",
     detail: "The only required download. Its licence is shown before a byte is fetched." },
   { what: "Make your first song", where: "Music",
     detail: "Describe it in a sentence or two and press Create. Four to five minutes for a three-minute track; a cover picture arrives on its own." },
-  { what: "Give it a picture", where: "Images",
+  { what: "Give it a picture", where: "Pictures",
     detail: "Generate a look, then open it in the editor — layers, curves, cutout, type. The original is never overwritten." },
   { what: "Make it move", where: "Video, then Studio",
     detail: "Render a clip or two, drop them on the timeline over the song, switch on the karaoke overlay, press Export." },
+  /* THE WEAK-CARD ANSWER, in the owner's order: a friend's card before any
+   * paid route (2026-09-24). Read from server/cloud-switch.js, so this page,
+   * Settings and cloud_status cannot put them the other way round. */
+  { what: "No strong graphics card?", where: NO_STRONG_CARD.map((w) => w.where).join(", then "),
+    detail: NO_STRONG_CARD.map((w, i) => `${i + 1}. ${w.title}. ${w.how}`).join(" ") },
   { what: "Or hand the whole thing to an assistant", where: "Agent",
     detail: "Paste the MCP snippet into your assistant's config. After that, \"make me a music video\" is a sentence rather than a project." },
 ];
@@ -402,13 +457,13 @@ const START = [
 /* ── one paragraph per tab ──────────────────────────────────────────────────
  *
  * Order is the rail's order, because that is the order a new user meets them
- * in. `group` is the only editorial judgement here: twenty-four paragraphs in a row
+ * in. `group` is the only editorial judgement here: twenty-six paragraphs in a row
  * is a wall, and three headings turn it into a shape.
  */
 const TABS = [
   {
-    id: "home", icon: "⌂", name: "Welcome", group: "make",
-    lead: "The first page: the studio's mark and one row of ways in — Chat, Music, Video, Image and Explore.",
+    id: "home", icon: "⌂", name: "Home", group: "make",
+    lead: "The first page: the studio's mark and one row of ways in — Chat, Music, Video, Pictures and Explore.",
     makes: ["A place to start"],
     start: "Pick what you want to make.",
     needs: [],
@@ -420,9 +475,8 @@ const TABS = [
       "Say what you want to make, in ordinary words, and it does it — writes and renders a song, "
       + "looks through what you have already made, starts a music-video project, blocks a shot in "
       + "Blender. The model answering you is Qwen3-4B, running on your own graphics card; nothing "
-      + "you type here leaves this machine and there is no account and no key. It is the first "
-      + "screen because it is the only one you can use without already knowing which of the other "
-      + "eighteen your idea belongs on.\n"
+      + "you type here leaves this machine and there is no account and no key. It is the one "
+      + "screen you can use without already knowing which of the others your idea belongs on.\n"
       + "Anything that costs time on the graphics card is PROPOSED rather than done: it shows you "
       + "the exact settings and what they cost, and waits for you to say yes.",
     makes: ["Songs, described in a sentence", "A music-video project to build in", "Blocked-out shots to watch before spending on a render", "Answers about what is already on this disk"],
@@ -448,11 +502,10 @@ const TABS = [
     id: "create", icon: "♪", name: "Music", group: "make",
     lead:
       "Describe a song's style and lyrics, then create a new performance with your selected model. "
-      + "Music workflows opens chorus auditions, reusable episode themes and local audio/video reference briefs. "
-      + "Compare alternatives before keeping one, review a reference's musical direction before generating, "
-      + "and export finished audio. Generation time and supported controls depend on the selected runtime.",
-    makes: ["Songs with vocals", "Instrumentals on supported backends", "Chorus alternatives with contextual playback", "Saved episode themes and cue variants", "Reviewed music briefs from audio or footage", "Stems and timed lyrics"],
-    start: "Write a style and lyrics, or open Music workflows to build on an existing idea, then use an explicit Create or Render action.",
+      + "Keep several takes, pull stems and timed lyrics, and export finished audio. "
+      + "Generation time and supported controls depend on the selected runtime.",
+    makes: ["Songs with vocals", "Instrumentals on supported backends", "Stems and timed lyrics"],
+    start: "Write a style and lyrics, then press Create. To build on an existing idea, open Music Lab.",
     needs: [
       ...MUSIC_NEEDS,
       model("coverArt", "the cover picture painted for every finished track"),
@@ -461,12 +514,58 @@ const TABS = [
       model("audioRef", "starting a song from a piece of audio you already have"),
     ],
     cant:
-      "Reference media is analyzed into an editable brief or score; YuE2 does not natively watch footage. "
-      + "A saved score does not guarantee the same singer, waveform, duration or exact synchronization. "
-      + "Supplied-score themes currently require Python YuE2 or native GGUF. Everything shares the graphics card.",
+      "No piano roll: you steer with words, and takes vary. Everything shares the graphics card.",
+    /* HOW EACH ENGINE RUNS, moved off the Make button (UI_PLAN C2: "no
+     * rationale in the UI"). The receipt under Create says what will happen;
+     * this says why it takes what it takes. Numbers read from config.js. */
+    howItRuns: [
+      "YuE2 through ComfyUI keeps the model loaded between songs, so only the first song after a start waits for it to load.",
+      "The YuE2 Python kit starts a fresh Python process for every song and reloads the model each time, so every song pays for the load.",
+      /* Both measured ratios come from the Long rung itself (music/yue_fit.js),
+       * the one place they were measured into. */
+      `Longer YuE2 songs (Python kit) use the configuration measured to reach them: the ${config.yue.queryChunk}-token `
+        + "prefill block, plus the model's first half off the card during the solve. "
+        + (YUE_RUNGS.find((r) => r.id === "long")?.costs?.[0]
+          || `It is slightly slower than the standard ${config.music.engines.yue2?.realtimeRatio}× the song's length, and the same audio.`),
+      "MiniMax Music 3 keeps what it worked out for a take, so a re-roll of the same song runs about 3× faster than the first render.",
+    ],
   },
   {
-    id: "images", icon: "▣", name: "Images", group: "make",
+    id: "router", icon: "☁", name: "Comfy API", group: "make",
+    lead:
+      "The launcher's Use Comfy API mode: image, video, audio, 3D and text models from many providers, "
+      + "run on Comfy's cloud through Comfy Router with your own Comfy API key. Nothing runs on this "
+      + "machine, so it needs no ComfyUI and no graphics card, and every run costs Comfy credits, which "
+      + "is why it lives in its own mode and asks before each run. Featured models have a short form; "
+      + "every other model gets a form built from its published fields, or its raw JSON.\n"
+      + "It is the paid way, and the second one: without a strong card, ask a friend with one to render "
+      + `for you first (Collab, free; ${LENDING_UNTRIED}).`,
+    makes: ["Pictures, clips, sound and speech from hosted models", "3D models from a description", "Answers from hosted language models"],
+    start: "Save your Comfy API key, pick a kind and a model, and press Run.",
+    needs: [],
+    needsNote: "A Comfy API key with credits, from platform.comfy.org. No model files.",
+    cant:
+      "It spends real credits and cannot quote a price before a run; the Router reports a cost after "
+      + "some runs and not others, and your Comfy workspace has the full usage. Results are downloaded "
+      + "as they finish, because their links expire within a day. It cannot make a music video: the mode "
+      + "has no Music, Music video or Collab screen, and its results do not reach a project's scenes.",
+  },
+  {
+    id: "musiclab", icon: "♫", name: "Music Lab", group: "make",
+    lead:
+      "Build on songs you already have. Compare chorus alternatives in the context of the song, keep reusable "
+      + "episode themes and their cue variants, turn reference audio or footage into a reviewed music brief, "
+      + "replay a saved plan, tokens or sound, and blind-test a trained LoRA against the base model.",
+    makes: ["Chorus alternatives with contextual playback", "Saved episode themes and cue variants", "Reviewed music briefs from audio or footage", "Replayed stages", "Blind base-vs-LoRA comparisons"],
+    start: "Pick a tab at the top. Anything ready to render loads back into the Music form.",
+    needs: [...MUSIC_NEEDS],
+    cant:
+      "Reference media is analyzed into an editable brief or score; YuE2 does not natively watch footage. "
+      + "A saved score does not guarantee the same singer, waveform, duration or exact synchronization. "
+      + "Supplied-score themes currently require Python YuE2 or native GGUF.",
+  },
+  {
+    id: "images", icon: "▣", name: "Pictures", group: "make",
     lead:
       "Makes pictures — standalone or as cover art — and opens them in a full image editor: layers and "
       + "blend modes, curves and levels, brushes, selections, one-click background cutout, a type tool, "
@@ -503,7 +602,7 @@ const TABS = [
     ],
     cant:
       "Each engine is a separate multi-gigabyte download with its own licence and its own hardware "
-      + "appetite, and one of them excludes whole territories. One render is seconds of video and minutes "
+      + `appetite${REGION_CLAUSE}. One render is seconds of video and minutes `
       + "of waiting.",
   },
   {
@@ -533,8 +632,11 @@ const TABS = [
       "Two more Python packages, which Studio cannot check for you. SciPy: imported at the top of the "
       + "render engine, the drum synth, the effects rack and the mastering chain, so nothing bounces "
       + "without it. And soundfile, which the sampled instruments and the mastered bounce read their "
-      + "audio through. One line covers both — python -m pip install scipy soundfile — and it goes in "
-      + "the same system Python as numpy above.",
+      + "audio through. One line covers both, run with the engine's own python rather than a system "
+      + "Python on PATH: \"<engine python>\" -m pip install scipy soundfile, where <engine python> is the "
+      + "path shown under the launcher's \"ComfyUI install\" row (…\\venv\\Scripts\\python.exe in an "
+      + "engine Studio installed, python_embeded\\python.exe in the portable ComfyUI). An engine Studio "
+      + "installs for you comes with both.",
     /* The O(prefix) fact, in the same voice as the sentence above it. It is
      * the one thing about this screen that reads as a bug until it is named:
      * rack.chain_graph renders from absolute sample 0 every time — the rule
@@ -564,38 +666,27 @@ const TABS = [
    * validated GLB and its manifest — and because that is where the rail puts it,
    * directly after the DAW. */
   {
-    id: "avatars", icon: "◇", name: "Avatars", group: "make",
+    id: "avatars", icon: "◇", name: "3D", group: "make",
     lead:
-      "A review bench for a rigged character you already have. Import a self-contained GLB and it is "
-      + "checked twice: once by the Khronos glTF validator, and once against its own bytes, to see "
-      + "whether the skin is REAL rather than merely declared — joints that exist as nodes, that share "
-      + "one root, and that the mesh's own weights actually address. Then you look at it, which is the "
-      + "half no file check can do: orbit the mesh, turn the skeleton and the wireframe on, play the "
-      + "clips the file brought with it and scrub them frame by frame. When it holds up, prepare a "
-      + "handoff — the GLB and its manifest together, with who imported it and what they claimed about "
-      + "its rights recorded beside it.",
-    makes: ["A local shelf of characters that passed validation", "A joint, texture, clip and anchor inventory for each rig", "A GLB and manifest packaged for a world to import"],
-    start: "Import a rigged .glb, then orbit it and play its own clips before you trust it.",
-    /* Genuinely nothing to fetch. The Khronos validator and the three.js viewer
-     * are npm dependencies that arrive with the app, there are no weights, and
-     * nothing on this screen touches the card the renders queue for. */
+      "Import a self-contained GLB or VRM 1.0 avatar, inspect its skin and test its movement. "
+      + "VRM models retain their embedded expressions, toon materials and spring-bone hair. "
+      + "Choose existing parts, adjust colours, save named looks and control them through MCP. "
+      + "Preview local voice audio with loudness-driven mouth motion and MCP playback. The transparent overlay follows the active look. Model files, manifests and looks export separately.",
+    makes: ["Validated local avatar assets", "Saved looks with expressions and hair settings", "A transparent browser overlay", "Original model and manifest handoffs"],
+    start: "Try anime sample, or import a rigged model. Use Test movement and save a look.",
+    /* Runtime dependencies ship through npm. The curated reference model is
+     * a separate, explicit download; this page needs no generation weights. */
     needs: [],
     cant:
-      "It reviews; it does not create. Nothing here generates a mesh, rigs an unrigged one, retargets a "
-      + "clip onto a different skeleton or authors an animation — the character and its motion have to "
-      + "arrive inside the file. The limits are hard and small on purpose: 8 MiB, 30,000 triangles, four "
-      + "materials, 96 joints, and every texture embedded, because a rig that reaches out to the network "
-      + "to finish drawing itself is not self-contained. A persona ID recorded here is an attribution "
-      + "you typed, not proof of ownership and not an account binding; installing the character in a "
-      + "world is that world's own import, with its own allowlist and its own adapter, and nothing on "
-      + "this screen changes any of that. And passing the file checks is the cheap half — whether the "
-      + "shoulders deform, whether the feet stay on the ground, whether the walk stays in place and "
-      + "whether it still looks like the character are judgements only your eyes make, which is why the "
-      + "review state stays pending until you say so.",
+      "Looks configure components already inside the model. This page does not fit arbitrary outfits, "
+      + "create face or hair rigs, generate dance clips or infer phonemes from speech. "
+      + "Image-to-3D and local body rigging remain in Music video. VRM workshop and World GLB use separate "
+      + "import budgets; local VRM acceptance does not grant Agent World admission. A persona ID is "
+      + "local attribution, not account ownership. Review deformation visually before handoff.",
   },
 
   {
-    id: "workflow", icon: "❖", name: "Workflow", group: "assemble",
+    id: "workflow", icon: "❖", name: "Music video", group: "assemble",
     lead:
       "The music-video pipeline, as a project rather than a pile of files. It cuts the song into scenes, "
       + "holds a brief and a bible (the cast, the places, the rules the whole video obeys), storyboards "
@@ -646,8 +737,11 @@ const TABS = [
       "Two more Python packages, which Studio cannot check for you: OpenCV (the cv2 module) and Pillow "
       + "(the PIL module). The render engine imports both at the top of the file, so no frame is drawn "
       + "without them. SciPy joins them inside a few effects — the curve interpolator and the tracker's "
-      + "match step. One line covers all three — python -m pip install opencv-python pillow scipy — and "
-      + "it goes in the same system Python as the two above.",
+      + "match step. One line covers all three, run with the engine's own python rather than a system "
+      + "Python on PATH: \"<engine python>\" -m pip install opencv-python-headless pillow scipy, where "
+      + "<engine python> is the path shown under the launcher's \"ComfyUI install\" row "
+      + "(…\\venv\\Scripts\\python.exe in an engine Studio installed, python_embeded\\python.exe in the "
+      + "portable ComfyUI). An engine Studio installs for you comes with all three.",
     cant:
       "Renders are CPU work — plan for a second or more per frame at 1080p with heavy effects. 3D layers "
       + "are flat cards drawn in stack order, so two of them never slice through each other per pixel. "
@@ -740,8 +834,9 @@ const TABS = [
     needs: [],
     cant:
       "It cannot reach your friend for you. Phase one writes a file and reads one; sending it is whatever "
-      + "you already use. It also will not verify anybody, will not lend your card without a number you "
-      + "type, and will not render what arrives until you have read it. What a friend says their machine "
+      + "you already use. It also will not verify anybody, will not accept a friend's scene past the minutes "
+      + "a day you give them without asking you first (checked when you accept, from renders timed here and "
+      + "estimates), and will not render what arrives until you have read it. What a friend says their machine "
       + "can do is a message they sent, not a window onto it, so every copy is shown with its age.",
   },
 
@@ -807,14 +902,15 @@ const TABS = [
     id: "settings", icon: "⚙", name: "Settings", group: "run",
     lead:
       "Cover-art style, output formats, folders, the graphics-memory tier for smaller cards, your own "
-      + "ComfyUI workflows, and the opt-in API mode that rents a cloud model under a monthly spending cap.",
+      + "ComfyUI workflows, and \"No strong graphics card?\": a friend who renders for you first, then an "
+      + "opt-in paid service on your own key under a monthly spending cap.",
     makes: ["A studio that behaves the way you work"],
     start: "Set the output folder first; everything else has a working default.",
     needs: [],
     cant:
       "Changing the memory tier restarts the engine and clears the cached take, so the next re-roll costs "
-      + "a full render — it says so before it does it. API mode spends real money, which is exactly why "
-      + "the cap exists.",
+      + "a full render — it says so before it does it. The paid service spends real money, which is exactly why "
+      + "every paid song asks first and the cap exists.",
   },
   {
     id: "mcp", icon: "◆", name: "Agent", group: "run",
@@ -951,6 +1047,14 @@ const stepsInLora = (name, fallback) => {
 };
 const FAST_STEPS = stepsInLora(config.video.engines.h3?.turboLora4, 4);
 const MID_STEPS = stepsInLora(config.video.engines.h3?.turboLora, 8);
+/* AND THE BARE MODEL'S, which no LoRA file carries. The sigma sentence below
+ * used to end on config.js's default step count, which was 20 and so named
+ * the no-LoRA path; since 2026-09-23 that default is the matched turbo
+ * setting the disk has (8 with both 8-step files, else 4), so it equals
+ * MID_STEPS or FAST_STEPS and the sentence said one number twice. Read from
+ * the Video Lab's no-LoRA arm, which is 20 like the Best chip and make_clip's
+ * "best". */
+const BARE_STEPS = COMPARE_CONFIGS.find((c) => c.id === "h3_quality")?.steps ?? 20;
 const SHIFT = config.video.engines.h3?.shiftVideo ?? 12;
 /* Three decimals, because that is the precision docs/H3_REFERENCE_BLEED.md
  * reports and the Video lab's panel shows. */
@@ -968,7 +1072,11 @@ function videoFacts() {
      * has to compose that sentence itself is a UI that will get LTX wrong. */
     steps: e.steps ?? null,
     turboMaxSteps: e.turboMaxSteps ?? null,
-    stepsNote: e.steps
+    /* A distilled engine with a fixed schedule (FastH3) loads no turbo LoRA,
+     * so "applies only below 0" would be a sentence about nothing. */
+    stepsNote: e.fixedSteps
+      ? `${e.fixedSteps} fixed steps: a distilled model, no turbo LoRA.`
+      : e.steps
       ? `${e.steps} steps by default; the turbo distillation applies only below ${e.turboMaxSteps}.`
       /* "Two passes" is COUNTED — one per literal sigma string this engine
        * declares (`sigmasLow`, `sigmasHigh`). An engine that grew a third would
@@ -1024,12 +1132,22 @@ function videoFacts() {
         source: "Same sweep. The honest limit of the resolution answer.",
       },
       {
-        headline: "Clip length is not what costs you. Size is.",
+        /* ⚠ THIS CARD USED TO SAY "clip length is not what costs you", quote a
+         * 16-to-21 GPU-hour envelope as measured, and tell you to cut to the
+         * music and not to the budget. RESOLUTION_FOR_FACES.md withdrew all of
+         * that on 2026-09-10: every row of that sweep was 56 frames, and the
+         * 56-to-209 band was the cost model extrapolated over lengths nothing
+         * here has ever rendered. The card is the withdrawal, because a page
+         * that keeps giving retracted advice is worse than one that says
+         * nothing — the reader has no way to know it was taken back. */
+        headline: "Length is cheap until it isn't, and we never rendered the cliff.",
         body:
-          "Delivering a fixed three minutes costs 16 to 21 GPU-hours across the entire legal clip-length "
-          + "range — a 28% band — while the size ladder spans 2.7x. So cut to the music, not to the "
-          + "budget: length is an editing decision, size is the bill.",
-        source: "Measured at 1792x1008 across 56 to 209 frames.",
+          "Inside the range this rig has measured, size is the bill: the ladder spans 2.7x and length "
+          + "costs almost nothing. That stops being true somewhere above 331k latent tokens, where an "
+          + "outside replication over 158 renders found 30% more frames costing 2.6x, with hard "
+          + "out-of-memory failures. Our largest render is 149k. 1792x1008 at 209 frames is 437k. Cut "
+          + "to the music inside the measured range, and treat a long clip at a large size as unknown.",
+        source: "Measured here to 149k latent tokens; the cliff is somebody else's 158 renders.",
       },
       {
         headline: `${Count(FAST_STEPS)} steps is a different model, not a faster one.`,
@@ -1041,8 +1159,8 @@ function videoFacts() {
           + `${Math.round(commitSigma(FAST_STEPS, SHIFT) * 100)}% of the picture in one jump, and the `
           + "cleanest thing in its field of view is your reference image, which is why references occupy "
           + "the opening frames and then hand over. "
-          + `${Count(MID_STEPS)} steps commits at ${sigmaAt(MID_STEPS)}, `
-          + `${count(config.video.engines.h3?.steps)} at ${sigmaAt(config.video.engines.h3?.steps)}.`,
+          + `${Count(MID_STEPS)} steps commits at ${sigmaAt(MID_STEPS)}, and the bare model's `
+          + `${count(BARE_STEPS)} at ${sigmaAt(BARE_STEPS)}.`,
         source: "Read from ComfyUI's own scheduler and confirmed frame by frame on a 4-step clip "
           + "(2026-09-02) — docs/H3_REFERENCE_BLEED.md. The sigmas here are computed by the same "
           + "function the Video lab's panel shows, server/videolab/catalog.js commitSigma, so they "
@@ -1133,7 +1251,12 @@ export function catalogue({ showcase = null } = {}) {
     version: WELCOME_VERSION,
     identity: IDENTITY,
     groups: GROUPS,
-    tabs: TABS,
+    /* Copies with the music need resolved at the moment of asking, never
+     * written back into TABS: the selection changes while Studio runs, and a
+     * resolution stored in TABS would answer every later call with the first
+     * engine it saw. A tab with no music need is handed out as it is. */
+    tabs: TABS.map((t) => ((t.needs || []).some((n) => n.kind === "music")
+      ? { ...t, needs: t.needs.map(resolveMusicNeed) } : t)),
     start: START,
     video: videoFacts(),
     licences: licenceFacts(),

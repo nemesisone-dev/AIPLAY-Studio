@@ -59,8 +59,13 @@ import { EventEmitter, once } from "node:events";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { config } from "./config.js";
+import { config, isLightH3 } from "./config.js";
 import { folderGroup } from "./localmodels.js";
+/* H3's card tiers: the requirement numbers on every H3-family row, and the
+ * flag that makes fit.js judge them by tier (server/h3tier.js, no second copy). */
+import {
+  h3Requires, H3_AMD_NOTE, H3_TIERS, H3_VRAM_FULL_GB, H3_LAB_CARD_GB, H3_RAM_FLOOR_GB, H3_RAM_MEASURED_GB,
+} from "./h3tier.js";
 
 const HF = "https://huggingface.co";
 
@@ -83,6 +88,28 @@ function homeFor(cap) {
   return u.split("/resolve/")[0];
 }
 const M = (p) => path.join(config.modelsDir, p);
+
+/**
+ * The card, as first-run setup saved it. Read when asked, not frozen at load,
+ * the same test as index.js onAmd().
+ *
+ * NVFP4 and the other fp4 builds need NVIDIA tensor cores. ROCm and Intel's
+ * XPU have no kernel for them, so on those cards a catalogue row names another
+ * build of the same file (`amd` on the file entry) and the downloader refuses
+ * any fp4 file outright, in case a row ever forgets to.
+ */
+export const cardIsAmd = () => config.torchBackend === "rocm" || config.gpu?.vendor === "amd";
+const noFp4Card = () => cardIsAmd() || config.gpu?.vendor === "intel" || config.torchBackend === "xpu";
+export const fp4Blocked = (f) => noFp4Card() && /fp4/i.test(path.basename(String(f?.dest || f?.url || "")));
+/** A light machine for H3 (config.js h3Light: an AMD or Intel card, under
+ *  16 GB of VRAM or under 32 GB of RAM) takes a file's `light` build. */
+export const lightMachine = () => isLightH3(config);
+/** A file list with each entry's `light` build swapped in on a light machine
+ *  and its `amd` build on an AMD card. */
+const forCard = (files) => {
+  const light = lightMachine(), amd = cardIsAmd();
+  return light || amd ? files.map((f) => (light && f.light) || (amd && f.amd) || f) : files;
+};
 /**
  * The one shelf that is NOT models/.
  *
@@ -447,14 +474,21 @@ const ZIMAGE_AE = {
  * use the model and its outputs as they like, money included, and that only
  * companies should pay for a commercial licence. It is a discussion comment,
  * not the licence file, which still reads CC BY-NC 4.0 — and the thread's
- * next replies ask whether it is official. So it is shown, sourced and dated,
- * and the conservative label stays until the licence itself changes. */
+ * next replies ask whether it is official. So it is shown, sourced and dated.
+ *
+ * ⚠ SINCE 2026-09-24 STUDIO'S LABEL FOLLOWS IT (owner's decision). YuE2's
+ * songs are "sellable by individuals; companies need a commercial licence",
+ * which is what the authors wrote, and every surface that shows the label also
+ * says the licence file still reads CC BY-NC 4.0. The reading of the file
+ * itself is kept, verbatim, in `licenceFile` below and in server/music/yue.js
+ * (YUE2_LICENCE_READ), so the day the two are compared again nothing has to
+ * be re-read from memory. */
 const YUE2_PUBLISHER = {
   said: "If you are individual content creators, musicians, researchers, you can use the model and outputs whatever you want. Even making money from the outputs.\n\nOnly companies should pay for the commercial license.",
   by: "a43992899 (Multimodal Art Projection org)",
   where: "https://huggingface.co/m-a-p/YuE2-3B/discussions/5",
   on: "2026-09-15",
-  caveat: "A discussion comment, edited 2026-09-15, not the licence file, which still reads CC BY-NC 4.0; the thread's next replies ask whether it is official and what a company's licence would cover. Studio keeps its conservative label until the licence changes.",
+  caveat: "A discussion comment, edited 2026-09-15, not the licence file, which still reads CC BY-NC 4.0; the thread's next replies ask whether it is official and what a company's licence would cover. Studio's label follows this statement (since 2026-09-24) and shows the licence file beside it.",
   support: "https://buymeacoffee.com/ruibin",
 };
 
@@ -464,11 +498,123 @@ const YUE2_GRANT = {
   url: "https://huggingface.co/m-a-p/YuE2-3B/blob/main/LICENSE",
 };
 
+/**
+ * WHAT STUDIO SAYS ABOUT SELLING A YuE2 SONG, from 2026-09-24 (owner's
+ * decision): the authors' statement, with the licence file beside it.
+ *
+ * Every YuE2 row that renders a song carries this one object (musicYue2 and
+ * musicYue2Comfy through its getter; musicYue2Gguf with its own note), so the
+ * three can never drift. `quote` is the authors' sentence verbatim, because
+ * that is now the operative text for the label; `licenceFile` keeps the CC
+ * BY-NC 4.0 grant verbatim, because it has not changed and a reader must be
+ * able to see both. `changed` says what the label was before and why it
+ * moved, so a ledger stamped "not-for-sale" before today is explained rather
+ * than contradicted.
+ *
+ * NOT shared with the add-ons: the Mothersuperior LoRAs and tokenizer are
+ * another author's weights, and m-a-p's statement is about YuE2 (see
+ * YUE2_LICENCE_FILE_RIGHTS below).
+ */
+const YUE2_AUTHORS_RIGHTS = {
+  class: "yours-with-conditions",
+  sellable: true,
+  basis: "authors-statement",
+  chip: "Sellable by individuals (YuE2 authors' statement, 15 Sep 2026) · companies need a commercial licence",
+  short: "sellable by individuals",
+  quote: YUE2_PUBLISHER.said,
+  clause: "Discussion comment by a43992899 (Multimodal Art Projection org), m-a-p/YuE2-3B discussion #5, 15 Sep 2026",
+  url: "https://huggingface.co/m-a-p/YuE2-3B/discussions/5",
+  conditions: [
+    "Individuals (content creators, musicians, researchers) may use the model and what it makes as they like, money included — the authors' words.",
+    "Companies need a commercial licence from the authors.",
+  ],
+  licenceFile: {
+    name: "CC BY-NC 4.0",
+    quote: YUE2_GRANT.quote,
+    clause: YUE2_GRANT.clause,
+    url: YUE2_GRANT.url,
+    note: "The licence file shipped with the weights still reads CC BY-NC 4.0.",
+  },
+  publisher: YUE2_PUBLISHER,
+  attribution: "YuE2-3B by Multimodal Art Projection (m-a-p), https://huggingface.co/m-a-p/YuE2-3B. Sellable by individuals (authors' statement, 15 Sep 2026); companies need a commercial licence. Weights licence file: CC BY-NC 4.0.",
+  changed: {
+    from: "not-for-sale",
+    on: "2026-09-24",
+    why: "Studio's label now follows the YuE2 authors' statement of 15 Sep 2026.",
+  },
+  note: "Studio's label follows what the model's authors wrote on the model page on 15 Sep 2026: individuals may sell what it makes, and companies need a commercial licence from them. It is a discussion comment, not the licence file, which still reads CC BY-NC 4.0 and has not changed; a company, or anyone who wants the file's own terms to settle it, should ask the authors. Attribution is required either way.",
+};
+
+/**
+ * The label the YuE2 add-ons keep: the licence file's, as every YuE2 row read
+ * before 2026-09-24. A frozen copy rather than a getter, so the authors'
+ * statement about YuE2 does not quietly reach weights that other people
+ * trained (Mothersuperior's LoRAs and tokenizer head). Their authors have said
+ * nothing about selling, so the conservative reading stands for them.
+ */
+const YUE2_LICENCE_FILE_RIGHTS = Object.freeze({
+  class: "not-for-sale",
+  sellable: false,
+  ...YUE2_GRANT,
+  conditions: Object.freeze([
+    "§3(a)(1) — if you Share the weights, modified or not, you must keep the creator identification, the copyright notice, the notices referring to this licence and to its disclaimer of warranties, and a link to the material, and indicate whether you changed it. Studio Shares nothing: the download goes straight to m-a-p and the licence is between you and them.",
+    "Scope — the vendor's LICENSE applies CC BY-NC to the checkpoint weights only. What you may do with the inference CODE is the Apache-2.0 answer and a different question from what you may do with a song.",
+  ]),
+  note: "The weights are licensed for noncommercial use. Studio conservatively labels results noncommercial / not for sale; this is not a legal determination that every output inherits the checkpoint licence. Native runtime/code licences do not expand the rights granted for the weights. Review the publisher terms for your intended use.",
+});
+
+/* H3's text encoder and two VAEs. FastH3 loads the same three, so both rows
+ * name the same files and a machine holding one engine fetches only the other
+ * engine's DiT. */
+const H3_SHARED_FILES = [
+  /* THE int4 TEXT ENCODER ON EVERY CARD. AMD used to fetch the official
+   * int8 (27.1 GB) on the belief that ROCm ran int4 on a slow fallback.
+   * Measured 2026-09-25 on an RX 9060 XT: int4 was a little faster (299 s
+   * against 316 s a clip), staged 13.5 GB instead of 25.9 and looked as good.
+   * An int8 already on disk still counts (the alt). Revision and sha256 as
+   * HuggingFace lists them. */
+  { url: `${HF}/Winnougan/MiniMax-H3-INT4_Convrot_ComfyUI/resolve/6387f8cd370fd8b4deaa9aa7e9e1be4d7298e7df/qwen3vl_32b_minimax_h3-int4_convrot.safetensors`,
+    dest: M("text_encoders/qwen3vl_32b_minimax_h3-int4_convrot.safetensors"), bytes: 14173709116,
+    sha256: "a97a557136057a8bcf6f2459b0875aeee3e8274408bd6616b669b41caefdb48d",
+    alt: ["qwen3vl_32b_minimax_h3_int8_convrot.safetensors"] },
+  /* ⚠ STILL THE fp16 VIDEO VAE, although config.js loads the int8 one first
+   * when it is present (a912a39: about 12% a clip). Checked 2026-09-24: the
+   * rig's int8 file is 3,171,670,912 bytes, dated 2026-08-17, a month before
+   * any official one existed (the 08-17 hunt cast its VAEs locally; see the H3
+   * row's OFFICIAL FILES note). Comfy-Org published an int8 under the SAME name
+   * on 2026-09-15 (revision 7a2065e37f5f, 2,811,065,184 bytes, sha256
+   * 52a2c8c73583c86e4f41cdcce3a6ad0ea562987bc0bf3d60a0cef5f5c8e60c0e): a
+   * different file, never rendered here. So the 12% and the quality check
+   * belong to a file nobody can download, and new installs keep the fp16 until
+   * one clip is rendered with the published int8. It is listed under the H3
+   * row's other builds meanwhile. */
+  { url: `${HF}/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_fp16.safetensors`,
+    dest: M("vae/minimax_h3_video_vae_fp16.safetensors"), bytes: 5207808496,
+    alt: ["minimax_h3_video_vae_int8_convrot.safetensors"],
+    /* A light machine (config.js h3Light) fetches the published int8:
+     * rendered 2026-09-25 on an RX 9060 XT against the fp16, same seed:
+     * frames PSNR 35.8 dB / SSIM 0.975, decode ~15 s faster, 2.7 GB staged
+     * instead of 5. */
+    light: { url: `${HF}/Comfy-Org/MiniMax-H3/resolve/bf92c4091e333e69b8ca1998e0a669f15cb0832b/vae/minimax_h3_video_vae_int8_convrot.safetensors`,
+      dest: M("vae/minimax_h3_video_vae_int8_convrot.safetensors"), bytes: 2811065184,
+      sha256: "52a2c8c73583c86e4f41cdcce3a6ad0ea562987bc0bf3d60a0cef5f5c8e60c0e",
+      alt: ["minimax_h3_video_vae_fp16.safetensors"] } },
+  { url: `${HF}/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors`,
+    dest: M("vae/minimax_h3_audio_vae_fp32.safetensors"), bytes: 605254808,
+    alt: ["minimax_h3_audio_vae_bf16.safetensors"] },
+];
+
 export const CATALOG = [
   {
     id: "engine",
     label: "Music engine — MiniMax Music 3",
-    why: "Required. This is what writes and renders the music.",
+    /* Not "Required." any more: this sentence sits on the card whatever engine
+     * is selected, and on a YuE2 install it told a newcomer to fetch 11.92 GB
+     * they will never render with. Whether it IS required is markRequired()'s
+     * answer, shown as the badge. No music engine's sentence says "required" or
+     * "optional" at all: the badge is the one place that answer lives, and
+     * models-screen_test.js reads every music row's `why` for either word. */
+    why: "Writes and renders the music. Studio needs one music engine, the one picked in the music model list, not every one.",
     licence: "MiniMax Music3 Community Licence",
 
     /* Read in full from the publisher's own repo on 2026-08-27
@@ -495,6 +641,11 @@ export const CATALOG = [
       ],
       note: "Unlike H3 and LTX, this licence never says “we claim no rights in your Outputs” — it simply never restricts them, and its conditions all attach to the software and to commercial products built on it. The absence is stated here rather than read as either a claim or a disclaimer.",
     },
+    /* THE CATALOGUE'S DEFAULT, not this install's need. It marks the engine
+     * config.js starts on (minimax-music3), and fit.js and the docs read it as
+     * exactly that; the welcome panels fall back to it only when the selected
+     * engine names no row. What the Models screen badges is markRequired(): the
+     * SELECTED music engine once it is ready, "one music engine" before. */
     required: true,
     files: [
       { url: `${HF}/Comfy-Org/MiniMax-Music-3/resolve/main/diffusion_models/minimax_music3_dit_int8_convrot.safetensors`,
@@ -526,7 +677,7 @@ export const CATALOG = [
   {
     id: "musicYue2Gguf",
     label: "Music engine — YuE2 GGUF Q4 / optional Q8 (experimental)",
-    why: "Make music without ComfyUI, Python, MiniMax, or image/video models, on NVIDIA, AMD, Intel or the CPU: setup fetches the audio.cpp build that fits this machine. Choose one precision in the native setup panel; the other is not required.",
+    why: "Make music without ComfyUI, Python, MiniMax, or image/video models, on NVIDIA, AMD, Intel or the CPU: setup fetches the audio.cpp build that fits this machine. Choose one precision in the native setup panel; one is enough.",
     nativeSetup: true,
     required: false,
     licence: "CC BY-NC 4.0 (weights) · Apache-2.0/MIT (native code) · NVIDIA CUDA runtime terms on NVIDIA only",
@@ -537,10 +688,12 @@ export const CATALOG = [
       {label:"Q8_0 (optional)",bytes:4531969109,note:"Larger native transformer plus the same decoder and sidecars. Quality, speed and VRAM have not been benchmarked; not a promise of better audio."},
     ],
     home: "https://huggingface.co/audio-cpp/Yue2-3B-GGUF",
+    /* The same weights as musicYue2, so the same label (the authors'
+     * statement); only the note differs, because this row also ships native
+     * code under its own licences. */
     outputRights: {
-      class: "not-for-sale", sellable: false, ...YUE2_GRANT, publisher: YUE2_PUBLISHER,
-      conditions: ["Use the weights only for noncommercial purposes under their licence; preserve required attribution when sharing weights or derivatives."],
-      note: "Model weights and native code have different licences. Studio marks this engine's results noncommercial as a conservative policy; it does not decide copyright or the licence status of every generated output. Review the publisher's terms for your use.",
+      ...YUE2_AUTHORS_RIGHTS,
+      note: "Model weights and native code have different licences. The native audio.cpp code (Apache-2.0/MIT) neither widens nor narrows what the weights allow. Studio's label for the songs follows the YuE2 authors' statement of 15 Sep 2026 (individuals may sell; companies need a commercial licence); the weights' licence file still reads CC BY-NC 4.0. Attribution is required either way.",
     },
     requires: {experimental:true,vramMinGb:null,vramRecGb:null,ramMinGb:null,ramRecGb:null,
       note:"Windows x64. NVIDIA: CUDA 13.3-compatible driver and Microsoft VC14 x64 runtime. AMD and Intel: the official audio.cpp Vulkan build, which needs only a current graphics driver; no card: the CPU build (slow). Vulkan and CPU speed and memory are not measured here. Q4 only, CUDA: one 49.4-second song tested on RTX 4070 Ti SUPER 16 GB: 22 s render, entire-device sampled peak 6,589 MiB including 3,129 MiB baseline. This is not process memory or proof of 6/8/12 GB support. Q8 has not been benchmarked; longer songs and smaller GPUs remain unverified."},
@@ -568,7 +721,7 @@ export const CATALOG = [
       conditions: [
         "The score is a transcription of a recording you supply. That recording's own rights are yours to check before you cover it; nothing here changes who wrote the song.",
       ],
-      note: "A score, not a song: what you can do with the cover is decided by the YuE2 row that renders it and by the original song's rights. Studio keeps the same conservative noncommercial label on the transcriber's own weights.",
+      note: "A score, not a song: what you can do with the cover is decided by the YuE2 row that renders it and by the original song's rights. Studio keeps a conservative noncommercial label on the transcriber's own weights.",
     },
     required: false,
     files: [
@@ -615,6 +768,12 @@ export const CATALOG = [
       note: "A distillation on H3's weights, not a model of its own: everything the H3 row says about outputs and territory applies unchanged.",
     },
     required: false,
+    addonFor: "video",
+    /* Turns on the Video screen's Fast setting for H3 (fit.js recommendFor).
+     * Not `newInstalls`: the rank-19 row below is what a new install gets.
+     * `fastNote` is the plain sentence the recommendation shows. */
+    fastPathFor: "video",
+    fastNote: "Measured 2026-09-24: the same picture and speed as the 182 MB file new installs get.",
     files: [
       { url: `${HF}/Robert1212star/TaoMate-H3-3Step-ComfyUI/resolve/6897eea8f92ca8a1d511612dbf3ea51a63399cc4/taomate_h3_3step_comfy.safetensors`,
         dest: M("loras/taomate_h3_3step_comfy.safetensors"),
@@ -622,8 +781,10 @@ export const CATALOG = [
         sha256: "c1c057121a5ebf77d708b8a5c331ebb78416b90775df465c02a4fa48688315cb",
         alt: ["minimax_h3_taomate_3step_lora_avg_rank_19_bf16.safetensors"] },
     ],
-    note: "2.48 GB, one file in models/loras. The 3-step build threshold in the Video panel decides when it loads. Its shift is unmeasured: the base 12/3 rendered clean here. Kijai's 191 MB rank-19 average of the same LoRA counts as present (the next row).",
-    requires: { vramMinGb: 12, vramRecGb: 16, ramMinGb: 16, ramRecGb: 32, note: "The same H3 render, three steps of it." },
+    note: "2.48 GB, one file in models/loras. The 3-step build threshold in the Video panel decides when it loads. Its shift is unmeasured: the base 12/3 rendered clean here. "
+      + "Measured 2026-09-24 against Kijai's 182 MB rank-19 average of the same LoRA (the next row), on a 16 GB card at 1344x768, 8 s: the same speed (119.1 s against 120.0 s in the sampler) and, by two judges, the same picture. "
+      + "Either file turns on Fast; new installs are offered the small one, and it counts as present here. With both on disk this one loads first.",
+    requires: h3Requires("The same H3 render, three steps of it."),
   },
   {
     id: "videoH3FunControl",
@@ -671,14 +832,21 @@ export const CATALOG = [
     note: "2.3 GB, one file in models/model_patches, loaded by ModelPatchLoader and applied by "
       + "MiniMaxH3FunControlNetApply. Needs ComfyUI 0.35 or newer \u2014 this rig runs 0.36. The 4.22 GB bf16 "
       + "conversion of the same patch counts as present if you already have it.",
-    requires: { vramMinGb: 12, vramRecGb: 16, ramMinGb: 16, ramRecGb: 32,
-                note: "The same H3 render with a control video alongside it; the patch is resident for the whole pass." },
+    /* NOT h3Requires(): a control video riding along with H3 was never run at
+     * a smaller size, so this row keeps full size's floor while H3 itself
+     * offers a smaller size on 8 to 11 GB cards, and says why. The numbers are
+     * h3tier.js's own (full size, the lab's card, the RAM floor, the RAM the
+     * lab measured with), so they move with H3's. */
+    requires: { vramMinGb: H3_VRAM_FULL_GB, vramRecGb: H3_LAB_CARD_GB, ramMinGb: H3_RAM_FLOOR_GB, ramRecGb: H3_RAM_MEASURED_GB,
+                note: "The same H3 render with a control video alongside it; the patch is resident for the whole pass. "
+                  + `Stays at ${H3_VRAM_FULL_GB} GB although H3 itself offers ${H3_TIERS[1].width}x${H3_TIERS[1].height} on `
+                  + `${H3_TIERS[1].minGb} to ${H3_VRAM_FULL_GB - 1} GB cards: a control video riding along has not been measured at the smaller size.` },
   },
 
   {
     id: "videoH3Turbo3Small",
-    label: "Video clips — TaoMate 3-step, rank-19 average (H3, small)",
-    why: "The same 3-step distillation averaged down to rank 19 by Kijai: 191 MB instead of 2.48 GB. Unmeasured here against the full conversion — the Models page keeps both so the comparison can be made on this machine.",
+    label: "Video clips — Fast setting for H3 (TaoMate 3-step, 182 MB)",
+    why: "The same 3-step distillation averaged down to rank 19 by Kijai: 182 MB instead of 2.48 GB. Measured 2026-09-24 against the full conversion on a 16 GB card at 1344x768, 8 s: the same speed (120.0 s against 119.1 s in the sampler) and, by two judges, the same picture; only small textures differ. It did not save RAM.",
     licence: "MiniMax H3 Community Licence (derived from H3)",
     home: "https://huggingface.co/Kijai/MiniMax-H3_comfy",
     region: {
@@ -698,14 +866,98 @@ export const CATALOG = [
       note: "A distillation on H3's weights, not a model of its own: everything the H3 row says about outputs and territory applies unchanged.",
     },
     required: false,
+    addonFor: "video",
+    /* Turns on the Video screen's Fast setting for H3, and it is the one NEW
+     * installs are recommended (fit.js recommendFor): same speed and picture
+     * as the 2.48 GB conversion, 2.30 GB less to fetch (lab, 2026-09-24).
+     * config.js's pick order is left alone; both give the same picture. */
+    fastPathFor: "video",
+    newInstalls: true,
+    fastNote: "Measured 2026-09-24: the same picture and speed as the 2.48 GB TaoMate file, in a 182 MB download.",
     files: [
       { url: `${HF}/Kijai/MiniMax-H3_comfy/resolve/098f8c48fccead9a93191c166ca31a130659d3bd/loras/minimax_h3_taomate_3step_lora_avg_rank_19_bf16.safetensors`,
         dest: M("loras/minimax_h3_taomate_3step_lora_avg_rank_19_bf16.safetensors"),
         bytes: 181_697_688,
         sha256: "de9663d974a884b477556748239c6f28239f7ca1825be270f98f023ff5dab6a7" },
     ],
-    note: "191 MB, one file in models/loras. Taken by the 3-step path only when the full conversion is absent (config turboLora3 order).",
-    requires: { vramMinGb: 12, vramRecGb: 16, ramMinGb: 16, ramRecGb: 32, note: "The same H3 render, three steps of it." },
+    note: "182 MB, one file in models/loras. The one new installs are offered for the Fast setting. Loaded by the 3-step path when the full conversion is absent (config turboLora3 order); with both on disk the full one loads, which gives the same picture.",
+    requires: h3Requires("The same H3 render, three steps of it."),
+  },
+  {
+    /* H3'S 4-STEP SPEED-UP, an optional add-on (addonFor "video"): the
+     * Video screen's 4-step renders need it, and nothing else does.
+     * Read off HuggingFace 2026-09-24 (Comfy-Org/MiniMax-H3, revision pinned,
+     * LFS sha256 and size as listed there). */
+    id: "videoH3Turbo4",
+    label: "Video clips — 4-step speed-up for H3 (1.96 GB)",
+    why: "Four-step H3 renders: the Video screen's Standard setting on a disk without the 8-step file. Full-rank on purpose: the 440 MB resized-rank one has two independent reports of camera-movement and prompt-following damage.",
+    licence: "MiniMax H3 Community Licence (derived from H3)",
+    home: "https://huggingface.co/Comfy-Org/MiniMax-H3",
+    region: {
+      excluded: ["European Union", "United Kingdom", "Republic of Korea", "United States of America"],
+      text: "Derived from MiniMax H3, so its Community Licence applies: rights only inside the Applicable Territory, which excludes the EU, the UK, the Republic of Korea and the United States of America. The download goes straight to the publisher.",
+      url: "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE",
+    },
+    outputRights: {
+      class: "yours-with-conditions",
+      sellable: true,
+      quote: "MiniMax claims no rights over the Outputs you generate. You and your users are entirely responsible for the Outputs and any subsequent use thereof.",
+      clause: "MiniMax H3 Community License Agreement §VI.4 (Intellectual Property); a derivative of H3",
+      url: "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE",
+      conditions: [
+        "§V.4 — the Applicable Territory excludes the EU, the UK, the Republic of Korea and the USA; a clip made with this LoRA is an H3 output and carries the same limit.",
+      ],
+      note: "A distillation on H3's weights, not a model of its own: everything the H3 row says about outputs and territory applies unchanged.",
+    },
+    required: false,
+    addonFor: "video",
+    stepsFor: 4,
+    files: [
+      { url: `${HF}/Comfy-Org/MiniMax-H3/resolve/bf92c4091e333e69b8ca1998e0a669f15cb0832b/loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors`,
+        dest: M("loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"),
+        bytes: 1_956_192_992,
+        sha256: "c396a9a06f58399e9df9754b18299818d84a2ddd371724ba48fe4a41221437dc" },
+    ],
+    note: "1.96 GB, one file in models/loras. Optional: without it, 4 and 5 steps are refused with this download offered, and H3 still renders at 3 (TaoMate), 8 (the 8-step file) or 20 steps.",
+    requires: h3Requires("The same H3 render, 4 steps of it."),
+  },
+  {
+    /* H3'S 8-STEP SPEED-UP, an optional add-on (addonFor "video"): the
+     * Video screen's 8-step renders need it, and nothing else does.
+     * Read off HuggingFace 2026-09-24 (Comfy-Org/MiniMax-H3, revision pinned,
+     * LFS sha256 and size as listed there). */
+    id: "videoH3Turbo8",
+    label: "Video clips — 8-step speed-up for H3 (1.96 GB)",
+    why: "Eight-step H3 renders, the Video screen's Standard setting when it is on disk: the build config.js prefers for 6 to 12 steps.",
+    licence: "MiniMax H3 Community Licence (derived from H3)",
+    home: "https://huggingface.co/Comfy-Org/MiniMax-H3",
+    region: {
+      excluded: ["European Union", "United Kingdom", "Republic of Korea", "United States of America"],
+      text: "Derived from MiniMax H3, so its Community Licence applies: rights only inside the Applicable Territory, which excludes the EU, the UK, the Republic of Korea and the United States of America. The download goes straight to the publisher.",
+      url: "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE",
+    },
+    outputRights: {
+      class: "yours-with-conditions",
+      sellable: true,
+      quote: "MiniMax claims no rights over the Outputs you generate. You and your users are entirely responsible for the Outputs and any subsequent use thereof.",
+      clause: "MiniMax H3 Community License Agreement §VI.4 (Intellectual Property); a derivative of H3",
+      url: "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE",
+      conditions: [
+        "§V.4 — the Applicable Territory excludes the EU, the UK, the Republic of Korea and the USA; a clip made with this LoRA is an H3 output and carries the same limit.",
+      ],
+      note: "A distillation on H3's weights, not a model of its own: everything the H3 row says about outputs and territory applies unchanged.",
+    },
+    required: false,
+    addonFor: "video",
+    stepsFor: 8,
+    files: [
+      { url: `${HF}/Comfy-Org/MiniMax-H3/resolve/bf92c4091e333e69b8ca1998e0a669f15cb0832b/loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors`,
+        dest: M("loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors"),
+        bytes: 1_956_193_000,
+        sha256: "2339acdf19bfe123f46b971ea35d367a84adb85de43627e1eceafa5a5b2b111e" },
+    ],
+    note: "1.96 GB, one file in models/loras. Optional: without it, 6 to 12 steps are refused with this download offered, and H3 still renders at 3 (TaoMate), 4 (the 4-step file) or 20 steps.",
+    requires: h3Requires("The same H3 render, 8 steps of it."),
   },
   {
     /* CONDITIONING BRIDGES FOR H3 — two 5120→h→h→5120 MLPs that rewrite the
@@ -811,7 +1063,7 @@ export const CATALOG = [
         bytes: 3_960_938_800,
         sha256: "96fe199377309001ed8cd26a944baeee8cc31a20ba7c36d1d3c0a7e1f4149db6" },
     ],
-    note: "3.96 GB, one checkpoint file in models/checkpoints. The bf16 build (7.8 GB) renders a 30-second song in about 24 s warm on a 16 GB RX 9060 XT (measured 2026-09-16); the int8 build's speed and quality on AMD are not yet measured here. ⚠ CC BY-NC: you may not sell what this makes.",
+    note: "3.96 GB, one checkpoint file in models/checkpoints. The bf16 build (7.8 GB) renders a 30-second song in about 24 s warm on a 16 GB RX 9060 XT (measured 2026-09-16); the int8 build's speed and quality on AMD are not yet measured here. Selling: the YuE2 authors say individuals may sell what it makes and companies need a commercial licence (15 Sep 2026); the licence file still reads CC BY-NC 4.0.",
     requires: {
       vramMinGb: 8, vramRecGb: 12, ramMinGb: 16, ramRecGb: 32,
       note: "Not yet measured for the int8 build. ComfyUI stages the 3B language model and the audio model with dynamic VRAM, so a smaller card streams more from system RAM and is slower rather than refused.",
@@ -838,7 +1090,9 @@ export const CATALOG = [
     label: "YuE2 instrumental planner LoRA (ComfyUI)",
     why: "YuE2 through ComfyUI writes a real instrumental — sectioned, and ending on purpose — instead of planning a vocal staff and singing at random. Patches the composer only; the audio model stays the checkpoint's.",
     licence: "CC BY-NC 4.0 (weights, derived from YuE2-3B) — run by ComfyUI's own LoRA loader",
-    get outputRights() { return CATALOG.find((c) => c.id === "musicYue2")?.outputRights; },
+    /* Detached from musicYue2's getter on 2026-09-24: that row now follows
+     * m-a-p's statement about YuE2, and these are another author's weights. */
+    outputRights: YUE2_LICENCE_FILE_RIGHTS,
     required: false,
     files: [
       { url: `${HF}/Mothersuperior/YuE2-instrumental-cot-full-loras/resolve/947f2f4b28978b2b6c3e316e6a87925c76bf3c4b/ar_lora_inst_v3abc_comfyui.safetensors`,
@@ -864,7 +1118,9 @@ export const CATALOG = [
     label: "YuE2 real-audio NAR LoRA (ComfyUI)",
     why: "The acoustic model adapted to real recordings' tokens — the other half of the real-audio tokenizer, and the author's companion to the instrumental planner for production sound.",
     licence: "CC BY-NC 4.0 (weights, derived from YuE2-3B) — run by ComfyUI's own LoRA loader",
-    get outputRights() { return CATALOG.find((c) => c.id === "musicYue2")?.outputRights; },
+    /* Detached from musicYue2's getter on 2026-09-24: that row now follows
+     * m-a-p's statement about YuE2, and these are another author's weights. */
+    outputRights: YUE2_LICENCE_FILE_RIGHTS,
     required: false,
     files: [
       { url: `${HF}/Mothersuperior/yue2-mothersuperior-realaudio-tokenizer-v4/resolve/e2e63d859f3af879baf1b4d4e9f22d1eeda6fde5/nar_lora_joint_v4_comfyui.safetensors`,
@@ -901,10 +1157,16 @@ export const CATALOG = [
      * files hashed here from a download at that revision). The head's fp32
      * safetensors is listed; its .pt and bf16 twins are not. */
     id: "musicYue2Tokenizer",
+    /* A song read through this tokenizer (a cover primed from a recording, a
+     * continued recording) carries `tokenized` in its sidecar, and this is how
+     * songRights() knows the song used this row's weights. */
+    songAddOn: "tokenized",
     label: "YuE2 real-audio tokenizer (head + MERT-v2-FullSong)",
     why: "Continue any recording with YuE2, not only its own takes: the audio is read back into the model's semantic codes first. Also what a planner LoRA of your own would be trained on.",
     licence: "CC BY-NC 4.0 (head from YuE2-3B; MERT-v2-FullSong) — Mothersuperior's head and m-a-p's MERT-v2-FullSong, both non-commercial, run by the engine's python",
-    get outputRights() { return CATALOG.find((c) => c.id === "musicYue2")?.outputRights; },
+    /* Detached like the two LoRAs above: the authors' statement is about
+     * YuE2, not about this head or MERT-v2-FullSong. */
+    outputRights: YUE2_LICENCE_FILE_RIGHTS,
     required: false,
     files: [
       { url: `${HF}/Mothersuperior/yue2-mothersuperior-realaudio-tokenizer-v4/resolve/e2e63d859f3af879baf1b4d4e9f22d1eeda6fde5/tokenizer_head_joint_v4.safetensors`,
@@ -1001,7 +1263,9 @@ export const CATALOG = [
   {
     id: "musicYue2",
     label: "Music engine — YuE2 3B",
-    why: "An optional Python music engine with an editable score. Choose one music engine; MiniMax is not needed for native YuE2 GGUF.",
+    /* No "optional" here: when YuE2 is the selected engine the card carries the
+     * required badge, and the sentence under it must not argue with it. */
+    why: "A Python music engine with an editable score. Studio needs one music engine, the one picked in the music model list, not every one.",
 
     /* 🔴 THREE LICENCES, NOT ONE, and they answer three different questions.
      * Each was read off THIS MACHINE on 2026-09-11, not off a repository tag:
@@ -1033,7 +1297,15 @@ export const CATALOG = [
      * both, so the row states both rather than picking the friendlier one. */
     licence: "CC BY-NC 4.0 (weights) — Apache-2.0 inference code, MIT community node pack",
 
-    /* 🔴 THE FIRST `not-for-sale` ROW IN THIS CATALOGUE, which is why the
+    /* ⚠ CHANGED 2026-09-24 (owner's decision): the label now follows the YuE2
+     * authors' statement of 15 Sep 2026, YUE2_AUTHORS_RIGHTS above —
+     * "sellable by individuals; companies need a commercial licence" — with
+     * the licence file's grant kept verbatim beside it in `licenceFile`. The
+     * reading below is still the reading of that FILE, and it is why the
+     * file is shown next to the label rather than dropped. It is kept, not
+     * rewritten, so the change is visible as a change.
+     *
+     * 🔴 THE FIRST `not-for-sale` ROW IN THIS CATALOGUE (until 2026-09-24), which is why the
      * reasoning is written out rather than assumed: the "not for sale" marker
      * in scripts/models_table.mjs and the "bad" chip in web/app.js have both
      * existed unused since they were written, and this is the row that lights
@@ -1061,17 +1333,7 @@ export const CATALOG = [
      * silent — rule 2 of the block above cuts both ways, and repeating a
      * plausible permission is the same failure as repeating a plausible
      * restriction. A user who needs commercial has the v1 route in `note`. */
-    outputRights: {
-      class: "not-for-sale",
-      sellable: false,
-      ...YUE2_GRANT,
-      publisher: YUE2_PUBLISHER,
-      conditions: [
-        "§3(a)(1) — if you Share the weights, modified or not, you must keep the creator identification, the copyright notice, the notices referring to this licence and to its disclaimer of warranties, and a link to the material, and indicate whether you changed it. Studio Shares nothing: the download goes straight to m-a-p and the licence is between you and them.",
-        "Scope — the vendor's LICENSE applies CC BY-NC to the checkpoint weights only. What you may do with the inference CODE is the Apache-2.0 answer and a different question from what you may do with a song.",
-      ],
-      note: "The weights are licensed for noncommercial use. Studio conservatively labels results noncommercial / not for sale; this is not a legal determination that every output inherits the checkpoint licence. Native runtime/code licences do not expand the rights granted for the weights. Review the publisher terms for your intended use.",
-    },
+    outputRights: YUE2_AUTHORS_RIGHTS,
 
     /* ⚠ DELIBERATELY NO `region` FIELD, and this is not a shortcut.
      *
@@ -1158,7 +1420,7 @@ export const CATALOG = [
        * "the weights are present and the right size", and a runner must fetch
        * the repo's small files with them. */
     ],
-    note: "7.79 GB, 7.26 GB of it the transformer. A second engine with an editable-score step, not a replacement: MEASURED here 2026-09-11 at 167.0 s of 48 kHz 24-bit stereo in 399.6 s end to end — 2.39x realtime, against MiniMax Music 3's 1.53x on the same card (config.js, music.engines['minimax-music3'].realtimeRatio). The stages were 281.0 s of semantic sampling (4177 tokens, 14.87 tok/s), 106.3 s of NAR and 5.7 s of VAE, plus 6.6 s to load the weights warm; execution eager, attention sdpa, one CFG branch. Planning the ABC score costs nothing when you supply one. ⚠ Lyrics must carry NO bracketed section labels: MEASURED on the MiniMax engine, which SANG “[verse]” — three tracks were rejected for it and one ran 202 s instead of 64 s carrying the brackets — and nothing measured makes YuE2 different, so the same rule holds here until something does. It runs in its own interpreter rather than in ComfyUI, and on Windows it needs PYTHONUTF8=1 set before that interpreter starts, because the vendor writes its plan with no encoding argument and CJK lyrics hit cp1252 and raise. ⚠ CC BY-NC: you may not sell what this one makes — the rights chip has the sentence and the alternative.",
+    note: "7.79 GB, 7.26 GB of it the transformer. A second engine with an editable-score step, not a replacement: MEASURED here 2026-09-11 at 167.0 s of 48 kHz 24-bit stereo in 399.6 s end to end — 2.39x realtime, against MiniMax Music 3's 1.53x on the same card (config.js, music.engines['minimax-music3'].realtimeRatio). The stages were 281.0 s of semantic sampling (4177 tokens, 14.87 tok/s), 106.3 s of NAR and 5.7 s of VAE, plus 6.6 s to load the weights warm; execution eager, attention sdpa, one CFG branch. Planning the ABC score costs nothing when you supply one. ⚠ Lyrics must carry NO bracketed section labels: MEASURED on the MiniMax engine, which SANG “[verse]” — three tracks were rejected for it and one ran 202 s instead of 64 s carrying the brackets — and nothing measured makes YuE2 different, so the same rule holds here until something does. It runs in its own interpreter rather than in ComfyUI, and on Windows it needs PYTHONUTF8=1 set before that interpreter starts, because the vendor writes its plan with no encoding argument and CJK lyrics hit cp1252 and raise. Selling: the YuE2 authors say individuals may sell what it makes and companies need a commercial licence (15 Sep 2026); the licence file still reads CC BY-NC 4.0 — the rights chip has both.",
     requires: {
       /* The 24 GB card and the 24 GB of host RAM are the VENDOR's
        * recommendation, and `fitFor()` already words `vramRecGb` as
@@ -1421,25 +1683,29 @@ export const CATALOG = [
     files: [
       { url: `${HF}/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors`,
         dest: M("diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors"), bytes: 20970379616,
-        alt: ["minimax_h3_fl2va_pruned_int4_convrot.safetensors", "minimax_h3_fl2va_pruned-w4a8_convrot_pruned.safetensors", "MiniMax_H3_FL2VA_pruned_mixed_int4_int8_convrot.safetensors"] },
-      { url: `${HF}/Winnougan/MiniMax-H3-INT4_Convrot_ComfyUI/resolve/main/qwen3vl_32b_minimax_h3-int4_convrot.safetensors`,
-        dest: M("text_encoders/qwen3vl_32b_minimax_h3-int4_convrot.safetensors"), bytes: 14173709116 },
-      { url: `${HF}/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_fp16.safetensors`,
-        dest: M("vae/minimax_h3_video_vae_fp16.safetensors"), bytes: 5207808496,
-        alt: ["minimax_h3_video_vae_int8_convrot.safetensors"] },
-      { url: `${HF}/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors`,
-        dest: M("vae/minimax_h3_audio_vae_fp32.safetensors"), bytes: 605254808,
-        alt: ["minimax_h3_audio_vae_bf16.safetensors"] },
-      // Full-rank turbo LoRA on purpose — the 440 MB resized-rank one has two
-      // independent reports of camera-movement and prompt-following damage.
-      { url: `${HF}/Comfy-Org/MiniMax-H3/resolve/main/loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors`,
-        dest: M("loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"), bytes: 1956192992 },
+        alt: ["minimax_h3_fl2va_pruned_int4_convrot.safetensors", "minimax_h3_fl2va_pruned-w4a8_convrot_pruned.safetensors", "MiniMax_H3_FL2VA_pruned_mixed_int4_int8_convrot.safetensors"],
+        /* A light machine (config.js h3Light) fetches the w4a8 build: 12.5 GB
+         * instead of 21. Rendered 2026-09-25 on an RX 9060 XT, same seed as
+         * the int8: sampling ~7% faster, as good to the eye. */
+        light: { url: `${HF}/Winnougan/MiniMax-H3-INT4_Convrot_ComfyUI/resolve/6387f8cd370fd8b4deaa9aa7e9e1be4d7298e7df/minimax_h3_fl2va_pruned-w4a8_convrot_pruned.safetensors`,
+          dest: M("diffusion_models/minimax_h3_fl2va_pruned-w4a8_convrot_pruned.safetensors"), bytes: 12540857840,
+          sha256: "8b624de0ab7554bb507c4486093d4c93e0bf2eb2a40c2382f26eb0af7cd97407",
+          alt: ["minimax_h3_fl2va_pruned_int8_convrot.safetensors", "minimax_h3_fl2va_pruned_int4_convrot.safetensors", "MiniMax_H3_FL2VA_pruned_mixed_int4_int8_convrot.safetensors"] } },
+      ...H3_SHARED_FILES,
+      /* NO SPEED-UP LORA HERE. H3 renders without one (the bare model, Best,
+       * 20 steps), so a missing LoRA must not make the engine "not
+       * downloaded": that refused H3 on a disk holding everything but the
+       * 4-step file. The 3-, 4- and 8-step speed-ups are their own optional
+       * rows (addonFor "video"), and a step count whose file is missing is
+       * refused with its download offered (video-plain.js videoPlan). */
     ],
-    note: "43 GB — by far the largest thing here, and entirely optional. H3 always renders audio even when you only want pictures; Studio discards it, because the song already exists. Measured on this rig at roughly 15 s fixed cost plus 1.7 s per step.",
-    requires: {
-      vramMinGb: 16, vramRecGb: 24, ramMinGb: 32, ramRecGb: 64,
-      note: "The heaviest capability in Studio by a wide margin. Never runs while music is generating.",
-    },
+    note: "41 GB, or 30 GB on AMD, Intel and lower-end PCs, which get lighter builds measured as good and a little faster — by far the largest thing here, and entirely optional. H3 always renders audio even when you only want pictures; Studio discards it, because the song already exists. Measured on this rig at roughly 15 s fixed cost plus 1.7 s per step. "
+      + "The speed-ups (3, 4 and 8 steps) are optional add-ons below; without one, H3 renders at 20 steps. "
+      + H3_AMD_NOTE,
+    /* The card decides the size, not a floor (server/h3tier.js, from the H3
+     * lab of 2026-09-24): this row used to say 16 GB minimum, which told a
+     * 12 GB owner "below the minimum" for a card measured bit-identical. */
+    requires: h3Requires("The heaviest capability in Studio by a wide margin. Never runs while music is generating."),
     variants: [
       { label: "DiT FL2VA pruned int8 convrot, official (offered)", bytes: 20970379616, note: "Measured 08-24: a class above the third-party int4 prune — real prompt-following close-ups — at ~15% more render time." },
       { label: "DiT FL2VA pruned int4 convrot (third-party)", bytes: 11337536848, note: "What this rig originally measured. Visibly worse than the official int8; kept as a fallback for small disks." },
@@ -1449,7 +1715,54 @@ export const CATALOG = [
       { label: "Text encoder nvfp4 awq, official", bytes: 15690000000, note: "What the ComfyUI templates name. Blackwell-native; not measured here." },
       { label: "Text encoder int8 convrot, official", bytes: 27141342152, note: "Nearly twice the size." },
       { label: "Video VAE fp16, official (offered)", bytes: 5207808496 },
+      { label: "Video VAE int8 convrot, official (Comfy-Org, 2026-09-15; not offered yet)", bytes: 2811065184, note: "The name config.js loads first. Not the 3.17 GB int8 this rig measured (about 12% a clip) under the same name, and never rendered here; the download stays fp16 until it is." },
       { label: "Audio VAE fp32, official (offered)", bytes: 605254808 },
+    ],
+  },
+  {
+    id: "videoFastH3",
+    label: "Video clips — FastH3 (8 steps, experimental)",
+    why: "FastVideo's 8-step distillation of MiniMax H3: text or opening and closing pictures to a clip with sound, in 8 steps and no speed-up LoRA. It uses H3's text encoder and VAEs, so with H3 installed only the model file is new. No references; those stay on H3.",
+    licence: "MiniMax H3 Community Licence (derived from H3)",
+    home: "https://huggingface.co/FastVideo/FastVideo-FastH3-Comfy",
+    /* The repo names H3's licence as its own, so everything the H3 row says
+     * about outputs and territory applies unchanged, like the TaoMate row. */
+    outputRights: {
+      class: "yours-with-conditions",
+      sellable: true,
+      quote: "MiniMax claims no rights over the Outputs you generate. You and your users are entirely responsible for the Outputs and any subsequent use thereof.",
+      clause: "MiniMax H3 Community License Agreement §VI.4 (Intellectual Property); FastH3 is a distillation of H3 and its card names that licence",
+      url: "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE",
+      conditions: [
+        "§V.4 — the Applicable Territory excludes the EU, the UK, the Republic of Korea and the USA; a clip made with FastH3 is an H3 output and carries the same limit.",
+        "§V.3 — Outputs may not be used to improve any other AI model.",
+        "§IV.2 — a commercial product or service using H3 must display “MiniMax H3” prominently.",
+      ],
+      note: "A distillation of H3's weights, not a model of its own: everything the H3 row says about outputs and territory applies unchanged.",
+    },
+    region: {
+      excluded: ["European Union", "United Kingdom", "Republic of Korea", "United States of America"],
+      text: "Derived from MiniMax H3, so its Community Licence applies: rights only inside the Applicable Territory, which excludes the EU, the UK, the Republic of Korea and the United States of America. AIPLAY Studio does not host the weights; the download goes straight to the publisher.",
+      url: "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE",
+    },
+    files: [
+      { url: `${HF}/FastVideo/FastVideo-FastH3-Comfy/resolve/main/diffusion_models/fastvideo_fasth3_8step_v2_pruned_int8_convrot.safetensors`,
+        dest: M("diffusion_models/fastvideo_fasth3_8step_v2_pruned_int8_convrot.safetensors"), bytes: 22128378696,
+        alt: ["fastvideo_fasth3_8step_v2_pruned_bf16.safetensors"] },
+      ...H3_SHARED_FILES,
+    ],
+    note: "22.1 GB on a machine that already has H3; 42 GB without it (40 GB on AMD, Intel and lower-end PCs, which get the lighter int8 video VAE). Trained with FastVideo's sparse attention (VSA), which ComfyUI runs where its kernel exists and skips elsewhere. "
+      + "⚠ Experimental. Measured 2026-09-24 on a 16 GB card against H3's Fast setting (TaoMate 3-step): about 1.4x the wait at 1344x768, 8 s (236 s against 172 s); good on 1 of 3 prompts, "
+      + "while the others showed a recurring white blob and a subject changing colour, so check each take. VSA made it about 1.45x faster than dense on the whole clip. "
+      + H3_AMD_NOTE,
+    /* The same tiers as H3: under an 8 GB cap its DiT phase was within 50 MiB
+     * of TaoMate's at 960x544 (measured); at full size under 16 GB that is a
+     * prediction, and the "fasth3" path makes the verdict say so. */
+    requires: h3Requires("The same size of model as H3, run for 8 steps. Never runs while music is generating.",
+      { path: "fasth3" }),
+    variants: [
+      { label: "DiT 8-step v2 pruned int8 convrot (offered)", bytes: 22128378696 },
+      { label: "DiT 8-step v2 pruned bf16", bytes: 44079246824, note: "Twice the download; not measured here." },
     ],
   },
   {
@@ -1489,10 +1802,13 @@ export const CATALOG = [
         dest: M("loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors"), bytes: 1956193000 },
     ],
     note: "23 GB, optional. Shares the text encoder and VAEs with the video capability, so install that first.",
-    requires: {
-      vramMinGb: 16, vramRecGb: 24, ramMinGb: 32, ramRecGb: 64,
-      note: "Same weight class as the H3 video capability; the two never load together.",
-    },
+    /* H3's tiers. Measured under an 8 GB cap: the 8-step reference path with
+     * one picture fit at 960x544, 5 s, with only 314 MiB to spare (lab L8r);
+     * several pictures and the song under the clip were never capped, and it
+     * was never run at 1344x768 under a cap. The "refs" path quotes that
+     * instead of the Fast setting's measurement. */
+    requires: h3Requires("Same weight class as the H3 video capability; the two never load together. "
+      + "Reference pictures add memory.", { path: "refs" }),
   },
   {
     id: "imageCutout",
@@ -1550,7 +1866,11 @@ export const CATALOG = [
       { url: `${HF}/Comfy-Org/Ideogram-4/resolve/main/diffusion_models/ideogram4_unconditional_fp8_scaled.safetensors`,
         dest: M("diffusion_models/ideogram4_unconditional_fp8_scaled.safetensors"), bytes: 9280741293 },
       { url: `${HF}/Comfy-Org/Ideogram-4/resolve/main/text_encoders/qwen3vl_8b_nvfp4.safetensors`,
-        dest: M("text_encoders/qwen3vl_8b_nvfp4.safetensors"), bytes: 6305221764 },
+        dest: M("text_encoders/qwen3vl_8b_nvfp4.safetensors"), bytes: 6305221764,
+        alt: ["qwen3vl_8b_fp8_scaled.safetensors"],
+        // nvfp4 has no kernel on ROCm; the vendor's fp8 build of the same encoder.
+        amd: { url: `${HF}/Comfy-Org/Ideogram-4/resolve/main/text_encoders/qwen3vl_8b_fp8_scaled.safetensors`,
+          dest: M("text_encoders/qwen3vl_8b_fp8_scaled.safetensors"), bytes: 10588637512 } },
       { url: `${HF}/Comfy-Org/Ideogram-4/resolve/main/vae/flux2-vae.safetensors`,
         dest: M("vae/flux2-vae.safetensors"), bytes: 336211292 },
     ],
@@ -1692,6 +2012,53 @@ export const CATALOG = [
     requires: {
       experimental: true,
       note: "No minimum VRAM or RAM requirement has been established for this integration. Download size is not peak VRAM; ComfyUI can stage models and offload, while resolution and reference count affect memory use.",
+    },
+  },
+  {
+    /* FAST DRAFT FOR QWEN IMAGE 2.1 — Viggle's v0.2 5-step turbo LoRA, the
+     * rank-128 cut (the r256 is 1.36 GB and was not needed). A LoRA on the
+     * qwen-image-2.1 row's own files, not a model of its own: no `makes`, so
+     * it never appears as a picture engine, and `addonFor` names the row it
+     * needs. Read off HuggingFace 2026-09-24 at commit 2b85c1fc; the file on
+     * the lab rig matched the LFS sha256 below.
+     *
+     * MEASURED 2026-09-24 (lab/qwen_turbo: 302 renders, five arms, two blind
+     * judges), through the stock LoraLoaderModelOnly at 1.0 with five
+     * ManualSigmas, euler, CFG 1 — what server/qwen-image.js builds. */
+    id: "imageQwenFastDraft",
+    group: "images",
+    addonFor: "qwen-image-2.1",
+    label: "Images — Fast draft for Qwen Image 2.1 (Viggle turbo LoRA)",
+    why: "About 3x quicker Qwen Image 2.1 pictures for storyboards, board thumbnails and ideas: 5 steps instead of 25. It may garble small text and, in crowds or close hands, add extra faces or fingers, so the full render stays the default and is the one for lettering, two-reference style edits and finals.",
+    licence: "Qwen Research License Agreement — research and evaluation only, like the Qwen Image 2.1 it patches; commercial use requires a separate licence",
+    home: "https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo",
+    outputRights: {
+      class: "not-for-sale",
+      sellable: false,
+      quote: '"Non-Commercial" shall mean for research or evaluation purposes only.',
+      clause: "Qwen Research License Agreement §1(i), with §2(a)-(b) limiting use to noncommercial purposes; the LoRA is a derivative of Qwen-Image-2.1 and its NOTICE ships it under the same agreement",
+      url: "https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo/blob/2b85c1fcb7b2584c4133fe0c547ec968ff2ae20e/LICENSE",
+      conditions: [
+        "Use is limited to research or evaluation, exactly as for Qwen Image 2.1 itself. Commercial use requires a separate licence from Qwen.",
+        "Redistributing the LoRA requires a copy of the agreement, notices on modified files, and the §3(c) Qwen copyright notice in a Notice file; using its outputs to train a model you release requires \"Built with Qwen\" (§4(b)).",
+      ],
+      note: "A patch on Qwen Image 2.1's weights, not a model of its own: a Fast draft is a Qwen Image 2.1 picture, and Studio marks it not for sale as it marks every Qwen picture.",
+    },
+    required: false,
+    files: [
+      { url: `${HF}/Viggle/Qwen-Image-2.1-viggle-turbo/resolve/2b85c1fcb7b2584c4133fe0c547ec968ff2ae20e/Qwen-Image-2.1-viggle-turbo-v0.2-5step-lora-r128.safetensors`,
+        dest: M("loras/Qwen-Image-2.1-viggle-turbo-v0.2-5step-lora-r128.safetensors"),
+        bytes: 679_604_800,
+        sha256: "7096a791d0f19cd083a8d2984b4524398d1d6bdd4e720c303ed17200df83ae2b" },
+    ],
+    note: "0.68 GB, one file in models/loras. Needs Qwen Image 2.1 (the row above): it rides on that model's own files and adds the Fast draft chip on Pictures. "
+      + "Measured 2026-09-24 on a 16 GB card at 1024²: 3.1 s a picture warm against the full render's 11.2 s; batch of 4 at 1344x768 12.1 s against 45.4 s; 1920x1088 6.7 s against 27.2 s; one-reference edit 3.9 s against 15.7 s; two-reference edit only 9.1 s against 20.8 s (2.3x), and both judges preferred the full render there. "
+      + "A new prompt still pays the text encode (12.2 s against 22.9 s, about 2x), and switching between a draft and a full render costs a model re-patch each way (+8.8 s into a draft, +2.5 s into a full render), so group drafts together. "
+      + "Where it fails: small text (a mirrored R, a reversed E), neon and stencil lettering, and at 1 megapixel fused fingers or a melted face in a crowd; two blind judges put it level with or ahead of the full render on 3 and 8 of 17 prompts. Skin is not waxy. "
+      + "Base only: transparent output, masked edits, more than 3 references, CFG above 1, negative prompts and canvases above about 2 MP (measured up to 1920x1088).",
+    requires: {
+      experimental: true,
+      note: "Rides on Qwen Image 2.1 and needs what it needs. Peak VRAM measured the same as the full render (about 15.5 GB of 16 GB, staged): it saves time, not memory.",
     },
   },
   {
@@ -1853,7 +2220,11 @@ export const CATALOG = [
       { url: `${HF}/Lightricks/LTX-2.5/resolve/main/text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors`,
         dest: M("text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors"), bytes: 15372969374 },
       { url: `${HF}/Lightricks/LTX-2.5/resolve/main/vae/ltx-2.5-video-vae-conv-bf16.safetensors`,
-        dest: M("vae/ltx-2.5-video-vae-conv-bf16.safetensors"), bytes: 1452269922 },
+        dest: M("vae/ltx-2.5-video-vae-conv-bf16.safetensors"), bytes: 1452269922,
+        /* The DIFFUSION-decoder VAE (CausalDiffusionVAE, 1.47 GB) is what the
+         * ComfyUI LTX 2.5 template names. ComfyUI's VAELoader reads either,
+         * and config.js loads it when the conv one is absent. */
+        alt: ["ltx-2.5-video-vae-bf16.safetensors"] },
       { url: `${HF}/Lightricks/LTX-2.5/resolve/main/vae/ltx-2.5-audio-vae-bf16.safetensors`,
         dest: M("vae/ltx-2.5-audio-vae-bf16.safetensors"), bytes: 364866540 },
       // Not optional. The whole speed advantage is sampling at half size and
@@ -2494,8 +2865,11 @@ export const CATALOG = [
   {
     id: "lyrics",
     home: "https://github.com/openai/whisper",   // faster-whisper fetches into its own cache
-    label: "Timed lyrics — Whisper large-v3",
-    why: "Produces word-level and line-level LRC files for visualisers.",
+    /* The id stays "lyrics" (tests, setup id and saved settings name it); the
+     * words say what it now is: Whisper for any transcription, and the timed
+     * lyrics that were once its only use (server/whisper.js). */
+    label: "Whisper: transcription and timed lyrics",
+    why: "Transcribes speech and songs, and times lyrics into LRC files.",
     licence: "MIT",
     outputRights: {
       class: "unrestricted",
@@ -2508,21 +2882,30 @@ export const CATALOG = [
     files: [],                 // fetched by faster-whisper into its own cache
     viaPackage: "faster_whisper",
     approxBytes: 3090000000,
-    note: "We already know the words, so this is alignment rather than transcription — the model supplies timing and the known lyrics supply the text. Measured 97.9% of words timed by direct match on a real track.",
+    note: "Transcribes any song, clip or file. With known lyrics it keeps your words and takes Whisper's timing. Measured 97.9% of words timed by direct match on a real track.",
     needsPackage: "faster_whisper",
+    /* EVERY module server/lrc.py imports, by import name. `needsPackage` names
+     * one, and probing only that one badged this row Ready in a fresh venv where
+     * every run died on "No module named 'stable_whisper'" (measured
+     * 2026-09-23). The Models screen, the welcome panel and Settings are Ready
+     * only when all of these import in the lyrics interpreter. */
+    needsModules: ["faster_whisper", "stable_whisper"],
     /* pip's name has a hyphen; the module's has an underscore. `needsPackage` is
      * what `importlib.find_spec` is asked for and `packageInstall` is what a
      * person types, and they are genuinely different strings — typing the
      * import name at a pip prompt installs somebody else's abandoned package. */
-    packageInstall: "python -m pip install faster-whisper",
+    packageInstall: "python -m pip install faster-whisper stable-ts",
     requires: {
       vramMinGb: 4, vramRecGb: 6, ramMinGb: 8, ramRecGb: 16,
       note: "About 36 s for a 2.5-minute song at int8_float16. Line timing is reliable; word timing is approximate on sung vocals.",
     },
     variants: [
-      { label: "large-v3 (shipped)", bytes: 3090000000, note: "Best accuracy on sung vocals." },
-      { label: "medium", bytes: 1530000000, note: "Faster, more misheard words — reconciliation fixes the text, not the timing." },
+      { label: "large-v3 (default)", bytes: 3090000000, note: "Best accuracy on sung vocals." },
+      { label: "large-v3-turbo", bytes: 1620000000, note: "Much faster, close to large-v3 on speech." },
+      { label: "medium", bytes: 1530000000, note: "Faster, more misheard words. With known lyrics the text is fixed, not the timing." },
+      { label: "small", bytes: 484000000, note: "Fast; fine for clear speech." },
       { label: "base", bytes: 141000000, note: "Fast but unreliable on singing." },
+      { label: "tiny", bytes: 75000000, note: "Fastest; rough drafts of clear speech only." },
     ],
   },
   {
@@ -2612,6 +2995,17 @@ export const CATALOG = [
      * waifu2x is the next thing to try and the cost is a node pack. */
   },
 ];
+
+/* Rows with an `amd` or `light` build answer `files` for the machine they
+ * run on: status, sizes and the downloader all read the same list, so none of
+ * them can offer one build and fetch the other. */
+for (const cap of CATALOG) {
+  const all = cap.files;
+  if (!Array.isArray(all) || !all.some((f) => f.amd || f.light)) continue;
+  Object.defineProperty(cap, "files", { get: () => forCard(all), enumerable: true, configurable: true });
+  // The published list, the same on every machine: the docs tables read this.
+  Object.defineProperty(cap, "defaultFiles", { value: all, enumerable: false });
+}
 
 /* ───────────────────────────── what a capability MAKES, said POSITIVELY
  *
@@ -2703,6 +3097,8 @@ export const MODEL_TO_CAPABILITY = {
   "anima": "imageAnima",
   "h3": "video",
   "ltx": "videoLtx",
+  // FastVideo's 8-step H3 distillation: config.video.engines.fasth3.
+  "fasth3": "videoFastH3",
   /* ⚠ THE CONTROL PAIR, AND WHAT HAD TO CHANGE BEFORE THESE TWO LINES COULD
    * EXIST — this is still the load-bearing comment on this map.
    *
@@ -2884,6 +3280,123 @@ export function rightsStampFor(model) {
   };
 }
 
+/** Least restrictive first. A song's add-ons can only move it right. The one
+ *  ranking in the server: fit.js orders its picks by it too (rightsRank). */
+export const RIGHTS_ORDER = Object.freeze(["unrestricted", "yours-with-conditions", "unknown", "not-for-sale"]);
+
+/** A class's place in RIGHTS_ORDER. A class this file does not know ranks as
+ *  `unknown`, never as unrestricted: a mistyped class must not make a song or
+ *  a pick look freer than it is. */
+export function rightsRank(cls) {
+  const i = RIGHTS_ORDER.indexOf(cls);
+  return i >= 0 ? i : RIGHTS_ORDER.indexOf("unknown");
+}
+
+/** The words a rights row is shown with: its own chip, or the class's. */
+export function rightsWords(r) {
+  const cls = OUTPUT_RIGHTS_CLASSES[r?.class] ? r.class : "unknown";
+  const n = Array.isArray(r?.conditions) ? r.conditions.length : 0;
+  const label = r?.chip
+    || OUTPUT_RIGHTS_CLASSES[cls].chip + (cls === "yours-with-conditions" && n ? ` — ${n} condition${n === 1 ? "" : "s"}` : "");
+  return { label, short: r?.short || label.toLowerCase() };
+}
+
+/**
+ * WHAT A FINISHED SONG MAY BE SOLD FOR, worked out from the catalogue as it
+ * is today — never from the words a sidecar stored when the song was made.
+ *
+ * The engine that rendered it picks the row (MODEL_TO_CAPABILITY, the same
+ * bridge the ledger stamps with). An add-on the song used can only make the
+ * answer stricter: a LoRA whose file is a catalogue row's file (meta.lora /
+ * meta.loraClip), or a row that names the sidecar key it leaves
+ * (`songAddOn`, the real-audio tokenizer's "tokenized"). The strictest class
+ * wins, in RIGHTS_ORDER; `addOns` names the rows that raised it.
+ *
+ * A take with no engine of its own (a MiniMax extension, which records only
+ * its parent) follows `extendedFrom` through `parentOf`, a few hops at most.
+ * Anything still unnamed is `unknown`: not a verdict, the honest answer.
+ */
+export function songRights(meta = {}, { parentOf = null, catalog = CATALOG } = {}) {
+  let engine = meta?.engine || null;
+  for (let at = meta, hops = 0; !engine && at?.extendedFrom && parentOf && hops < 4; hops++) {
+    at = parentOf(at.extendedFrom) || null;
+    engine = at?.engine || null;
+  }
+  const key = String(engine || "").trim().toLowerCase();
+  const capId = MODEL_TO_CAPABILITY[key] || null;
+  const engineRow = capId ? catalog.find((c) => c.id === capId) || null : null;
+  let row = engineRow?.outputRights ? engineRow : null;
+  let r = row ? row.outputRights : UNRECOGNISED_RIGHTS;
+  const rank = rightsRank;
+
+  const loras = [meta?.lora, meta?.loraClip]
+    .filter((v) => typeof v === "string" && v)
+    .map((v) => path.basename(v.split(" @ ")[0].trim()).toLowerCase());
+  const addOns = [];
+  const used = [];
+  for (const cap of catalog) {
+    if (!cap?.outputRights || cap === engineRow) continue;
+    const byFile = loras.length && [...(cap.files || []), ...(cap.defaultFiles || [])]
+      .some((f) => loras.includes(path.basename(String(f?.dest || f?.url || "")).toLowerCase()));
+    const bySidecar = typeof cap.songAddOn === "string" && meta?.[cap.songAddOn] != null && meta[cap.songAddOn] !== false;
+    if (!byFile && !bySidecar) continue;
+    used.push(cap);
+    if (rank(cap.outputRights.class) > rank(r.class)) {
+      addOns.push(cap.id);
+      row = cap;
+      r = cap.outputRights;
+    }
+  }
+  /* A FILE SOMEBODY IMPORTED, with no engine named: Studio did not make it
+   * and has read nothing about it, so the class stays `unknown`. But "Rights
+   * unverified" on a person's own recording read as Studio doubting her song;
+   * the basis and the words say why there is no verdict instead. */
+  const imported = !engine && meta?.imported === true && !addOns.length;
+  const { label, short } = imported
+    ? { label: "Imported file · not made in Studio", short: "imported" }
+    : rightsWords(r);
+  /* THE CREDIT LINES THE FILE'S TAGS CARRY (tag_audio.py writes them as
+   * ATTRIBUTION and COPYRIGHT; the native WAV as ICOP): the engine row's own
+   * attribution (YuE2's names the authors and the licence file), and for each
+   * catalogued add-on the song used, its attribution or — for a not-for-sale
+   * one — its licence and label, so a file that leaves Studio says why it may
+   * not be sold. Empty for engines whose licence asks for none. */
+  const credit = (cap) => cap?.outputRights?.attribution
+    || (cap?.outputRights?.class === "not-for-sale"
+      ? `${cap.label}: ${String(cap.licence || "see its licence").split(" — ")[0]} — ${rightsWords(cap.outputRights).label}. ${cap.outputRights.url || ""}`.trim()
+      : null);
+  const credits = [engineRow, ...used].map(credit).filter(Boolean);
+  return {
+    class: r.class,
+    sellable: r.sellable ?? null,
+    label,
+    short,
+    capability: row?.id || null,
+    engineCapability: capId,
+    licence: row?.licence || null,
+    url: r.url || null,
+    basis: imported ? "imported" : r.basis || (r.class === "unknown" ? null : "licence"),
+    addOns,
+    ...(r.changed ? { changed: r.changed } : {}),
+    ...(credits.length ? { attribution: [...new Set(credits)].join("\n") } : {}),
+  };
+}
+
+/**
+ * THE LEDGER'S STAMP FOR A SONG, when it differs from its model's.
+ *
+ * provenance.js stamps a generate event with its model's row (rightsStampFor)
+ * and keeps an `outputRights` the caller supplies. A song that used a
+ * not-for-sale add-on (a catalogued LoRA, the real-audio tokenizer) is
+ * stricter than its model, and without this the ledger said "yours to sell"
+ * while the library row said "not for sale". Null when no add-on raised it:
+ * the model's own stamp is then the right one, and the ledger stays as small.
+ */
+export function songRightsStamp(meta = {}, opts = {}) {
+  const r = songRights(meta, opts);
+  return r.addOns.length ? { class: r.class, capability: r.capability, url: r.url, addOns: r.addOns } : null;
+}
+
 /**
  * Free space on the drive the models live on.
  *
@@ -2967,6 +3480,61 @@ async function fileHave(f) {
   try { return (await stat(f.dest)).size; } catch { return 0; }
 }
 
+/**
+ * What THIS install needs, as the Models screen badges it. Not the same
+ * question as the catalogue's `required`.
+ *
+ * An install needs ONE music engine. The catalogue flag marks config.js's
+ * starting engine, MiniMax Music 3, and the Models screen used to badge
+ * straight from it, so an install running YuE2 was told MiniMax was REQUIRED
+ * and shown an 11.92 GB download it would never render with. So, per status
+ * row (the list, because one row's answer turns on another row's readiness):
+ *
+ *   selected engine READY   that row alone is `required`. The choice is made
+ *                           and on disk, so it is the one thing not to delete.
+ *   selected engine NOT     no music row is `required`; every one carries
+ *   ready (a fresh install) `requiredGroup: "music"` and the card says "one
+ *                           music engine required". Badging the selected row
+ *                           here would be the old defect again: a fresh
+ *                           install's selected engine is config.js's default,
+ *                           and /api/music refuses to select an engine that is
+ *                           not downloaded, so a newcomer would be told MiniMax
+ *                           is required before they could ever pick YuE2.
+ *   hosted Music 3          nothing: API mode renders on the provider's
+ *                           machine, and jobs.js sends exactly this pair
+ *                           (api.enabled, engine minimax-music3) to #runApi.
+ *
+ * A saved engine that names no row is "not ready": it points at nothing, so
+ * the group answer is the true one. Readiness is the row's own `ready`, which
+ * is what the card beside the badge says. /api/models overlays the native GGUF
+ * row's readiness from its setup (status() cannot see that runtime), so it
+ * marks again after the overlay; the answer depends only on the rows given.
+ *
+ * The music rows come from config's engine map (each engine names its
+ * capability), not a list typed here, so a new engine is covered the day it is
+ * added there. Every other row keeps its catalogue flag.
+ */
+/** Every module a capability needs, by import name: `needsModules` when the
+ *  catalogue lists several (timed lyrics), else its one `needsPackage`. The
+ *  Models screen, the welcome panel, Settings and extras_setup.mjs all ask
+ *  this, so none of them can go back to checking only the first. */
+export function modulesOf(cap) {
+  return cap?.needsModules || (cap?.needsPackage ? [cap.needsPackage] : []);
+}
+
+export function markRequired(rows, { music = config.music, api = config.api } = {}) {
+  const engines = music?.engines || {};
+  const musicRows = new Set(Object.values(engines).map((e) => e?.capability).filter(Boolean));
+  const selected = engines[music?.engine]?.capability || null;
+  const hosted = !!api?.enabled && music?.engine === "minimax-music3";
+  const chosen = !hosted && !!selected && rows.some((r) => r.id === selected && r.ready);
+  return rows.map((r) => (!musicRows.has(r.id) ? r : {
+    ...r,
+    required: chosen && r.id === selected,
+    requiredGroup: hosted || chosen ? null : "music",
+  }));
+}
+
 export class ModelManager extends EventEmitter {
   constructor() {
     super();
@@ -3019,6 +3587,10 @@ export class ModelManager extends EventEmitter {
         // silently answers "no" on one of the two shapes it will be handed is
         // the subtraction's failure wearing a different hat.
         makes: cap.makes || null,
+        /* The row this one only makes sense beside (a LoRA on another row's
+         * model, like Fast draft on Qwen Image 2.1). Null for every model of
+         * its own. */
+        addonFor: cap.addonFor || null,
         label: cap.label,
         why: cap.why,
         licence: cap.licence,
@@ -3043,13 +3615,18 @@ export class ModelManager extends EventEmitter {
         // or, here, fail a size check after a multi-gigabyte fetch.
         awaiting: cap.awaiting || null,
         note: cap.note,
+        // The catalogue's flag, until markRequired() below replaces it on the
+        // music rows with this install's answer (the badge the screen shows).
         required: !!cap.required,
+        requiredGroup: null,
         // What the machine needs, and what else could be used instead. Stated
         // because "4 GB to download" answers a different question from "will it
         // run on my card" — and the second is the one that stops people.
         requires: cap.requires || null,
         variants: cap.variants || null,
         needsPackage: cap.needsPackage || null,
+        // Every module that must import, when there is more than one (lyrics).
+        needsModules: cap.needsModules || null,
         // The command a person types to get that package. A capability whose
         // only blocker is a pip install used to report the blocker and not the
         // remedy, which is the shape of every "rough edge" complaint about this
@@ -3067,7 +3644,7 @@ export class ModelManager extends EventEmitter {
         progress: this.progress.get(cap.id) || null,
       });
     }
-    return out;
+    return markRequired(out);
   }
 
   /* The fetch of each running download, so Cancel can stop it mid-wait. */
@@ -3191,6 +3768,10 @@ export class ModelManager extends EventEmitter {
   }
 
   async #one(id, f, getBase, _setBase) {
+    if (fp4Blocked(f)) {
+      throw new Error(`${path.basename(f.dest)} is an fp4 build, which needs an NVIDIA card. `
+        + "It was not downloaded. Use another build of it from the Models screen.");
+    }
     await mkdir(path.dirname(f.dest), { recursive: true });
     const part = `${f.dest}.part`;
     let from = 0;

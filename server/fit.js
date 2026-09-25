@@ -32,43 +32,77 @@
  * that struggles.
  */
 import path from "node:path";
-import { CATALOG, MODEL_TO_CAPABILITY, isPictureModel } from "./models.js";
-import { config } from "./config.js";
+import { CATALOG, MODEL_TO_CAPABILITY, isPictureModel, rightsRank } from "./models.js";
+import { config, prefChosen, prefOrigin } from "./config.js";
+import { SETTING_WORDS } from "./lrc.js";
+import {
+  h3TierFor, h3Status, h3SetSizeByHand, H3_VRAM_OFFERED_GB, H3_VRAM_MIN_GB, H3_VRAM_FULL_GB, H3_RAM_MEASURED_GB,
+  H3_RAM_FLOOR_GB, H3_ASK_A_FRIEND, ramBoxGb,
+} from "./h3tier.js";
+import { musicDefault, yue2ComfyFit } from "./music-default.js";
+import { NO_STRONG_CARD, NO_STRONG_CARD_VIDEO_LINE } from "./cloud-switch.js";
 
-/* ── the four answers ──────────────────────────────────────────────────────
+/* ── the five answers ──────────────────────────────────────────────────────
  *
- * Deliberately four and not three. "Runs" and "does not run" is the split
- * people expect, and it is wrong on this engine: every `--lowvram` tier works
- * by keeping less of the model resident and STREAMING the rest from system
- * RAM, so between comfortable and impossible there is a wide band where the
- * thing genuinely works and is genuinely slower. Collapsing that band into
- * "no" would refuse work most of these cards can do; collapsing it into "yes"
- * is how somebody ends up watching a progress bar for thirteen minutes with no
+ * Deliberately more than two. "Runs" and "does not run" is the split people
+ * expect, and it is wrong on this engine: every `--lowvram` tier works by
+ * keeping less of the model resident and STREAMING the rest from system RAM,
+ * so between comfortable and impossible there is a wide band where the thing
+ * genuinely works and is genuinely slower. Collapsing that band into "no"
+ * would refuse work most of these cards can do; collapsing it into "yes" is
+ * how somebody ends up watching a progress bar for thirteen minutes with no
  * idea that is not normal (which is measured, on Z-Image, in models.js).
  *
- * The fourth is `unknown`, and it is not a euphemism for no. */
+ * `smaller` is the H3 family's (server/h3tier.js): a card under full size gets
+ * a smaller picture and a shorter clip instead of the same clip slowly.
+ * `unknown` is not a euphemism for no.
+ *
+ * `rank` is served with the rest (/api/models `fitStates`), so the page sorts
+ * by the server's order instead of keeping a copy of it: least restrictive
+ * first, and the recommendation ranks with the same numbers (FIT_RANK). */
 export const FIT_STATES = {
   "fits": {
     tone: "ok",
     chip: "Fits your machine",
-    line: "At or above what the publisher recommends, on both the card and system RAM.",
+    /* "the recommendation", not "the publisher's": H3's is what Studio's own
+     * lab measured (12 GB card, 32 GB of RAM), and no publisher wrote it. */
+    line: "At or above the recommendation the row states, on both the card and system RAM.",
+    rank: 0,
   },
   "streams": {
     tone: "warn",
     chip: "Runs, slower",
     line: "Above the minimum but under the recommendation. It runs by streaming weights "
         + "from system RAM instead of holding them on the card — that works, and it costs time.",
+    rank: 1,
   },
-  "wont-run": {
-    tone: "bad",
-    chip: "Below the minimum",
-    line: "Under the publisher's stated floor. Studio will still download it if you ask; "
-        + "it is likely to fail at load or crawl.",
+  /* H3 ONLY, for now (server/h3tier.js). A card under what full size needs does
+   * not have to stream the same clip slowly: H3's memory follows picture size
+   * times clip length, so a smaller card gets a smaller clip that fits. That is
+   * neither "Runs, slower" nor "Below the minimum", and calling it either told
+   * an 8 GB owner something the lab measured to be false. Only MEASURED sizes
+   * get this chip; the unproven 6 GB preview is `unknown`. */
+  "smaller": {
+    tone: "warn",
+    chip: "Runs at a smaller size",
+    line: "The card is under what full size needs; a smaller picture and a shorter clip were "
+        + "measured to fit a card this size. The row names the size, and the Video screen starts "
+        + "there.",
+    rank: 2,
   },
   "unknown": {
     tone: "unknown",
     chip: "Cannot tell",
-    line: "No GPU reading available on this machine, so nothing is claimed either way.",
+    line: "Nothing is claimed either way: the card could not be read, or nobody has run this on a "
+        + "card like it yet. The row says which.",
+    rank: 3,
+  },
+  "wont-run": {
+    tone: "bad",
+    chip: "Below the minimum",
+    line: "Under the stated floor. Studio will still download it if you ask; "
+        + "it is likely to fail at load or crawl.",
+    rank: 4,
   },
 };
 
@@ -110,7 +144,7 @@ function exactGb(mb) {
  * is running on it. Free memory is still reported here — it is the right number
  * for "close Chrome first", just not for "can this machine do it at all".
  */
-export function readMachine(gpu, ram) {
+export function readMachine(gpu, ram, { cpuOnly = false, vaeMeasured = false } = {}) {
   const haveGpu = !!(gpu && gpu.totalMb);
   return {
     gpu: haveGpu
@@ -118,6 +152,7 @@ export function readMachine(gpu, ram) {
           name: gpu.name,
           vramGb: gb(gpu.totalMb),
           vramExactGb: exactGb(gpu.totalMb),
+          vramMb: Number(gpu.totalMb),   // the raw reading, for h3tier.js, which rounds it the same way
           usedGb: Number.isFinite(gpu.usedMb) ? exactGb(gpu.usedMb) : null,   // null: not readable, never "0 used"
           /* Carried because a recommendation that ignores it recommends an
            * engine that is broken on the card in front of it — see
@@ -128,7 +163,11 @@ export function readMachine(gpu, ram) {
         }
       : null,
     ram: {
-      totalGb: gb(ram?.totalMb),
+      /* SYSTEM RAM IS NOT ROUNDED LIKE VRAM: Windows keeps up to a few GB of
+       * it for hardware and integrated graphics, so a 32 GB laptop reads 31.4.
+       * h3tier.js ramBoxGb is the one reader (the launcher's RAM line, the
+       * Video and music-video screens and every row here). */
+      totalGb: ramBoxGb(ram?.totalMb) ?? 0,
       totalExactGb: exactGb(ram?.totalMb),
       freeGb: exactGb((ram?.totalMb || 0) - (ram?.usedMb || 0)),
       note: ram?.note || null,
@@ -143,6 +182,138 @@ export function readMachine(gpu, ram) {
         + "It returned nothing here — so this is an AMD, Intel or Apple machine, or the driver is not "
         + "installed. Every VRAM answer below is therefore 'cannot tell' rather than 'no'. ComfyUI "
         + "itself may still run: check what your card is and compare it against the numbers each row states.",
+    /* WHAT H3 DOES ON THIS MACHINE: its tier, the need table for the tier's
+     * size and the RAM warning, from the same reading as everything above
+     * (server/h3tier.js). The Models screen and models_for_this_machine both
+     * carry `machine`, so neither has to work a tier out for itself. */
+    h3: h3Status({ gpu: haveGpu ? gpu : null, ram, cpuOnly: !haveGpu && !!cpuOnly, vaeMeasured: !!vaeMeasured }),
+  };
+}
+
+/**
+ * H3 AND THE ROWS THAT ONLY RUN WITH IT (TaoMate, the reference build, FastH3).
+ *
+ * Their rows carry `requires.h3Tiers`, and the verdict is the card's TIER from
+ * server/h3tier.js rather than a floor: H3's memory follows picture size times
+ * clip length, so an 8 GB card does not "fail at load or crawl", it renders
+ * 960x544 for 5 s (measured under a cap). Every H3-family row gets the same
+ * answer on one machine, because the tier belongs to the card, not the row:
+ * a TaoMate row that disagreed with the model it loads into was the defect.
+ *
+ * RAM: A FLOOR AT 16 GB, A WARNING UNDER 32. H3 was only ever measured with
+ * 32 GB of RAM, and filled it; nobody has run it with less. Under 16 GB it is
+ * not offered (the row prints 16 as its minimum, so the printed number is the
+ * enforced one). From 16 to 31 GB the verdict carries the lab's sentence, a
+ * full-size card is "Runs, slower" instead of "Fits", and it is offered but
+ * not recommended.
+ *
+ * OFFERED IS NOT RECOMMENDED. `recommendable: false` keeps a row out of
+ * recommendFor's picks while its chip still says what the card would get:
+ * the unproven 6 GB preview, an AMD card (no H3 render tested) and a machine
+ * under 32 GB of RAM (h3tier.js decides, `notRecommended` says why). The
+ * preview and AMD are "Cannot tell", never a chip that says it runs.
+ *
+ * `short` is the badge's tail when the generic one would mislead (it would
+ * quote a recommendation where the answer is a size); `warning` is the RAM
+ * and AMD sentences, which the Models screen shows under the badge. `why`
+ * quotes the row's own path's evidence (FastH3 and the reference path were
+ * not measured where the Fast setting was), so those rows may differ in
+ * words while every H3-family row gets the same state.
+ */
+function h3Fit(req, machine) {
+  const g = machine.gpu;
+  const t = h3TierFor({
+    vramMb: g ? (g.vramMb ?? g.vramGb * 1024) : null,
+    ramGb: machine.ram.totalGb,
+    vendor: g?.vendor || null,
+    path: req.h3Path || null,
+    cpuOnly: !g && !!machine.h3?.noCard,
+    vaeMeasured: !!machine.h3?.vaeMeasured,
+  });
+  const warning = [t.ramWarning, t.amdNote].filter(Boolean).join(" ") || null;
+  const common = {
+    needVramGb: Number(req.vramMinGb ?? 0), recVramGb: Number(req.vramRecGb ?? 0),
+    needRamGb: Number(req.ramMinGb ?? 0), recRamGb: Number(req.ramRecGb ?? 0),
+    yourVramGb: g ? g.vramGb : null,
+    yourRamGb: machine.ram.totalGb,
+    note: req.note || null,
+    h3: {
+      tier: t.id, label: t.label, width: t.width, height: t.height,
+      maxSeconds: t.maxSeconds, measured: t.measured, experimental: t.experimental,
+      recommend: t.recommend,
+    },
+    warning,
+    short: null,
+    recommendable: t.recommend,
+  };
+  /* The sentence, why it is not recommended, then the warnings — the AMD note
+   * only where the AMD sentence has not already said it in other words. */
+  const tailOf = (s) => [s, t.notRecommended, t.ramWarning, t.notRecommendedFor === "amd" ? null : t.amdNote]
+    .filter(Boolean).join(" ");
+  const ramShort = t.ramWarning ? ` · ${machine.ram.totalGb} GB RAM, measured with ${H3_RAM_MEASURED_GB}` : "";
+  const size = `${t.width}x${t.height}`;
+
+  /* Decided first, and without the card: RAM this far under what H3 filled is
+   * not offered whatever the card is. Not a warning: the refusal is the message. */
+  if (t.ramBelowFloor) {
+    return {
+      ...common, state: "wont-run", warning: null, recommendable: false,
+      why: `This machine has ${machine.ram.totalGb} GB of RAM. H3 is offered from ${H3_RAM_FLOOR_GB} GB: it was only `
+        + `ever measured with ${H3_RAM_MEASURED_GB} GB, and filled it, and nothing with less was tried. `
+        + H3_ASK_A_FRIEND,
+    };
+  }
+  /* No card at all (the engine runs on the CPU): not offered, not "cannot tell". */
+  if (!g && t.noCard) {
+    return { ...common, state: "wont-run", warning: null, recommendable: false, short: "no graphics card", why: t.evidence };
+  }
+  if (!g) {
+    return {
+      ...common, state: "unknown",
+      why: tailOf(`${t.evidence} This machine has ${machine.ram.totalGb} GB of RAM.`),
+    };
+  }
+  if (t.id === "none") {
+    /* Not offered, so no RAM or AMD caveat: they qualify a render that will not happen. */
+    return {
+      ...common, state: "wont-run", warning: null, recommendable: false,
+      /* The printed minimum (the smallest measured size) and the preview floor, both. */
+      short: `needs ${H3_VRAM_MIN_GB} GB of VRAM (${H3_VRAM_OFFERED_GB} for an experimental preview), you have ${t.cardGb}`,
+      why: `Your ${g.name} has ${t.cardGb} GB, under the ${H3_VRAM_OFFERED_GB} GB H3 needs even for a preview. `
+        + t.evidence,
+    };
+  }
+  /* The tier's size for this card, as the sentence says it. */
+  const sizeLine = t.id === "full"
+    ? `full size, ${size}, measured up to ${t.maxSeconds} s`
+    : `${size} for ${t.maxSeconds} s${t.experimental ? ", as an experimental preview" : ""}`;
+  if (t.amdNote) {
+    return {
+      ...common, state: "unknown",
+      short: `${size}${t.experimental ? ", experimental" : ""} · no AMD render tested`,
+      why: tailOf(`Your ${g.name} has ${t.cardGb} GB: on an NVIDIA card that size gets H3 at ${sizeLine}. `
+        + `Studio cannot tell what an AMD card does with it. ${t.evidence}`),
+    };
+  }
+  if (t.experimental) {
+    return {
+      ...common, state: "unknown",
+      short: `${size}, ${t.maxSeconds} s · experimental preview, not proven${ramShort}`,
+      why: tailOf(`Your ${g.name} has ${t.cardGb} GB: H3 is offered here only as an experimental preview, `
+        + `${size} for ${t.maxSeconds} s. ${t.evidence} ${h3SetSizeByHand(t)}`),
+    };
+  }
+  if (t.id === "full") {
+    const why = tailOf(`Your ${g.name} (${t.cardGb} GB) renders H3 at ${sizeLine}. ${t.evidence}`);
+    return t.ramWarning
+      ? { ...common, state: "streams", short: `${size}${ramShort}`, why }
+      : { ...common, state: "fits", why };
+  }
+  return {
+    ...common, state: "smaller",
+    short: `${size}, ${t.maxSeconds} s${ramShort}`,
+    why: tailOf(`Your ${g.name} has ${t.cardGb} GB: H3 fits here at a smaller size, ${sizeLine}; full size `
+      + `needs ${H3_VRAM_FULL_GB} GB. ${t.evidence} ${h3SetSizeByHand(t)}`),
   };
 }
 
@@ -159,6 +330,7 @@ export function readMachine(gpu, ram) {
  */
 export function fitFor(requires, machine) {
   const req = requires || {};
+  if (req.h3Tiers) return h3Fit(req, machine);
   if (req.experimental) return {state:"unknown",why:"Experimental native build: a minimum hardware floor has not been established.",
     note:req.note||null,needVramGb:null,recVramGb:null,needRamGb:null,recRamGb:null,
     yourVramGb:machine.gpu?.vramGb??null,yourRamGb:machine.ram.totalGb};
@@ -274,9 +446,45 @@ const AMD_MUSIC_WARNING =
   + "with PyTorch attention and CUDA graphs off (--use-pytorch-cross-attention --disable-cuda-graphs, "
   + "Studio's default) fixes it; this launch does not use both.";
 
-/** Least restrictive first. The order the catalogue's own classes imply. */
-const RIGHTS_RANK = { "unrestricted": 0, "yours-with-conditions": 1, "unknown": 2, "not-for-sale": 3 };
-const FIT_RANK = { "fits": 0, "streams": 1, "unknown": 2, "wont-run": 3 };
+/* Least restrictive first: models.js rightsRank, the one ranking (a class it
+ * does not know ranks as "unknown"). */
+/* From FIT_STATES, so the page and the recommendation rank alike: a known
+ * smaller size above "cannot tell", below anything that runs full size. */
+const FIT_RANK = Object.fromEntries(Object.entries(FIT_STATES).map(([k, v]) => [k, v.rank]));
+
+/* THE FAST SETTING'S FILE, found by a field on the row (`fastPathFor`), not by
+ * id here. Rows that speed up an engine name it; the one marked `newInstalls`
+ * is what a machine holding neither gets (the 182 MB rank-19 TaoMate, measured
+ * equal to the 2.48 GB conversion). One already on disk always wins, and the
+ * newInstalls one first among those: the 2.48 GB row counts the small file as
+ * present (its `alt`), so after a new install fetches the small file both
+ * rows read ready, and the pick must name the one that was fetched.
+ * `fastNote` is the plain sentence the pick shows; the row's `why` keeps the
+ * details (rank 19, who made it). */
+const FAST_PATHS = CATALOG.filter((c) => c.fastPathFor)
+  .map((c) => ({ id: c.id, for: c.fastPathFor, newInstalls: !!c.newInstalls, note: c.fastNote || "" }));
+
+/** The territory sentence a region-locked pick's reason ends with. */
+function regionLine(cap) {
+  return cap.region
+    ? ` ⚠ Licensed only outside ${cap.region.excluded.join(", ")} — the download asks you to `
+      + "confirm you are outside those territories, and the licence is between you and the publisher."
+    : "";
+}
+
+/** One order for "which of these", used by the recommendation and by the
+ *  defaults below: on disk, then fit, then the least restrictive licence,
+ *  then the smaller download. Rows are {cap, fit}. */
+function rankPick(a, b) {
+  /* Already downloaded wins outright. Recommending a 25 GB fetch to somebody
+   * who is holding an equally good 14 GB one is not advice, it is a bill. */
+  if (a.cap.ready !== b.cap.ready) return a.cap.ready ? -1 : 1;
+  const f = FIT_RANK[a.fit.state] - FIT_RANK[b.fit.state];
+  if (f) return f;
+  const r = rightsRank(a.cap.outputRights?.class) - rightsRank(b.cap.outputRights?.class);
+  if (r) return r;
+  return (a.cap.totalBytes || 0) - (b.cap.totalBytes || 0);
+}
 
 /**
  * Bytes for a set of capabilities, counting each FILE once.
@@ -328,6 +536,63 @@ export function bytesFor(caps) {
   return { totalBytes: total, missingBytes: missing, sharedBytes: shared };
 }
 
+/* WHERE a package goes. Timed lyrics runs in a venv of its own
+ * (config.lyrics.python), and "your SYSTEM Python" is where a first user put
+ * faster-whisper, which Studio never runs for timed lyrics: the run died as
+ * "alignment failed". Every other package here does run in the system python. */
+function packageHome(cap) {
+  if (cap.id === "lyrics") {
+    return `It goes in ${config.lyrics.python}, the python timed lyrics run in (${SETTING_WORDS} changes it), `
+      + "not your system Python and never ComfyUI's.";
+  }
+  return "It goes in your SYSTEM Python, never ComfyUI's, because installing it there can move "
+    + "the torch build the engine depends on.";
+}
+
+/**
+ * The music default from the catalogue rows, for a caller that did not hand
+ * over index.js's answer (the suites, a probe): the person's saved choice if
+ * config holds one, else musicDefault() over one choice per music engine,
+ * ready when its row is. index.js passes the answer it applied instead, read
+ * from the music model list itself, so the two cannot disagree on screen.
+ */
+function musicFromCaps(capabilities, machine) {
+  if (prefChosen("music", "engine")) {
+    return { value: config.music.engine, chosenBy: "you", kept: prefOrigin("music", "engine") === "kept",
+      paid: !!config.api?.enabled && config.music.engine === "minimax-music3" };
+  }
+  const byId = new Map((capabilities || []).map((c) => [c.id, c]));
+  const choices = Object.keys(config.music.engines || {}).map((engine) => {
+    const cap = byId.get(MODEL_TO_CAPABILITY[engine]);
+    if (!cap) return null;
+    return {
+      engine, available: !!cap.ready, label: String(cap.label || engine).split("—").pop().trim(),
+      checkpoint: engine === "yue2-comfy" && cap.ready ? (cap.files?.[0]?.name || null) : null,
+      precision: engine === "yue2-gguf" ? "q4_0" : null,
+    };
+  }).filter(Boolean);
+  const comfyFit = yue2ComfyFitOn(byId.get(MODEL_TO_CAPABILITY["yue2-comfy"]), machine);
+  return musicDefault({
+    choices, machine,
+    api: { enabled: !!config.api?.enabled, provider: config.api?.provider || null },
+    musicOnly: !!config.musicOnly, comfy: !config.musicOnly && !config.cloudOnly,
+    comfyFits: comfyFit.fits, comfyShort: comfyFit.short,
+  });
+}
+
+/**
+ * YuE2-through-ComfyUI's own floor on this machine, for the music default's
+ * nothing-ready answer: server/music-default.js yue2ComfyFit over the row's
+ * `requires` and readMachine's readings (the card in whole GB, RAM as
+ * h3tier.js ramBoxGb reads it, 0 when unread, as fitFor takes it). The
+ * launcher asks the same function (launcher/checks.mjs yue2ComfyVerdict).
+ * { fits, short }: `short` is "card" or "ram", the half that fell short.
+ */
+export function yue2ComfyFitOn(row, machine) {
+  if (!row) return { fits: undefined, short: null };
+  return yue2ComfyFit(row.requires, { vramGb: machine?.gpu ? machine.gpu.vramGb : null, ramGb: machine?.ram?.totalGb ?? null });
+}
+
 /**
  * WHAT SHOULD THIS PERSON DOWNLOAD.
  *
@@ -356,38 +621,44 @@ export function bytesFor(caps) {
  *     one you would have to ask a lawyer about. Ideogram 4 loses to Z-Image on
  *     that alone, and the reason says so in those words.
  */
-export function recommendFor({ capabilities, machine, disk } = {}) {
+export function recommendFor({ capabilities, machine, disk, music = null } = {}) {
   const byId = new Map(capabilities.map((c) => [c.id, c]));
   const withFit = (id) => {
     const cap = byId.get(id);
     return cap ? { cap, fit: fitFor(cap.requires, machine) } : null;
   };
 
-  const rank = (a, b) => {
-    /* Already downloaded wins outright. Recommending a 25 GB fetch to somebody
-     * who is holding an equally good 14 GB one is not advice, it is a bill. */
-    if (a.cap.ready !== b.cap.ready) return a.cap.ready ? -1 : 1;
-    const f = FIT_RANK[a.fit.state] - FIT_RANK[b.fit.state];
-    if (f) return f;
-    const r = (RIGHTS_RANK[a.cap.outputRights?.class] ?? 2) - (RIGHTS_RANK[b.cap.outputRights?.class] ?? 2);
-    if (r) return r;
-    return (a.cap.totalBytes || 0) - (b.cap.totalBytes || 0);
-  };
+  const rank = rankPick;
 
   const picks = [];
   const notes = [];
 
-  /* ── the engine there is no choice about ─────────────────────────────── */
-  for (const id of [MODEL_TO_CAPABILITY[config.music.engine] || MUSIC_IDS[0]]) {
+  /* ── the engine there is no choice about ───────────────────────────────
+   * WHICH one is the music default's answer (server/music-default.js): the
+   * person's saved choice, else what Studio picks from this disk and card
+   * (index.js hands over the answer it applied; a caller that has none gets
+   * the same rule from the catalogue rows, musicFromCaps below). Worded by
+   * who chose it: a fresh install's YuE2 is Studio's pick, never "your
+   * selected music engine". */
+  const musicPick = music || musicFromCaps(capabilities, machine);
+  const mine = musicPick.chosenBy === "you";
+  for (const id of [MODEL_TO_CAPABILITY[musicPick.value] || MUSIC_IDS[0]]) {
     const e = withFit(id);
     if (!e) continue;
     picks.push({
       slot: "music", id, label: e.cap.label, fit: e.fit, ready: e.cap.ready,
       bytes: e.cap.totalBytes, licence: e.cap.licence,
       outputRights: e.cap.outputRights || null, region: e.cap.region || null,
+      chosenBy: musicPick.chosenBy || "machine", kept: !!musicPick.kept, paid: !!musicPick.paid,
       why: e.cap.ready
         ? `Already on disk. ${e.fit.why}`
-        : `This is your selected music engine; the other music engines are optional. ${e.fit.why}`,
+        : mine
+          ? `${musicPick.kept ? "Your settings name this music engine" : "You chose this music engine"}; the other music engines are optional. ${e.fit.why}`
+          : `Studio picked this music engine for this PC; the other music engines are optional. ${e.fit.why}`
+          /* On AMD the download is the int8 build, which nobody has measured
+           * there (the row's own note); said beside the pick, as Home says it. */
+          + (machine?.gpu?.vendor === "amd" && id === MODEL_TO_CAPABILITY["yue2-comfy"]
+            ? " The build it fetches (int8) is not yet measured on AMD cards; the bf16 build is the one measured there." : ""),
     });
   }
 
@@ -405,7 +676,11 @@ export function recommendFor({ capabilities, machine, disk } = {}) {
    * selected, and a recommendation that quietly recommended something else
    * would be lying about what is about to run. It names the failure and names
    * the alternative that is measured to work on the same card. */
-  const amdMusic = picks.find((p) => p.slot === "music" && p.id === MODEL_TO_CAPABILITY["minimax-music3"]);
+  /* Only for a MiniMax the person chose (Studio never picks it on AMD without
+   * the fix: server/music-default.js), and never for the hosted one, which
+   * does not render on this card. */
+  const amdMusic = picks.find((p) => p.slot === "music" && p.id === MODEL_TO_CAPABILITY["minimax-music3"]
+    && p.chosenBy === "you" && !p.paid);
   // Not when ComfyUI starts with the fix (index.js sets amdMusicFixed from the launch args).
   if (amdMusic && machine.gpu?.vendor === "amd" && !machine.amdMusicFixed) {
     const alt = byId.get(MODEL_TO_CAPABILITY["yue2-comfy"]);
@@ -419,7 +694,7 @@ export function recommendFor({ capabilities, machine, disk } = {}) {
     amdMusic.why += ` ⚠ ${AMD_MUSIC_WARNING}${altLine}`;
     notes.push({
       slot: "music-amd", id: amdMusic.id, label: amdMusic.label,
-      headline: `${modelName(amdMusic.label)} is selected, and it is not usable on this AMD card.`,
+      headline: `${amdMusic.kept ? "Your settings name" : "You chose"} ${modelName(amdMusic.label)}, and it is not usable on this AMD card.`,
       detail: AMD_MUSIC_WARNING + altLine,
     });
   }
@@ -437,7 +712,21 @@ export function recommendFor({ capabilities, machine, disk } = {}) {
   }
   /* ── video: the best one with a button ───────────────────────────────── */
   const videos = VIDEO_IDS.map(withFit).filter(Boolean);
-  const fetchable = videos.filter((v) => !v.cap.gated && v.fit.state !== "wont-run").sort(rank);
+  /* Between two video rows that are equally ready and equally fitting, the
+   * engine selected in settings wins before size does: FastH3 is 1 GB smaller
+   * than H3 but experimental (measured 2026-09-24: slower than H3's Fast
+   * setting, good on 1 of 3 prompts), and a fresh install's default is H3. */
+  const chosenVideo = MODEL_TO_CAPABILITY[config.video.engine];
+  const videoRank = (a, b) => {
+    if (a.cap.ready !== b.cap.ready || FIT_RANK[a.fit.state] !== FIT_RANK[b.fit.state]) return rank(a, b);
+    if ((a.cap.id === chosenVideo) !== (b.cap.id === chosenVideo)) return a.cap.id === chosenVideo ? -1 : 1;
+    return rank(a, b);
+  };
+  /* `recommendable: false` (the H3 family's unproven preview, AMD, under 32 GB
+   * of RAM; see h3Fit) is offered on its row and never picked here. */
+  const fetchable = videos
+    .filter((v) => !v.cap.gated && v.fit.state !== "wont-run" && v.fit.recommendable !== false)
+    .sort(videoRank);
   const gatedOnes = videos.filter((v) => v.cap.gated);
 
   if (fetchable.length) {
@@ -454,16 +743,46 @@ export function recommendFor({ capabilities, machine, disk } = {}) {
       region: best.cap.region || null,
       why: `The video engine Studio can fetch for you${others.length ? ` (over ${others.join(", ")})` : ""}. `
          + best.fit.why
-         + (best.cap.region
-             ? ` ⚠ Licensed only outside ${best.cap.region.excluded.join(", ")} — the download asks you to `
-               + "confirm you are outside those territories, and the licence is between you and the publisher."
-             : ""),
+         + regionLine(best.cap),
     });
+    /* The file that turns on the Video screen's Fast setting for that engine:
+     * the one on disk if either is, else the one marked for new installs. */
+    const fast = FAST_PATHS.filter((f) => f.for === best.cap.id)
+      .map((f) => ({ ...f, e: withFit(f.id) })).filter((f) => f.e);
+    const chosen = fast.find((f) => f.e.cap.ready && f.newInstalls) || fast.find((f) => f.e.cap.ready)
+      || fast.find((f) => f.newInstalls) || fast[0];
+    if (chosen) {
+      const { cap, fit } = chosen.e;
+      picks.push({
+        /* The slot id stays machine-readable; `slotLabel` is what a person reads. */
+        slot: "video-fast", slotLabel: "fast video", id: cap.id, label: cap.label, fit, ready: cap.ready,
+        bytes: cap.totalBytes, licence: cap.licence,
+        outputRights: cap.outputRights || null, region: cap.region || null,
+        why: `${cap.ready ? "Already on disk. " : ""}Turns on the Video screen's Fast setting (three steps) `
+           + `for ${best.cap.label.split("—").pop().trim()}.${chosen.note ? ` ${chosen.note}` : ""}${regionLine(cap)}`,
+      });
+    }
   } else if (videos.length) {
+    /* The H3 family shares one verdict (the tier is the card's, not the row's),
+     * so it is said once for all of them, not once per row, in the words of
+     * the engine selected in settings (else the first). */
+    const family = videos.filter((v) => v.fit.h3);
+    const voice = family.find((v) => v.cap.id === chosenVideo) || family[0];
+    const rest = videos.filter((v) => !v.fit.h3).map((v) => `${v.cap.label}: ${v.fit.why}`);
     notes.push({
       slot: "video",
       headline: "No video engine is recommended for this machine.",
-      detail: videos.map((v) => `${v.cap.label}: ${v.fit.why}`).join(" "),
+      /* What to do instead, in the owner's order: a friend's card, then a
+       * paid service on your own key (server/cloud-switch.js); the paid half
+       * makes clips in another launch mode, not a music video's scenes.
+       * web/modelfit.js turns `instead` into buttons. The Instead line
+       * names the friend, so the H3 sentence drops its own copy. */
+      detail: [
+        ...(family.length ? [`${family.map((v) => v.cap.label).join(" and ")}: ${voice.fit.why.replace(H3_ASK_A_FRIEND, "").trim()}`] : []),
+        ...rest,
+        `Instead: ${NO_STRONG_CARD_VIDEO_LINE}`,
+      ].join(" "),
+      instead: NO_STRONG_CARD.map((w) => ({ id: w.id, title: w.title, where: w.where, view: w.view, paid: w.paid })),
     });
   }
 
@@ -490,7 +809,7 @@ export function recommendFor({ capabilities, machine, disk } = {}) {
     const best = usableImages[0];
     const rights = best.cap.outputRights?.class;
     const beaten = usableImages.slice(1)
-      .filter((i) => (RIGHTS_RANK[i.cap.outputRights?.class] ?? 2) > (RIGHTS_RANK[rights] ?? 2))
+      .filter((i) => rightsRank(i.cap.outputRights?.class) > rightsRank(rights))
       .map((i) => `${i.cap.label} (${i.cap.outputRights?.class})`);
     picks.push({
       slot: "image", id: best.cap.id, label: best.cap.label, fit: best.fit, ready: best.cap.ready,
@@ -520,9 +839,8 @@ export function recommendFor({ capabilities, machine, disk } = {}) {
       needsPackage: cap.needsPackage || null,
       install: cap.packageInstall || null,
       why: cap.packageReady === false
-        ? `Needs the \`${cap.needsPackage}\` Python package, which Studio cannot fetch — it is a pip install, `
-          + "not a file. It goes in your SYSTEM Python, never ComfyUI's, because installing it there can move "
-          + "the torch build the engine depends on."
+        ? `Needs the ${(cap.packageMissing?.length ? cap.packageMissing : [cap.needsPackage]).map((m) => `\`${m}\``).join(" and ")} `
+          + "Python package, which Studio cannot fetch — it is a pip install, not a file. " + packageHome(cap)
         : "The Python side of this is present.",
     }));
 
@@ -570,4 +888,131 @@ export function recommendFor({ capabilities, machine, disk } = {}) {
     diskFits: disk ? disk.freeBytes >= missingBytes : null,
     diskFreeBytes: disk ? disk.freeBytes : null,
   };
+}
+
+/* ── WHAT RUNS WHEN NOBODY CHOSE ───────────────────────────────────────────
+ *
+ * A fresh install used to aim music at MiniMax Music 3 and pictures and covers
+ * at Qwen Image 2.1, neither of which the recommended download fetches; the
+ * first song opened a download for the wrong engine and every cover after it
+ * failed. defaultFor() is asked only when a preference is NOT saved, answers
+ * from what is on this PC, and is worked out on every read: index.js applies it
+ * to the live config without writing it into settings.json (config.js
+ * applyMachineDefault), so the day a download finishes the default follows it.
+ *
+ * A SAVED CHOICE ALWAYS WINS, ready or not, and is reported as the person's —
+ * with a sentence when its files are missing, never a silent swap. Nothing
+ * here picks a paid API (only a person does that) and the YuE2 Python kit only
+ * when it is installed and ready. The config.js literals are the last resort.
+ *
+ * Pure, like everything else in this file: index.js hands over what it read
+ * (the music model choices, the catalogue rows, the machine) and
+ * server/defaults_test.js asks the same questions of four imaginary machines. */
+
+/** The one sentence when no picture model can paint a cover. */
+export const COVER_NEEDS_MODEL = "Add a picture model to get covers.";
+
+/** The engine names a picture can be made with, read from the same map the
+ *  provenance ledger uses, restricted to the rows that make pictures. */
+const PICTURE_ENGINES = Object.entries(MODEL_TO_CAPABILITY).filter(([, id]) => IMAGE_IDS.includes(id));
+
+/** "Images — FLUX.2 klein 4B" -> "FLUX.2 klein 4B": the model half of a row label. */
+const shortLabel = (label) => String(label || "").split("—").pop().trim();
+
+/* The music answer lives in server/music-default.js (import-free), because the
+ * launcher asks the same question on its first screen and may not import this
+ * file (config.js computes a whole Studio at import time). */
+export { yue2BuildFor } from "./music-default.js";
+
+/* Who a saved value belongs to, in the words every row uses. `kept` is a value
+ * an older Studio wrote into settings.json on its own: it wins like a choice,
+ * but nobody can say it was chosen. */
+const saidBy = (kept) => (kept ? "Saved in your settings:" : "You chose");
+
+function pictureRows(capabilities, machine) {
+  const byId = new Map((capabilities || []).map((c) => [c.id, c]));
+  return PICTURE_ENGINES.map(([engine, id]) => {
+    const cap = byId.get(id);
+    return cap ? { engine, cap, fit: fitFor(cap.requires, machine || { gpu: null, ram: { totalGb: 0 } }) } : null;
+  }).filter(Boolean);
+}
+
+/* A saved picture engine: ready when its row is on disk; "checkpoint" (the
+ * person's own model file) is theirs to have put there. */
+function savedPicture(saved, capabilities, machine) {
+  const row = pictureRows(capabilities, machine).find((r) => r.engine === saved);
+  return { ready: row ? !!row.cap.ready : saved === "checkpoint", label: row ? shortLabel(row.cap.label) : saved === "checkpoint" ? "your own model file" : saved };
+}
+
+function pictureDefault({ saved = null, kept = false, capabilities = [], machine = null, literal = "qwen-image-2.1" }) {
+  const key = "image.engine";
+  if (saved) {
+    const { ready, label } = savedPicture(saved, capabilities, machine);
+    return { key, value: saved, chosenBy: "you", kept: !!kept, ready, label,
+      why: `${saidBy(kept)} ${label} for pictures${ready ? "." : ", and it is not on this PC. The Models screen has it; Studio does not switch for you."}` };
+  }
+  const rows = pictureRows(capabilities, machine);
+  const onDisk = rows.filter((r) => r.cap.ready).sort(rankPick)[0];
+  if (onDisk) {
+    return { key, value: onDisk.engine, chosenBy: "machine", kept: false, ready: true, label: shortLabel(onDisk.cap.label),
+      why: `Studio picked ${shortLabel(onDisk.cap.label)} for pictures because it is on this PC.` };
+  }
+  /* Nothing on disk: the one the recommendation would fetch, so Make picture
+   * opens the download for the right model rather than a research-licence one. */
+  const best = rows.filter((r) => r.fit.state !== "wont-run").sort(rankPick)[0];
+  if (best) {
+    return { key, value: best.engine, chosenBy: "machine", kept: false, ready: false, label: shortLabel(best.cap.label),
+      why: `No picture model is on this PC yet. ${shortLabel(best.cap.label)} is the one to get (the Models screen has it).` };
+  }
+  return { key, value: literal, chosenBy: "machine", kept: false, ready: false, label: literal,
+    why: "No picture model is on this PC yet. The Models screen has them." };
+}
+
+function coverDefault({ saved = null, kept = false, custom = false, capabilities = [], machine = null, literal = "qwen-image-2.1" }) {
+  const key = "art.engine";
+  if (custom) {
+    return { key, value: saved || literal, chosenBy: "you", kept: false, ready: true, canRun: true, label: saved || literal,
+      why: "Your own cover workflow or model file paints the covers." };
+  }
+  if (saved) {
+    const { ready, label } = savedPicture(saved, capabilities, machine);
+    return { key, value: saved, chosenBy: "you", kept: !!kept, ready, canRun: ready, label,
+      why: ready ? `${saidBy(kept)} ${label} for covers.`
+        : `${COVER_NEEDS_MODEL} ${kept ? `Your settings name ${label}` : `You chose ${label}`}, and it is not on this PC.` };
+  }
+  const pic = pictureDefault({ capabilities, machine, literal });
+  return { key, value: pic.value, chosenBy: "machine", kept: false, ready: pic.ready, canRun: pic.ready, label: pic.label,
+    why: pic.ready ? `Studio picked ${pic.label} for covers because it is on this PC.` : COVER_NEEDS_MODEL };
+}
+
+/* `turboBuilds` says which speed-up files config.js found; with none on disk
+ * the count is config.js's fallback, and the sentence says so rather than
+ * calling it matched. Clips only, for now: music-video clips still render at
+ * their own count until the music-video lane reads this one. */
+function videoStepsDefault({ engine = "h3", label = "H3", stepDefaults = null, turboBuilds = null }) {
+  const value = Number.isFinite(stepDefaults?.standard) ? stepDefaults.standard : null;
+  const onDisk = !turboBuilds || Object.values(turboBuilds).some(Boolean);
+  return { key: "video.steps", value, chosenBy: "machine", kept: false, ready: value !== null && onDisk, label: `${value ?? "?"} steps`, engine,
+    why: value === null ? `No ${label} step count is known on this PC.`
+      : onDisk ? `${value} steps for clips: the step count the ${label} speed-up files on this PC were made for.`
+      : `${value} steps for clips, the count the ${label} speed-up files the Models screen fetches are made for. None are on this PC yet.` };
+}
+
+/**
+ * The default for one kind, and who chose it.
+ *   "music"      ctx: server/music-default.js musicDefault
+ *                     { saved: {engine, checkpoint, kept} | null, session, choices, machine, api, musicOnly, literal }
+ *   "image"      ctx: { saved: engine | null, kept, capabilities, machine, literal }
+ *   "cover"      ctx: { saved: engine | null, kept, custom, capabilities, machine, literal }
+ *   "videoSteps" ctx: { engine, label, stepDefaults, turboBuilds }
+ * Always { key, value, chosenBy: "machine" | "you", kept, why, ready, label }.
+ * "you" is a saved value, which always wins; `kept` says an older Studio saved
+ * it on its own, and its `why` says "Saved in your settings" instead of "You chose".
+ */
+export function defaultFor(kind, ctx = {}) {
+  if (kind === "music") return musicDefault(ctx);
+  if (kind === "image") return pictureDefault(ctx);
+  if (kind === "cover") return coverDefault(ctx);
+  if (kind === "videoSteps") return videoStepsDefault(ctx);
+  throw new Error(`defaultFor: unknown kind ${kind}`);
 }

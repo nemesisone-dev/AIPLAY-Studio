@@ -1,5 +1,5 @@
 /**
- * The Chat panel — the first thing in the rail, and the one screen you can
+ * The Chat panel — the first entry under More tools, and the one screen you can
  * arrive at knowing nothing.
  *
  * ═════════════════════════════════════════════════════════════════════════
@@ -42,6 +42,10 @@
  * tag the model asked for. server/chat/ui_test.js feeds it a script tag and
  * asserts it comes back as visible text.
  */
+
+/* Whether a writing model can answer Make song (UI_PLAN B3), one answer shared
+ * with the Pictures and Video boxes (web/assist.js). */
+import { writerFrom, whyNoWriter, notYetLine } from "./writer.js";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
@@ -719,9 +723,17 @@ function ask(text) {
  * page first, then the local files ComfyUI can load. Shared by the Chat tab
  * and Simple mode. The engine being down only hides the local group — a
  * connected API still works without it. Returns the current row, or null.
+ *
+ * `opts.lead`: a first option worth "" (Settings' Enhance picker: "Same as
+ * Simple mode (then Chat)"), selected unless the answer's `own` choice is in
+ * the list. All six writer pickers come through here (UI_PLAN B2).
  */
-export function fillModelMenu(sel, d, emptyTitle) {
-  const models = Array.isArray(d?.models) ? d.models : [];
+export function fillModelMenu(sel, d, emptyTitle, opts = {}) {
+  /* `models` is what can write, by name (server/chat/models.js writerVerdict);
+   * `every` is every file, behind "Show every file" (UI_PLAN B2). */
+  const all = sel.dataset?.every === "1" && Array.isArray(d?.every);
+  const models = all ? d.every : Array.isArray(d?.models) ? d.models : [];
+  writerExtras(sel, d, models, all, emptyTitle, opts);
   const apis = models.filter((m) => m.api);
   const local = models.filter((m) => !m.api);
   if (!models.length) {
@@ -730,15 +742,44 @@ export function fillModelMenu(sel, d, emptyTitle) {
     sel.title = d && !d.offline ? emptyTitle : "";
     return null;
   }
-  const opt = (m) => `<option value="${esc(m.file)}" title="${esc(m.api ? m.model : m.file)}">${esc(m.label)}</option>`;
-  sel.innerHTML = (apis.length ? `<optgroup label="Cloud API">${apis.map(opt).join("")}</optgroup>` : "")
+  const opt = (m) => `<option value="${esc(m.file)}" title="${esc(m.api ? m.model : m.file)}">${esc(m.label)}${m.why ? ` — ${esc(m.why)}` : ""}</option>`;
+  sel.innerHTML = (opts.lead ? `<option value="">${esc(opts.lead)}</option>` : "") + (apis.length ? `<optgroup label="Cloud API">${apis.map(opt).join("")}</optgroup>` : "")
     + (local.length ? `<optgroup label="Local · this machine">${local.map(opt).join("")}</optgroup>`
       : d.offline ? '<optgroup label="Local · this machine"><option value="" disabled>waiting for the engine…</option></optgroup>' : "");
   const cur = models.find((m) => m.file === d.current) || null;
-  sel.value = cur ? cur.file : models[0].file;
+  if (opts.lead) sel.value = d.own && models.some((m) => m.file === d.own) ? d.own : "";
+  else sel.value = cur ? cur.file : models[0].file;
   sel.title = cur?.api ? `${cur.label} — answers over the internet, billed to your API account` : (d.current || "");
   sel.disabled = false;
   return cur;
+}
+
+/* ONE CHOICE IS PLAIN TEXT, NOT A MENU, and every file stays one click away.
+ * A span after the picker (the picker itself, its id and its change handler
+ * are untouched): the one writer's name, "Show every file" when the server
+ * filtered some out, and the way back. Only in a real document. */
+function writerExtras(sel, d, models, all, emptyTitle, opts = {}) {
+  if (typeof document === "undefined" || !sel?.parentNode || typeof sel.after !== "function") return;
+  let box = sel.nextElementSibling?.classList?.contains("mpick1") ? sel.nextElementSibling : null;
+  if (!box) {
+    box = document.createElement("span");
+    box.className = "mpick1";
+    sel.after(box);
+    box.addEventListener("click", (e) => {
+      const b = e.target.closest("button[data-every]");
+      if (!b || !box.fill) return;
+      sel.dataset.every = b.dataset.every;
+      fillModelMenu(sel, box.fill.d, box.fill.emptyTitle, box.fill.opts);
+    });
+  }
+  box.fill = { d, emptyTitle, opts };
+  const single = !all && models.length === 1 && !d?.offline;
+  const filtered = Array.isArray(d?.every) && d.every.length > (d?.models?.length || 0);
+  sel.hidden = single;
+  box.innerHTML = (single ? `<b title="${esc(models[0].file)}">${esc(models[0].label)}</b>` : "")
+    + (!all && filtered ? '<button type="button" class="linkbtn" data-every="1">Show every file</button>' : "")
+    + (all ? '<button type="button" class="linkbtn" data-every="">Only writers</button>' : "");
+  box.hidden = !box.innerHTML;
 }
 
 /* GET /api/chat/models lists what ComfyUI can load plus connected APIs; POST
@@ -849,9 +890,51 @@ function simpleBusy(on) {
   if (!b) return;
   b.disabled = false;
   b.classList.toggle("stop", on);
-  b.textContent = on ? "■" : "↑";
-  b.setAttribute("aria-label", on ? "Stop" : "Send");
+  b.textContent = on ? "■ Stop" : "Make song";
+  b.setAttribute("aria-label", on ? "Stop" : "Make song");
   b.title = on ? "Stop the assistant" : "";
+}
+
+/* MAKE SONG (UI_PLAN B3, E1). The button says Make song, so a press makes one
+ * or says plainly why not.
+ *
+ *   WITH A WRITING MODEL the words go to the assistant, and the press is the
+ *   person's go-ahead: when the reply wrote the song or changed its settings
+ *   and did not start it, Create is pressed for them (simpleSend's `make`), and
+ *   the log says so.
+ *   WITH NONE (the server answered, and has no model) a song already in the
+ *   form (a preset, or one written under Song) is made through the page's own
+ *   door, aiplay:simple-generate, which reports back as usual. Typed words
+ *   cannot become a song without a writer: that is said, the words stay in the
+ *   box, and the form's song is offered, never made in their place unasked.
+ *   NOT KNOWN YET (the engine is still starting) nothing is sent, and the log
+ *   says why (web/writer.js).
+ *
+ * SIMPLE_WRITER is true, false or null (web/writer.js writerFrom), and is read
+ * again at every press until it is true. */
+let SIMPLE_WRITER = null;
+function simpleFormSong() {
+  const form = {};
+  document.dispatchEvent(new CustomEvent("aiplay:simple-snapshot", { detail: form }));
+  return !!String(form.style || "").trim() && (!!form.instrumental || !!String(form.lyrics || "").trim());
+}
+function simpleMakeForm() {
+  simpleRow("note", "Making the song that is in the form.");
+  document.dispatchEvent(new CustomEvent("aiplay:simple-generate"));
+}
+function simpleWithoutWriter(typed, musicOnly) {
+  const song = simpleFormSong();
+  if (song && !String(typed || "").trim()) return simpleMakeForm();
+  /* Music only has no Models row for a writing model; its door is a key. */
+  const get = musicOnly
+    ? 'or connect an API key on the <a href="#" data-go="mcp">Agent</a> page'
+    : 'or get one on <a href="#" data-go="models">Models</a>';
+  if (song) {
+    simpleRow("note", `No writing model here, so your words cannot become a song yet; they are still in the box. `
+      + `<a href="#" data-simple-form>Make the song already in the form</a> instead, ${get}.`);
+    return;
+  }
+  simpleRow("note", `No writing model here yet. Pick a preset, write it under <a href="#" data-simple-song>Song</a>, ${get}.`);
 }
 
 function simpleRow(kind, html) {
@@ -885,13 +968,18 @@ if (typeof document !== "undefined") document.addEventListener("aiplay:simple-ge
   const { ok, why } = e.detail || {};
   simpleRow(ok ? "did" : "fail", ok ? "✓ Rendering started" : `Create did not start: ${esc(why || "unknown reason")}`);
 });
+/* What the running reply did, for Make song's go-ahead (simpleSend `make`). */
+let SIMPLE_TURN = null;
 function onSimpleEvent(ev) {
+  const turn = SIMPLE_TURN || {};
   if (ev.type === "open") { SIMPLE_SESSION = ev.session; return; }
   if (ev.type === "thinking") { simpleStatus("Thinking…"); return; }
   if (ev.type === "tool_call") { simpleStatus(SIMPLE_DOING[ev.tool] || "Working…"); return; }
   if (ev.type === "tool_result") {
-    if (ev.error) { simpleRow("fail", `${esc(ev.tool)} did not work: ${esc(ev.error)}`); return; }
+    if (ev.error) { turn.failed = true; simpleRow("fail", `${esc(ev.tool)} did not work: ${esc(ev.error)}`); return; }
     const r = ev.result || {};
+    if (["write_song", "change_settings", "remix_song"].includes(ev.tool)) turn.wrote = true;
+    if (r.action === "generate") turn.started = true;
     if (r.form) document.dispatchEvent(new CustomEvent("aiplay:simple-form", { detail: r.form }));
     if (r.action === "generate") document.dispatchEvent(new CustomEvent("aiplay:simple-generate"));
     const what = ev.tool === "write_song" ? `Wrote the ${esc(r.written || "song")}`
@@ -902,17 +990,20 @@ function onSimpleEvent(ev) {
     return;
   }
   if (ev.type === "say") { simpleRow("bot", esc(ev.text).replace(/\n/g, "<br>")); return; }
-  if (ev.type === "proposal") { simpleStatus(""); $("simpleConfirm").hidden = false; return; }
+  if (ev.type === "proposal") { turn.proposed = true; simpleStatus(""); $("simpleConfirm").hidden = false; return; }
   if (ev.type === "gpu") { simpleRow("note", gpuWarning(ev)); return; }
-  if (ev.type === "busy") { simpleRow("note", esc(ev.text)); return; }
-  if (ev.type === "error") { simpleRow("fail", esc(ev.text)); return; }
+  if (ev.type === "busy") { turn.failed = true; simpleRow("note", esc(ev.text)); return; }
+  if (ev.type === "error") { turn.failed = true; simpleRow("fail", esc(ev.text)); return; }
   if (ev.type === "done" || ev.type === "end") simpleStatus("");
 }
 
-async function simpleSend(message) {
+/* `make`: the words came from pressing Make song (or Enter in its box), so a
+ * reply that set the song up and did not start it is followed by Create. */
+async function simpleSend(message, { make = false } = {}) {
   message = String(message || "").trim();
   if (SIMPLE_SENDING || !message) return;
   SIMPLE_SENDING = true;
+  SIMPLE_TURN = { make, wrote: false, started: false, proposed: false, failed: false, stopped: false };
   SIMPLE_STREAM = new AbortController();
   $("simpleConfirm").hidden = true;
   simpleBusy(true);
@@ -949,13 +1040,20 @@ async function simpleSend(message) {
       }
     }
   } catch (e) {
+    SIMPLE_TURN.stopped = true;
     if (e?.name === "AbortError") simpleRow("note", "Stopped.");
     else simpleRow("fail", `That did not work. ${esc(e.message || e)}`);
   } finally {
+    const turn = SIMPLE_TURN;
+    SIMPLE_TURN = null;
     SIMPLE_SENDING = false;
     SIMPLE_STREAM = null;
     simpleBusy(false);
     simpleStatus("");
+    if (turn?.make && turn.wrote && !turn.started && !turn.proposed && !turn.failed && !turn.stopped) {
+      simpleRow("note", "You pressed Make song, so Studio pressed Create.");
+      document.dispatchEvent(new CustomEvent("aiplay:simple-generate"));
+    }
   }
 }
 
@@ -967,6 +1065,7 @@ async function loadSimpleModels() {
   let d;
   try { d = await (await fetch("/api/chat/music/models")).json(); } catch { d = null; }
   fillModelMenu(sel, d, "Put a Qwen3, Qwen3-VL or Gemma 3 text encoder in models/text_encoders, or connect an API on the Agent page");
+  SIMPLE_WRITER = writerFrom(d);
 }
 
 function initSimple() {
@@ -991,14 +1090,36 @@ function initSimple() {
     if (SIMPLE_SENDING) { SIMPLE_STREAM?.abort(); return; }   // the button is Stop while a reply runs
     const t = $("simpleText");
     const v = t.value;
-    t.value = "";
-    simpleSend(v);
+    (async () => {
+      /* Asked again at every press until the answer is yes (web/writer.js). */
+      if (SIMPLE_WRITER !== true) await loadSimpleModels();
+      if (SIMPLE_WRITER === null) {
+        const why = await whyNoWriter();
+        /* No engine in this mode at all (Music only's native engine): no local
+         * writing model can answer, which is the same as none. */
+        if (why.kind !== "noengine") return simpleRow("note", esc(notYetLine(why.kind, "Make song")));
+        return simpleWithoutWriter(v, why.musicOnly);
+      }
+      /* No writer: the words stay in the box for when there is one. */
+      if (SIMPLE_WRITER === false) return simpleWithoutWriter(v, false);
+      /* Nothing typed, but a song in the form (a preset): Make song makes it. */
+      if (!v.trim()) return simpleFormSong() ? simpleMakeForm() : t.focus();
+      t.value = "";
+      return simpleSend(v, { make: true });
+    })();
+  });
+  /* The links in the no-writer lines: "Song" leaves Simple for the full form;
+   * "Make the song already in the form" does that, asked for. */
+  $("simpleLog")?.addEventListener("click", (e) => {
+    if (e.target.closest?.("[data-simple-song]")) { e.preventDefault(); $("modeSong")?.click(); return; }
+    if (e.target.closest?.("[data-simple-form]")) { e.preventDefault(); simpleMakeForm(); }
   });
   $("simpleText").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!SIMPLE_SENDING) $("simpleForm").requestSubmit(); }
   });
-  /* Generate / Not yet are conveniences: they send "yes" / "no", which is what
-   * the loop's confirm gate reads. */
+  /* Make song / Not yet are conveniences: they send "yes" / "no", which is what
+   * the loop's confirm gate reads. (The confirm button says Make song, the same
+   * words as the button that asked, since UI_PLAN B3.) */
   $("simpleYes").addEventListener("click", () => { $("simpleConfirm").hidden = true; simpleSend("yes"); });
   $("simpleNo").addEventListener("click", () => { $("simpleConfirm").hidden = true; simpleSend("no"); });
   $("simpleNew").addEventListener("click", () => {

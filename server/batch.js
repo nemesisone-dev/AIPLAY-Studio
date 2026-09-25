@@ -33,6 +33,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import { deriveTitle } from "./workflow.js";
+import { assertSafe } from "./safety/refusal.js";
+import { enumerate } from "./wildcards.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATE_FILE = path.join(config.paths.appData, "batch.json");
@@ -58,6 +60,21 @@ export function cleanMediaItem(it, kind) {
     count: Number.isFinite(it.count) ? clamp(it.count, 1, 4) : undefined,
     seconds: Number.isFinite(it.seconds) ? clamp(it.seconds, 1, 30) : undefined,
   };
+  /* ⚠ THE MINORS RULE, AT START, so a night is not forty refusals. Checked on
+   * every prompt the template can EXPAND to: a plan any one of whose takes
+   * would put a child or teenager beside sexual content is refused whole, and
+   * "{a family picnic with kids|a nude figure study of an adult}" is not,
+   * because no take holds both. A template with more than 256 expansions is
+   * checked whole, braces and all (the old, stricter reading). Every take is
+   * checked again at /api/image or /api/video and at the engine door, which
+   * also covers a plan saved before this check existed. Pictures and clips
+   * only; a music batch's captions are songs. */
+  if (kind === "image" || kind === "video") {
+    const { prompts, truncated } = enumerate(item.prompt, 256);
+    for (const take of truncated ? [item.prompt] : prompts) {
+      assertSafe({ door: "batch.start", via: `batch.${kind}`, texts: [take] });
+    }
+  }
   if (kind !== "image") return item;
   for (const key of ["dit", "ditEngine", "encoder", "vae", "persona", "quality", "sampler", "scheduler", "refSizing"]) {
     if (it[key] !== undefined) {
@@ -74,6 +91,12 @@ export function cleanMediaItem(it, kind) {
   if (it.transparent !== undefined) {
     if (typeof it.transparent !== "boolean") throw new Error("Image transparent must be a boolean.");
     item.transparent = it.transparent;
+  }
+  /* Qwen's Fast draft, kept like transparent: /api/image refuses it per take
+   * on another engine or beside a base-only choice, in its own words. */
+  if (it.draft !== undefined) {
+    if (typeof it.draft !== "boolean") throw new Error("Image draft must be a boolean.");
+    item.draft = it.draft;
   }
   for (const key of ["clipSkip", "refResolution"]) {
     if (it[key] !== undefined) {
@@ -120,6 +143,20 @@ function expectedStages(chain, job) {
    * waiting forever on something that is never coming. */
   if (chain.enhance && chain.video) out.enhance = "waiting";
   return out;
+}
+
+/** How many songs start() would plan for these ideas, and the longest one
+ *  asked for: the words of the paid-night question (/api/batch, server/
+ *  cloud-switch.js), counted by this file's own limits rather than a copy. */
+export function plannedSongs({ items, takes, cap } = {}) {
+  const ideas = (items || []).filter((it) => it && String(it.caption || "").trim()).slice(0, MAX_ITEMS);
+  if (!ideas.length) return { songs: 0, longestSeconds: 0 };
+  const t = clamp(takes ?? 3, 1, MAX_TAKES);
+  const c = clamp(cap ?? ideas.length * t, 1, MAX_CAP);
+  return {
+    songs: Math.min(c, ideas.length * t),
+    longestSeconds: Math.max(...ideas.map((it) => clamp(it.maxDuration ?? 240, 30, 300))),
+  };
 }
 
 export class BatchRunner extends EventEmitter {
@@ -195,7 +232,7 @@ export class BatchRunner extends EventEmitter {
     return out;
   }
 
-  start({ items, takes, cap, name, stages, kind: k, actor }) {
+  start({ items, takes, cap, name, stages, kind: k, actor, paidConfirmed = false }) {
     /* Refuse rather than overwrite.
      *
      * `this.run` was assigned unconditionally, so pressing Start during a live
@@ -272,6 +309,11 @@ export class BatchRunner extends EventEmitter {
       items: clean,
       takes: t,
       cap: c,
+      /* The person's yes to a paid night: /api/batch sets it only from the
+       * request's own confirmSpend, after telling them what the run would
+       * cost on the hosted engine (server/cloud-switch.js). Without it, a
+       * song that would reach the hosted engine is refused by the runner. */
+      paidConfirmed: paidConfirmed === true,
       /**
        * What runs AFTER each song in this run.
        *
@@ -489,6 +531,7 @@ export class BatchRunner extends EventEmitter {
       audioRef: item.audioRef,
       audioRefDenoise: item.audioRefDenoise,
       batchId: r.id,
+      paidConfirmed: r.paidConfirmed === true,
       /* The stage chain travels WITH the job.
        *
        * index.js used to read it back off the live run when a song landed — but

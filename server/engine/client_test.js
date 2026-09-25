@@ -87,7 +87,7 @@ const FAST = { POLL_MS: 5, POLL_TIMEOUT_MS: 150, POST_TIMEOUT_MS: 150, MAX_CONSE
  * A ComfyUI that is not there. Records every call so "was anything sent" is a
  * number, and lets each test say how the engine behaves this time.
  */
-function fakeEngine({ historyAfter = 1, completed = true, rejectPost = false, vanish = false, dead = false, outputs = null } = {}) {
+function fakeEngine({ historyAfter = 1, completed = true, rejectPost = false, vanish = false, dead = false, outputs = null, armed = true } = {}) {
   const calls = [];
   let polls = 0;
   const reply = (obj, { ok: isOk = true, status = 200, text = "" } = {}) => ({
@@ -116,6 +116,8 @@ function fakeEngine({ historyAfter = 1, completed = true, rejectPost = false, va
       });
     }
     if (u.includes("/queue")) return reply({ queue_running: vanish ? [] : [[0, "b41cfeed"]], queue_pending: [] });
+    /* The Studio's safety node inside ComfyUI, saying whether it is armed. */
+    if (u.includes("/aiplay/safety_status")) return reply({ armed, node: "aiplay_safety_gate" });
     if (u.includes("/system_stats")) {
       return reply({ system: { comfyui_version: "0.33.0", argv: ["D:\\rig\\ComfyUI\\main.py", "--port", "47821", "--listen", "127.0.0.1"] } });
     }
@@ -552,6 +554,17 @@ console.log("\n  -- the port is not an interface --");
   ok("...and names the mismatch when the engine is another install's",
     id.problems.length > 0 && /--output-directory/.test(id.problems.join(" ")), JSON.stringify(id.problems));
 
+  /* THE MINORS BACKSTOP GATES THE REVEAL: an engine whose safety node is not
+   * armed does not get its port handed out, and nothing is recorded. */
+  {
+    const unarmed = clientOn(fakeEngine({ armed: false }), { port: 47822 });
+    let threw = null;
+    try { await unarmed.reveal({ actor: "user" }); } catch (e) { threw = e; }
+    const st0 = await unarmed.status();
+    ok("an engine whose safety backstop is not armed does not get its port revealed",
+      threw?.reason === "backstop-not-armed" && /safety check/.test(threw.message) && st0.port === null && st0.revealed === false,
+      threw?.message);
+  }
   await c.reveal({ actor: "user" });
   const st2 = await c.status();
   ok("revealed: the number IS returned, because now it is already discoverable",
@@ -762,6 +775,38 @@ console.log("\n  -- 3d outputs: SaveGLB is collected, and its kind survives --")
   ok("...and the completion event on disk carries it",
     (await provenance.read({ dir: ledgerDir }, { asset: `engine/${r.runId}` }))
       .events.some((e) => e.data?.outputs?.[0]?.kind === "3d"));
+}
+
+/* ── LoadVideo's echo is recorded, never shelved ─────────────────────────
+ *
+ * ComfyUI 0.36 makes LoadVideo report the file it READ as an output row of
+ * type "input", and node-id order puts it FIRST in the enhance graph (load 1,
+ * save 9). The adopter resolves every name against the OUTPUT folder, so an
+ * echo that reached it would move a same-named file there into the library,
+ * and a claim would file the source under the caller's name. */
+console.log("\n  -- LoadVideo's input echo: recorded, never adopted or claimed --");
+{
+  writeFileSync(path.join(outDir, "aiplay_enh_0123456789.mp4"), "a bystander with the staged name");
+  const echoFirst = {
+    1: { images: [{ filename: "aiplay_enh_0123456789.mp4", subfolder: "", type: "input" }], animated: [true] },
+    9: { images: [{ filename: "arm3_00001.mp4", subfolder: "gate", type: "output" }], animated: [true] },
+  };
+  const adopted = [];
+  const spy = async ({ output }) => { adopted.push(output.file); return `clips/${output.file}`; };
+  const c = clientOn(fakeEngine({ historyAfter: 2, outputs: echoFirst }), { dir: path.join(tmp, "echo"), adopt: spy });
+  const r = await c.run({ graph: LTX_VIDEO_GRAPH, actor: "user", via: "api", label: "an enhance-shaped run" });
+  ok("the echo is on the record, first and typed \"input\"",
+    r.outputs[0]?.type === "input" && r.outputs[0]?.node === "1" && r.outputs[1]?.type === "output",
+    JSON.stringify(r.outputs.map((o) => [o.node, o.type, o.file])));
+  ok("...and only the file the graph WROTE reaches the adopter",
+    adopted.length === 1 && adopted[0] === "arm3_00001.mp4", JSON.stringify(adopted));
+  ok("...so the echo carries no library name", r.outputs[0]?.adoptedAs === null, String(r.outputs[0]?.adoptedAs));
+
+  const claimed = await clientOn(fakeEngine({ historyAfter: 2, outputs: echoFirst }), { dir: path.join(tmp, "echo-claim") })
+    .run({ graph: LTX_VIDEO_GRAPH, actor: "user", via: "api", claim: "clips/named.mp4" });
+  ok("a claim names the written file, never the echo",
+    claimed.outputs[0]?.adoptedAs === null && claimed.outputs[1]?.adoptedAs === "clips/named.mp4",
+    JSON.stringify(claimed.outputs.map((o) => [o.type, o.adoptedAs])));
 }
 
 console.log("\n  -- §11: every row the spec promises, off one real run --");

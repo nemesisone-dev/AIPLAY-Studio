@@ -86,6 +86,18 @@ export class JobRunner extends EventEmitter {
     decode: "Decoding the WAV",
     saving: "Saving the WAV",
   };
+  /* What a song hears when the hosted switch is on and nobody confirmed it as
+   * a paid run: a Create, an overnight song queued before the switch went on,
+   * or any other path. Worded for all of them. A static, like the constants
+   * above, for the lifted-class lane. */
+  static UNCONFIRMED_PAID = "The hosted engine is on, but this song was not confirmed as a paid run, "
+    + "so no request was sent and nothing was billed. Start it again and confirm the cost when "
+    + "Studio asks, or pick a music model that runs on this PC.";
+  /* A job only this PC's engine can do (a continuation, an audio-input song,
+   * an audiobook bed) while the hosted switch is on. */
+  static LOCAL_ONLY = "This job renders only on this PC's own music engine, and the paid hosted engine "
+    + "was switched on before it started, so no API request was sent and nothing was billed. Switch "
+    + "the hosted engine off in Settings → No strong graphics card?, then start it again.";
   static isStandaloneEngine(value) { return value === "yue2" || value === "yue2-gguf"; }
   static isKnownEngine(value) {
     return value == null || value === "minimax-music3" || value === "yue2-comfy" || value === "ace-step15" || JobRunner.isStandaloneEngine(value);
@@ -245,7 +257,8 @@ export class JobRunner extends EventEmitter {
      * otherwise a machine whose ComfyUI is down could never render a song
      * with the engine that does not use it. */
     const next = this.queue[0];
-    if (!config.api?.enabled && !this.comfy.ready && !JobRunner.isStandaloneEngine(next?.engine)
+    /* RunPod GPU mode (this.remote): the Pod is the engine, and no local one starts. */
+    if (!config.api?.enabled && !this.remote && !this.comfy.ready && !JobRunner.isStandaloneEngine(next?.engine)
         && JobRunner.isKnownEngine(next?.engine)) {
       clearTimeout(this.#waitTimer);
       this.#waitTimer = setTimeout(() => this.#pump(), 4000);
@@ -275,7 +288,22 @@ export class JobRunner extends EventEmitter {
 
     if (config.api?.enabled && job.requiresLocal) {
       job.state = "failed";
-      job.error = "This audio-input continuation requires local Music3. Hosted API mode was enabled before it started; no API request was sent.";
+      job.error = JobRunner.LOCAL_ONLY;
+      job.finishedAt = Date.now();
+      this.history.unshift(job);
+      this.current = null;
+      this.emit("update", this.snapshot());
+      queueMicrotask(() => { this.#pump().catch(() => {}); });
+      return;
+    }
+    /* PAID ONLY WHEN THIS SONG SAID SO. A song queued for the local engine
+     * must not turn into a bill because the hosted switch went on while it
+     * waited, and no path that forgot to ask may reach the provider
+     * (server/cloud-switch.js). The door sets paidConfirmed from the request's
+     * own confirmSpend; nothing else does. */
+    if (config.api?.enabled && (!job.engine || job.engine === "minimax-music3") && job.paidConfirmed !== true) {
+      job.state = "failed";
+      job.error = JobRunner.UNCONFIRMED_PAID;
       job.finishedAt = Date.now();
       this.history.unshift(job);
       this.current = null;
@@ -288,13 +316,14 @@ export class JobRunner extends EventEmitter {
     if (config.api?.enabled && (!job.engine || job.engine === "minimax-music3")) return this.#runApi(job);
 
     try {
-      await this.connect();
+      /* RunPod GPU mode (setRemote): no local engine to connect to or unload. */
+      if (!this.remote) await this.connect();
       if (job.cancelRequested) return;
       /* A DIFFERENT MODEL UNLOADS THE PREVIOUS ONE FIRST. ComfyUI would load
        * the new one beside the old, and on a 16 GB card MiniMax (~14 GiB warm)
        * next to YuE2 is how a render ends up streaming everything from RAM. */
       const modelKey = JobRunner.modelKey(job);
-      if (modelKey && ((this.loaded && this.loaded.key !== modelKey) || this.artResident)) {
+      if (!this.remote && modelKey && ((this.loaded && this.loaded.key !== modelKey) || this.artResident)) {
         console.log(`  [music] switching model: unloading ${this.artResident ? "the image/video model" : this.loaded.key} before ${modelKey}`);
         await this.unloadModels().catch(() => {});
         if (job.cancelRequested) return;
@@ -320,9 +349,15 @@ export class JobRunner extends EventEmitter {
         loraStrength: job.loraStrength,
         loraClip: job.loraClip,
         loraClipStrength: job.loraClipStrength,
+        /* The supplied score and the sampler dials. Before these three were
+         * named here the route took a hummed score, queued the song, and the
+         * graph sang the planner's own plan instead. */
+        abc: job.abc,
+        sampling: job.sampling,
+        planSampling: job.planSampling,
         prefix: "aiplay",
       }) : buildGraph({
-        tiledVae: await this.#hasTiledAudioDecode(),
+        tiledVae: this.remote ? false : await this.#hasTiledAudioDecode(),
         caption: job.caption,
         lyrics: job.lyrics,
         seed: job.seed,
@@ -345,6 +380,8 @@ export class JobRunner extends EventEmitter {
         preview: job.preview,
         prefix: job.preview ? "preview" : "aiplay",
       });
+      /* RUNPOD GPU MODE: the same graph, rendered on the Pod (#runRemote). */
+      if (this.remote) return await this.#runRemote(job, graph);
       /* THROUGH THE DOOR, not straight at the engine.
        *
        * `submit` (rather than `run`) because this class watches its own
@@ -733,6 +770,9 @@ export class JobRunner extends EventEmitter {
         style: job.caption, lyrics: job.lyrics, cot: job.cot || "full", seed: job.seed,
         quantization: job.quantization === undefined ? "q4_0" : job.quantization,
         abc: job.abc || null, cfg_scale: job.cfgScale ?? null, narSteps: job.narSteps || 32,
+        /* The sampler dials the door validated (music-gguf-input.js), by the
+         * runtime's own names; absent unless one was set. */
+        ...(job.ggufOptions || {}),
         // ⚠ `system`, not `user` — see the note on the Python path above.
         id: "song", out: runDir, actor: job.actor || "system", via: "jobs.music",
         audioSeconds: job.wantSeconds || null,
@@ -894,6 +934,58 @@ export class JobRunner extends EventEmitter {
       job.lastEmit = now;
       this.emit("update", this.snapshot());
     }
+  }
+
+  /** Where the music queue renders in the launcher's RunPod GPU mode: index.js
+   *  hands a function that sends a graph to the Pod and resolves with the
+   *  downloaded file, already in the library folder. Null: the local engine. */
+  setRemote(fn) { this.remote = typeof fn === "function" ? fn : null; }
+
+  /**
+   * One song on the Pod. The job looks like a local one throughout (queued,
+   * running, done), and ends in the same "done" shape #finish writes, so the
+   * library, the tags and the ledger file it exactly as they file a local song.
+   * No cover picture or clip afterwards: those need a local engine this mode
+   * does not start.
+   */
+  async #runRemote(job, graph) {
+    job.stage = "remote";
+    job.note = "Rendering on your RunPod GPU.";
+    job.stages = { ...(job.stages || {}), cover: false, video: false };
+    this.emit("update", this.snapshot());
+    try {
+      const r = await this.remote({
+        graph, label: job.title, actor: job.actor,
+        isCancelled: () => !!job.cancelRequested,
+        onState: (state) => {
+          const note = `RunPod: ${state}`;
+          if (job.note !== note) { job.note = note; this.emit("update", this.snapshot()); }
+        },
+      });
+      if (this.current !== job) return;
+      if (job.cancelRequested) { this.#markCancelled(job); return; }
+      job.state = "done";
+      job.overall = 1;
+      job.finishedAt = Date.now();
+      job.durationSeconds = Math.round((job.finishedAt - job.startedAt) / 1000);
+      job.file = r.file;
+      job.runId = r.runId || job.runId || null;
+      job.note = null;
+      job.remote = true;
+      this.history.unshift(job);
+      this.current = null;
+      this.emit("update", this.snapshot());
+    } catch (err) {
+      if (this.current !== job) return;
+      if (job.cancelRequested) { this.#markCancelled(job); return; }
+      job.state = "failed";
+      job.error = String(err.message || err);
+      job.finishedAt = Date.now();
+      this.history.unshift(job);
+      this.current = null;
+      this.emit("update", this.snapshot());
+    }
+    queueMicrotask(() => { this.#pump().catch((err) => console.warn(`  [queue] pump failed: ${err.message}`)); });
   }
 
   async #finish(job) {
@@ -1159,6 +1251,10 @@ export class JobRunner extends EventEmitter {
         generationLimits: j.generationLimits ?? null,
         warnings: Array.isArray(j.warnings) ? j.warnings : [],
       } : {}),
+      /* YuE2 through ComfyUI: the plan mode the page's progress line names
+       * (it read `cot` and always found none), and whether a supplied score
+       * is being sung. The flag, never the score text: every poll carries it. */
+      ...(j.engine === "yue2-comfy" ? { cot: j.cot || "full", scoreSupplied: !!j.abc } : {}),
       wantSeconds: j.wantSeconds ?? null, audioSeconds: j.audioSeconds ?? null,
       rung: j.rung ? { id: j.rung.id, label: j.rung.label } : null,
       quantization: j.quantization || null,
@@ -1193,6 +1289,14 @@ export class JobRunner extends EventEmitter {
       /* What ComfyUI is holding, per Studio's record — none while the engine
        * is down, because a restarted ComfyUI holds nothing. */
       loadedModel: this.comfy?.ready ? this.loaded : null,
+      /* ⚠ AND WHETHER IT IS HOLDING A PICTURE MODEL, which is a different
+       * question and the reason the Unload button looked broken. Rendering a
+       * cover or a clip unloads the music model and puts its own on the card,
+       * so `loadedModel` goes null while ComfyUI is still holding several GB.
+       * A screen that asked only the first question said "nothing is loaded"
+       * with the card full, and Unload — which frees whatever is there —
+       * looked like it worked at random. */
+      artResident: this.comfy?.ready ? !!this.artResident : false,
       current: view(this.current),
       queue: this.queue.map(view),
       history: this.history.slice(0, 40).map(view),

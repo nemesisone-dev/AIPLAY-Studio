@@ -72,6 +72,11 @@ export const ROUTABLE = {
   studio_screen_info: null,
   studio_showcase: null,
   models_for_this_machine: null,
+  /* Reads what a one-click setup would build and how its job is going. */
+  setup_status: null,
+  /* No strong card? Friend first, then the person's own key: a read. Its twin
+   * set_cloud is withheld below, because it decides whether songs bill. */
+  cloud_status: null,
   studio_status: null,
   engine_status: null,
   engine_activity: null,
@@ -106,11 +111,10 @@ export const ROUTABLE = {
   collab_credit: null,
   collab_free: null,
   collab_orders: null,
+  collab_video_preview: null,
   collab_preview: null, // local snapshot; packing is a separate explicit write
   collab_add_peer: "writes",
-  collab_set_role: "writes",
-  collab_verify: "writes",
-  collab_set_lend_minutes: "writes",
+  /* collab_set_role, collab_verify and collab_set_lend_minutes: WITHHELD below. */
   collab_remove_peer: "destroys",
   collab_set_resources: "writes",
   collab_pack: "writes",
@@ -142,8 +146,26 @@ export const ROUTABLE = {
   set_video_enabled: "writes",
   studio_api_reference: null,
   import_local_media: "writes",
+  /* Free, and on purpose: the pitch tracker READS one recording on the
+   * processor (1 to 60 s of voice, a few seconds of work) and answers with a
+   * score. It writes nothing, holds no card and spends nothing. The door itself
+   * is sameOriginLocalJson, so only Studio's page and local clients (this chat
+   * goes through MCP) reach it. */
   hum_to_score: null,
   song_to_score: "gpu",
+  /* demucs over a library song: the card (measured here at about 12 s for a
+   * 30 s track; a processor is slower and was not measured) and four new
+   * files beside the song. A refusal names setup id "stems", which the chat
+   * may not run (setup_feature is withheld below). */
+  separate_stems: "gpu",
+  /* Whether whisper can run and which model: a read. Its `model` argument
+   * saves a setting and is withheld (CHAT_WITHHELD_ARGS). */
+  whisper_status: null,
+  /* The Stop button. It runs nothing, but it ends the person's own render and
+   * drops the queue behind it. The gate word is "writes" (the contract's); the
+   * card's sentence is its own, COST_TEXT_BY_TOOL below, because "it writes a
+   * NEW FILE into your library" is false for Stop. */
+  stop_generation: "writes",
   replace_section: "gpu",
   get_beats: null,
   music_plan: null, // arithmetic/ABC validation only; never saves or generates audio
@@ -316,7 +338,9 @@ export const ROUTABLE = {
   /* clips and video */
   list_clips: null,
   video_quality: null,
-  video_settings: null,
+  /* Its set path SAVES Video Lab defaults every later render reads (sparse
+   * attention on Fast among them), so it asks first, with its own sentence. */
+  video_settings: "writes",
   video_comparison: null,
   video_stills: null,
   video_verdict: null,
@@ -512,9 +536,37 @@ export const ROUTABLE = {
 
   /* avatars */
   avatar_list: null,
+  avatar_playback_sessions: null,
+  avatar_audio_upload: "writes",
+  avatar_playback_command: null,
+  avatar_weight_transfer_status: null,
+  avatar_weight_transfer_inspect: null,
+  avatar_weight_transfer_submit: "writes", // bounded local CPU work creating a new attachment
+  avatar_weight_transfer_get: null,
+  avatar_wardrobe_inventory: null,
+  avatar_wardrobe_list: null,
+  avatar_wardrobe_import: "writes",
+  avatar_wardrobe_selection: null,
+  avatar_wardrobe_select: "writes",
+  avatar_wardrobe_delete: "writes",
+  avatar_fitting_status: null,
+  avatar_fitting_inspect: "writes",
+  avatar_fitting_submit: "writes",
+  avatar_fitting_get: null,
   avatar_inspect: null,
   avatar_import: null,
+  avatar_install_example: null,
+  avatar_appearance_inventory: null,
+  avatar_appearance_list: null,
+  avatar_appearance_get: null,
+  avatar_appearance_save: null,
+  avatar_appearance_delete: null,
+  avatar_appearance_active: null,
+  avatar_appearance_activate: null,
+
   avatar_export: null,
+  avatar_outfit_export: 'writes',
+  avatar_outfit_get: null,
 };
 
 /**
@@ -528,6 +580,8 @@ export const WITHHELD = {
   enhance_lyrics: "the chat writes lyrics itself; a second model rewriting them is a round trip for nothing, and a local one would take the card",
   enhance_description: "the chat already turns an idea into a song; rewriting the idea through a second model adds nothing",
   enhance_model: "which model Enhance uses is a setting for a person, chosen in Settings",
+  timed_lyrics_python: "names a program Studio will execute; a sentence typed into a chat box must not choose what runs on this machine (Settings > Songs, or MCP)",
+  stems_python: "names a program Studio will execute (stem separation and the audio-reference encoder); a sentence typed into a chat box must not choose what runs on this machine (Settings > Songs, or MCP)",
   yue2_gguf_setup: "One tool combines status, runtime/model downloads and cancellation. Installation requires explicit download approval and licence review through Models or MCP, not this chat's generic per-tool confirmation.",
   vfx_audio_preview: "CPU audio preparation is bounded but still starts work; this chat has no CPU-specific confirmation gate. Use the explicit VFX playback control or MCP instead.",
   vfx_render_job: "One tool both cancels existing work and retries an expensive render. Its operation-specific approval cannot be represented by this chat's single per-tool gate; use the render queue or MCP explicitly.",
@@ -555,10 +609,17 @@ export const WITHHELD = {
   music_input_status: "harmless, but only meaningful beside the three above",
   music_input_capabilities: "harmless, but only meaningful beside the three above",
   set_video_engine: "changes a persistent app setting the person set on the Video page",
-  set_image_engine: "changes a persistent app setting the person set on the Images page",
+  set_image_engine: "changes a persistent app setting the person set on the Pictures page",
+  set_music_engine: "changes a persistent app setting the person set on the Music page, and can switch paid API mode on",
   download_model: "downloads gigabytes and accepts a licence — the Models page is the door",
-  studio_welcome: "drives the first-run window",
+  setup_feature: "downloads gigabytes and changes which program Studio runs for a feature (timed lyrics, Studio's own engine packages) — the Set up button (Models, Settings) and the launcher's Try again are the doors, the same reason download_model is withheld",
+  collab_set_lend_minutes: "raises or lowers how many minutes a day this card renders for a friend; with collab_accept routable, a chat could raise the allowance and then accept, walking past the minutes a person set exactly as the withheld \"anyway\" would. The Friends row on the Collab screen is where a person sets it (MCP clients keep the tool)",
+  collab_set_role: "makes a friend a lending friend or a collaborator, a trust decision about who may send this card work or hold the whole project; a person makes it on the Collab screen's Friends row (MCP clients keep the tool)",
+  collab_verify: "records that the twelve words were read aloud and matched, the one trust grant in Collab; a chat cannot hear the words, so a person presses it on the Collab screen (MCP clients keep the tool)",
+  set_cloud: "switches a PAID service on, or raises its monthly cap: it decides whether songs bill the person's own key, and that is the person's decision on the Settings page (No strong graphics card?)",
+  studio_welcome: "hides or re-shows the first-run lines and SAVES the Simple/Advanced level, a setting for a person (Settings > Screens), not a sentence in a chat box",
   wait_for_song: "blocks until a render finishes, which would hold the turn open for minutes",
+  whisper_transcribe: "waits for a whisper pass that takes minutes on a processor, holding the turn open the way wait_for_song would, and can name any file in the output folder; Time the lyrics on a song is the person's door (MCP clients keep the tool)",
   make_song: "the chat has its own make_song with a written caption guide",
   make_image: "the chat has its own make_image",
   mv_create_project: "the chat has its own mv_create_project",
@@ -566,6 +627,31 @@ export const WITHHELD = {
   vfx_effect_presets: "one call SAVES, APPLIES, RENAMES and DELETES a preset, so a single gate "
     + "cannot be honest about it — the same reason daw_audio_clip is withheld",
   ab_create_project: "the audiobook surface is a whole workflow of its own and has had no pass for chat",
+};
+
+/**
+ * ARGUMENTS THE CHAT MAY NOT SEND, on tools it may otherwise call.
+ *
+ * Withholding a whole tool is too much here: accepting a friend's order and
+ * keeping a returned take are ordinary writes the chat may do after its
+ * per-call confirm. But each carries an OVERRIDE whose only purpose is to walk
+ * past a check a person set up or a check that failed, and the confirm card
+ * says "it writes a NEW FILE" -- it cannot say "and past the minutes a day you
+ * gave this friend". So the model is never shown the argument, and a call that
+ * sends it anyway is refused by name, never silently stripped. External MCP
+ * clients keep the typed schema; the person's own "Accept anyway" / "Keep
+ * anyway" on the Collab screen is where these belong.
+ */
+export const CHAT_WITHHELD_ARGS = {
+  collab_accept: {
+    anyway: "walks past a busy card or this friend's minutes a day; a person answers \"Accept anyway\" on the Collab screen",
+  },
+  collab_adopt: {
+    anyway: "keeps a take that failed its checks; a person watches it and answers \"Keep anyway\" on the Collab screen",
+  },
+  whisper_status: {
+    model: "saves which whisper model every later transcription and timed lyrics use (the first use downloads it); a setting for a person, not a sentence in a chat box",
+  },
 };
 
 /* Every audiobook tool, withheld as a group rather than one line each. */
@@ -588,6 +674,22 @@ export const COST_TEXT = {
   destroys: "nothing to run, but it REMOVES work that already exists and cannot be undone from here",
 };
 
+/** A tool whose gate's sentence would be false for it gets its own. The gate
+ *  word still decides whether and how the chat asks; only the words change. */
+export const COST_TEXT_BY_TOOL = {
+  stop_generation: "no graphics card time and no new file — it ends the render you have running and drops the queue behind it",
+  /* The router gates the whole tool, so a plain read asks too: the card says
+   * that reading changes nothing. */
+  video_settings: "no graphics card time and no new file — reading your video settings changes nothing; a setting it changes is SAVED, and every later render uses it",
+};
+
+/** The tag the chat's tool list shows beside a gated tool whose gate's own tag
+ *  would be false for it (server/chat/loop.js gateLabel). video_settings is
+ *  "writes" for its confirm, but it saves a setting, not a file. */
+export const GATE_WORDS_BY_TOOL = {
+  video_settings: "SAVES A SETTING",
+};
+
 /* ─────────────────────────────────────────────── the flat-argument rule
  *
  * A 4B emits flat JSON. Nested objects and arrays inside `args` are a measured
@@ -608,6 +710,11 @@ const SCALAR = new Set(["string", "number", "integer", "boolean"]);
 const JSON_ARGUMENT_TOOLS = new Set([
   "image_ai_edit_create", "image_document_preview", "collab_plan", "collab_set_resources", "reactive_render",
   "music_kit", "music_audition_create", "music_reference_update_brief", "music_listening_lab",
+  /* The score tools take `source` as an object and the note editor takes an
+   * array of notes; without these three the chat could not reach them at all
+   * ("turn my hum into a score" went to score_* tools). hum_to_score and
+   * song_to_score also take a flat `library_file`, which a 4B sends best. */
+  "hum_to_score", "song_to_score", "daw_edit_notes",
 ]);
 
 export function callableShape(schema) {
@@ -642,7 +749,9 @@ export function adaptTool(tool, gate, { budget = 1200 } = {}) {
   const required = new Set(tool.inputSchema?.required || []);
   const args = {};
   const jsonArgs = new Set();
+  const withheldArgs = CHAT_WITHHELD_ARGS[tool.name] || {};
   for (const [name, spec] of Object.entries(props)) {
+    if (name in withheldArgs) continue;
     const type = Array.isArray(spec?.type) ? spec.type[0] : spec?.type;
     if (!SCALAR.has(type)) {
       if (JSON_ARGUMENT_TOOLS.has(tool.name)) {
@@ -671,10 +780,17 @@ export function adaptTool(tool, gate, { budget = 1200 } = {}) {
     args,
     spends: !!gate,
     gate: gate || null,
-    cost: gate ? COST_TEXT[gate] : undefined,
+    cost: gate ? (COST_TEXT_BY_TOOL[tool.name] || COST_TEXT[gate]) : undefined,
+    gateWords: gate ? GATE_WORDS_BY_TOOL[tool.name] || null : null,
     routed: true,
     run: (a) => {
       const decoded = { ...a };
+      for (const [name, why] of Object.entries(withheldArgs)) {
+        if (decoded[name] !== undefined && decoded[name] !== false) {
+          throw new Error(`${name} is not available in this chat: it ${why}.`);
+        }
+        delete decoded[name];
+      }
       for (const name of jsonArgs) {
         if (decoded[name] === undefined) continue;
         if (typeof decoded[name] !== "string") throw new Error(`${name} must be a JSON string in local chat.`);
@@ -871,4 +987,4 @@ export function routedRegistry(core, message, { limit = ROUTE_LIMIT, pinned = []
   };
 }
 
-export default { ROUTABLE, WITHHELD, routedRegistry, chooseTools, adaptTool, scoreTool, index };
+export default { ROUTABLE, WITHHELD, CHAT_WITHHELD_ARGS, routedRegistry, chooseTools, adaptTool, scoreTool, index };

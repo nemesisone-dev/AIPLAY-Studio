@@ -11,8 +11,13 @@
 # declaration there passed every check and was only caught by trying to boot
 # the app by hand. One syntax check closes that hole for the price of nothing.
 node --check server/index.js || exit 1
-# RunPod transport: mock HTTP services only; no GPU or paid cloud resources.
-node --test server/engine/remote_test.js || exit 1
+# RunPod transport and its UI: mock HTTP services only; no GPU or paid cloud resources.
+node --test server/engine/remote_test.js server/engine/remote_ui_test.js server/engine/runpod-account_test.js || exit 1
+# The launcher favourite (the star) and the system check's settings merge.
+node --test server/launcher-fav_test.js || exit 1
+node --check web/runpod-integrated.js || exit 1
+node --check web/runpod.js || exit 1
+node --check worker/runpod-worker.js || exit 1
 # suites_test: THE REGISTRATION CENSUS, first because it is instant and because
 # what it catches makes every later lane a lie by omission. On 2026-09-06 four
 # suites were added and registered NOWHERE — including the seventy-six
@@ -24,6 +29,54 @@ node --test server/engine/remote_test.js || exit 1
 # *_test.{js,mjs,py} on disk must appear in this file or be exempted BY NAME
 # with a reason in the script. ~0.1 s.
 node scripts/suites_test.mjs || exit 1
+node --test server/mesh/avatar-example_test.js server/mesh/vrm-profile_test.js server/mesh/appearance_test.js server/mesh/appearance-route_test.js server/mesh/avatar-runtime_test.js || exit 1
+node --check web/avatar-runtime.js || exit 1
+node --check web/avatar-appearance.js || exit 1
+node --check web/avatar-shell.js || exit 1
+node --check web/avatar-parts.js || exit 1
+node --check web/avatar-voice.js || exit 1
+node --check web/avatar-lipsync.js || exit 1
+node --check web/avatar-handoff.js || exit 1
+node --check web/avatars.js || exit 1
+node --test server/mesh/avatar-shell_test.js server/mesh/avatar-lipsync_test.js server/mesh/avatar-playback_test.js || exit 1
+node --test server/mesh/avatar-weight-transfer_test.js server/mesh/avatar-voice_test.js || exit 1
+node --test server/mesh/avatar-fitting_test.js server/mesh/avatar-fitting-ui_test.js server/mesh/avatar-wardrobe_test.js server/mesh/avatar-wardrobe-runtime_test.js server/mesh/avatar-wardrobe-ui_test.js || exit 1
+node --test server/mesh/avatar-composition_test.js server/mesh/avatar-handoff_test.js || exit 1
+# THE BLENDER HALVES: weight transfer and attachment fitting. weight_transfer.py
+# imports bpy, and attachment_fit.py imports weight_transfer, so both scripts
+# and their suites live OUTSIDE this Apache-2.0 tree (server/licence_test.js),
+# beside the toolkit's cli.py or in <rig>/blender-toolkit/. The gate finds them
+# with the SAME resolvers the services spawn from, config.js
+# weightTransferScriptPath() and attachmentFitScriptPath()
+# (AIPLAY_WEIGHT_TRANSFER_SCRIPT, AIPLAY_ATTACHMENT_FIT_SCRIPT), and runs each
+# suite with the weight-transfer folder and server/mesh on PYTHONPATH exactly as
+# the services do, so it tests the scripts Studio would run. No script, no suite
+# beside it, no Blender python, or a suite that skipped for want of bpy: each
+# prints UNRUN and why. Never a silent skip, and never a pass.
+AVATAR_PY="${AIPLAY_AVATAR_PYTHON:-${AIPLAY_RIG:-D:/AI/aiplay-studio-bench}/venv311/Scripts/python.exe}"
+WT_SCRIPT="$(node -e "import('./server/config.js').then(m=>process.stdout.write(m.weightTransferScriptPath()))")" || exit 1
+AF_SCRIPT="$(node -e "import('./server/config.js').then(m=>process.stdout.write(m.attachmentFitScriptPath()))")" || exit 1
+blender_half() { # label, script, suite file beside it, variable that points at the script
+  bh_suite="$(dirname "$2")/$3"
+  if [ ! -f "$2" ]; then
+    echo "  UNRUN $1, Blender half: no script at $2. It imports bpy, so this Apache-2.0 tree ships no copy; set $4. UNRUN, not a pass."; return 0
+  elif [ ! -f "$bh_suite" ]; then
+    echo "  UNRUN $1, Blender half: no $3 beside $2. UNRUN, not a pass."; return 0
+  elif [ ! -x "$AVATAR_PY" ]; then
+    echo "  UNRUN $1, Blender half: no Blender python at $AVATAR_PY; set AIPLAY_AVATAR_PYTHON. UNRUN, not a pass."; return 0
+  fi
+  bh_path="$(BH_WT="$WT_SCRIPT" node -e "const p=require('path');process.stdout.write([p.dirname(p.resolve(process.env.BH_WT)),p.resolve('server/mesh'),process.env.PYTHONPATH].filter(Boolean).join(p.delimiter))")" || return 1
+  bh_log="$(mktemp)"
+  PYTHONPATH="$bh_path" "$AVATAR_PY" "$bh_suite" > "$bh_log" 2>&1; bh_rc=$?
+  cat "$bh_log"
+  bh_skipped="$(grep -c "skipped=" "$bh_log")"; rm -f "$bh_log"
+  [ "$bh_rc" -eq 0 ] || return 1
+  if [ "$bh_skipped" != "0" ]; then echo "  UNRUN $1, Blender half: the suite skipped (no usable bpy in $AVATAR_PY). UNRUN, not a pass."; fi
+  return 0
+}
+blender_half "weight transfer" "$WT_SCRIPT" weight_transfer_test.py AIPLAY_WEIGHT_TRANSFER_SCRIPT || exit 1
+blender_half "attachment fitting" "$AF_SCRIPT" attachment_fit_test.py AIPLAY_ATTACHMENT_FIT_SCRIPT || exit 1
+node --test server/collab/video-recipe_test.js || exit 1
 node scripts/trace_load.mjs || exit 1
 node scripts/test_timeline.mjs || exit 1
 node scripts/test_studio_persistence.mjs || exit 1
@@ -102,6 +155,12 @@ node server/music/yue_fit_test.js || exit 1
 # job pump, MCP schema, Music tab — names it, because one silent list is how
 # the audio reference was dead on arrival. No GPU, no ComfyUI, milliseconds.
 node server/music/yue2_comfy_graph_test.js || exit 1
+# A SUPPLIED SCORE ON YuE2 THROUGH COMFYUI IS SUNG OR REFUSED, NEVER DROPPED:
+# the validator row by row, the real /api/generate branch sliced and run with
+# the real jobs.js graph call behind it (every score reaches node 5 or nothing
+# is queued), the assistant skipping rows this engine refuses, and the page
+# not sending the cover prime here. No GPU, no ComfyUI, milliseconds.
+node server/music/yue2-comfy-input_test.js || exit 1
 # THE LORA SHELF READS TENSORS, NOT FILENAMES: a Krea 2 LoRA (diffusers
 # spelling) is recognised and fits the Krea 2 DiT (ComfyUI spelling), which
 # now carries a variant so loraFits can compare; and `for=` finds a bare DiT
@@ -165,6 +224,25 @@ node server/music/score_daw_test.js || exit 1
 # "stems" event (a fake queue in the lane), an existing stem skips the job,
 # refusals are sentences; the door, the tool, the page and the doc.
 node server/music/stems_test.js || exit 1
+# STOP THAT STOPS THE STEM SPLITTER (a new user's report, 2026-09-24: "0% for
+# four minutes, Stop does nothing, and it starts again"). The real ArtRunner
+# runs a FAKE python (a Node script that prints demucs's tqdm bars and sleeps):
+# a missing python refused in under a second with setup "stems", one
+# separation per song (a second one joins), real progress, Stop kills the
+# whole process tree within 2 s and nothing is queued again; the same for
+# timed lyrics. Wall clock (~30 s), no Python, no GPU.
+node server/stems_stop_test.js || exit 1
+# THE STEM SEPARATION PYTHON AS A SETTING: AIPLAY_SYS_PYTHON, then the saved
+# choice, then Python310, with the source flag Settings shows; a bad saved
+# value is dropped at boot. Fresh processes, a temp settings.json.
+node server/system-python_test.js || exit 1
+# THE STEM DOORS: /api/stems run (guarded, 409 with setup "stems" before
+# anything is queued, a running separation JOINED, never ok after a refusal),
+# the python action, /api/cancel through art.stopMine (and the rail's plan
+# pause), refusals that keep their setup id, /api/hum's 403/413 before parsing,
+# and a python that died on a missing module becoming the engine-package
+# refusal. Real route text sliced out of index.js; no server, no python.
+node --test server/stems-door_test.js || exit 1
 # KREA 2 TURBO AS AN IMAGE ENGINE: the vendor's 8-step recipe pinned node by
 # node; the door refuses refs and negatives (cfg 1); every engine list, the
 # catalogue row with its hashes, the page's table and option, the tool's enum.
@@ -174,6 +252,17 @@ node server/krea2_test.js || exit 1
 # dial the door takes; set_image_engine and download_model exist, post the
 # right doors, and are withheld from the in-app chat by sentence.
 node server/mcp-steer_test.js || exit 1
+# DEFAULTS FOLLOW THE DISK (UI_PLAN A1, B2, C2; INSTALLER_PLAN S5): fit.js
+# defaultFor on four imaginary machines — a saved choice always wins, a fresh
+# install never gets the Python kit unless it is ready, no default names a
+# missing model while a ready one exists, no picture model means no cover in
+# one sentence; config.js never writes the machine's pick to settings.json;
+# studio_status.defaults and set_music_engine (withheld from chat) run against
+# a stub; only writing models are offered, by name; every receipt field under
+# a Make button names a control that exists; an older Studio's settings (the
+# owner's) keep every value, pictures included; the launcher names what Studio runs.
+node --check web/receipt.js || exit 1
+node server/defaults_test.js || exit 1
 # EXTEND AND REPLACE ON THE PAGE, AND THE GGUF CARD: one panel with a mode
 # switch and two handles that never cross, both offered from the row menu and
 # the song panel; the setup card folds once installed and carries the authors'
@@ -192,6 +281,12 @@ node server/reactive_test.js || exit 1
 # mcp.js and has never existed in index.js, and seventy-one regular expressions
 # over the source did not see it. Runs on the CPU: no engine, no card, no network.
 node server/collab/collab_test.js || exit 1
+# LENDING FOR A PERSON WITH NO STRONG CARD: the return check centred on the
+# renderer's own frame grid (H3 rounds a clip up to 17k+5), a take filed onto a
+# scene never rendered here, a refused take watched by name only, lip-sync said
+# not to travel, the minutes a day read at accept, and the speed-up file a
+# lender lacks named before the yes. CPU only; the disk is handed in.
+node --test server/collab/lending_test.js || exit 1
 # ANIMATEDIFF ON THE APACHE-2.0 PIECES: the graph's shape (our schedule node,
 # our sliding ControlNet loader, the v3 module and adapter, Small depth by
 # licence, the decoded strengths), the schedule on the bars, and the gate
@@ -267,6 +362,18 @@ node server/mv/blockout_test.js || exit 1
 # per-take evidence — including that a take from before this feature admits it
 # has none rather than borrowing the row's current prompt.
 node server/mv/shot_test.js || exit 1
+# THE MUSIC VIDEO FOLLOWS THE CARD: one size list read from server/h3tier.js
+# (renderSize, the collab packet and order, set_brief, the MCP enum and the
+# brief all read it), only the two shapes that render, a new video starting at
+# its card's size (RAM counted) with the cut following the brief and saying where
+# its number comes from, the cut leaving no sung second without a picture (real
+# songs' line timings), default steps matched to the files on disk but never
+# lent from them, hybrid sending a cast-less scene to LTX only when LTX is here,
+# the plan card's Stop cancelling the clip in flight and saying what it reached
+# (stand-in engine door, nothing real is touched), the rail's Stop pausing a plan
+# with its approvals kept, a clip past the two-hour wait filed when it lands, and
+# one id per element on the Workflow page. In process, temp dir, no GPU. ~2s.
+node server/mv/cardfit_test.js || exit 1
 # THE THINGS THE BOARDS DO NOT CARRY: the name-word scan over DECLARED assets
 # (a board whose text names a prop it references nowhere), pinned against
 # LOOSENING - a loose any-word match reads "the gold line slides lower" as
@@ -396,7 +503,54 @@ node server/imgdoors_test.js || exit 1
 # can never record as a human one — the invariant every dossier stands on),
 # the origin fold, and the source pins that keep the Tier-1 AI marker
 # unstrippable via any exposed option. Art-50 compliance layer; do not thin.
+# THE LICENCE BOUNDARY. Anything that does `import bpy` is a derivative work of
+# Blender by the Foundation's stated position, and this tree is Apache-2.0 and
+# public. The only legal seam is a subprocess. config.js has said so all along;
+# nothing CHECKED it - an earlier branch carried the scan inside a previz test
+# file and the history rewrite dropped the file, guard included. The list of
+# Blender crossings (subprocess seams) lives ONCE, in the header of
+# server/licence_test.js; add a new seam there, not here. It also catches
+# mathutils/bmesh, the out-of-tree bpy scripts imported by module name, and a
+# bpy script staged anywhere in the index, vendor/ included. Reads files and
+# `git ls-files` only: no GPU, no network, no engine.
+node server/licence_test.js || exit 1
+# THE FIVE-MINUTE WALL UNDER NINETEEN RENDER HARNESSES. fetch() abandons a
+# request ~305 s after it goes out if no response headers have come back, and a
+# `wait: true` render sends its headers LAST - so every scripts/*.mjs that
+# drives a clip died at five minutes while the engine finished the render into
+# a library with nothing waiting for it. The median H3 clip here is 317 s. This
+# lane holds the fast half: the transport behaves, its opt-in deadline really
+# fires, and no harness has drifted back onto fetch. The slow half - the actual
+# 310 s race between the two - is scripts/doorpost_proof.mjs, run by hand.
+node scripts/lib/doorpost_test.mjs || exit 1
 node server/provenance_test.js || exit 1
+# THE MINORS RULE (docs/SAFETY.md): sexual content involving minors is refused
+# at every door, with no override. minors_test holds WHAT is refused to two
+# tables - clinical token pairs, the disguises, Dutch/German/Japanese - and the
+# ordinary prompts that share a word with the rule and must pass. doors_test
+# holds WHERE: the engine door refuses when called directly whatever private,
+# dryRun or injected deps say, sends nothing, stores no graph and files one
+# `refused` event with no words; every other door answers the same 422 and
+# queues nothing. Temp dirs only, no server, no engine.
+node server/safety/minors_test.js || exit 1
+node server/safety/doors_test.js || exit 1
+# PRIVATE MODE: the words are not written, and the event still is. It sits
+# beside the provenance lane because it is the same ledger, and because the
+# thing it guards is a SILENCE - a render that records nothing looks exactly
+# like a render that recorded everything until you go and read the file.
+# Its first section pins a DESTRUCTURED parameter list, which is how this
+# actually broke: the route set `private`, every redaction below was correct,
+# and art.request() dropped the name without a word.
+node server/private_test.js || exit 1
+# WHICH FILES THE VIDEO ENGINE'S FOUR DROPDOWNS MAY OFFER. The verdict is read
+# out of tensor names, anchored on the file each engine came with rather than on
+# a table of engine facts - config.js already holds those, and a copy goes
+# stale. Two signals on purpose: containment for the VAEs (a quantised rebuild
+# has MORE modules than its original, so equality would hide the engine's own
+# file) and embedding width for the text encoder (containment scores 0.997 on a
+# 0.6B model against a 32B anchor, which is a yes on a file that does not fit).
+# Synthetic tensor trees - no shelf, no GPU, no server.
+node server/partfit_test.js || exit 1
 node server/wildcards_test.js || exit 1
 
 echo "  -- did the picture come back with what was asked for --"
@@ -431,9 +585,27 @@ ADAPTER_PY="$PY"
 # thousands of green lines. Each candidate must print its own path to count.
 [ -x "$ADAPTER_PY" ] || ADAPTER_PY="$(python3 -c "import sys;print(sys.executable)" 2>/dev/null || python -c "import sys;print(sys.executable)" 2>/dev/null)"
 if [ -n "$ADAPTER_PY" ]; then "$ADAPTER_PY" server/mesh/unirig_adapter_test.py || exit 1; fi
+if [ -n "$ADAPTER_PY" ]; then "$ADAPTER_PY" server/mesh/unirig_native_attention_test.py || exit 1; fi
+# Matte regression images need OpenCV/numpy, but no model or GPU.
+MATTE_PY="${AIPLAY_MESH_PYTHON:-${AIPLAY_RIG:-}/venv3d/Scripts/python.exe}"
+if [ -x "$MATTE_PY" ]; then "$MATTE_PY" server/mesh/matte_test.py || exit 1
+elif [ -n "$ADAPTER_PY" ] && "$ADAPTER_PY" -c "import cv2,numpy" >/dev/null 2>&1; then
+  "$ADAPTER_PY" server/mesh/matte_test.py || exit 1
+fi
 # imgselect decides where every other op lands, so a regression here is a
 # regression in all 25 adjustments and all 75 effects at once.
 if [ -x "$PY" ]; then "$PY" server/imgselect_test.py || exit 1; fi
+# THE TWO INSTRUMENTS BEHIND NUMBERS THIS REPO PUBLISHES AS FACT.
+# server/control/pose.js, docs/DEEP_DIVE.md and server/control/README.md all quote
+# "mean joint error 33.7 px over 803 joint pairs" and the H-S identity band z of
+# 2.57 - and until now nothing in the tree could recompute either. Both tests are
+# fully synthetic (a two-person crossing and a foil pool built in tempfile), so
+# they need no renders, no GPU and no rig media. Both assert a NEGATIVE as well as
+# a positive: the old largest-box tracker must FAIL the crossing, and the
+# central-band window must FAIL to separate two actors - which is what stops
+# someone later "simplifying" the per-actor boxes away.
+if [ -x "$PY" ]; then "$PY" scripts/pose_follow_test.py || exit 1; fi
+if [ -x "$PY" ]; then "$PY" scripts/identity_band_test.py || exit 1; fi
 if [ -x "$PY" ]; then "$PY" server/imgstroke_test.py || exit 1; fi
 if [ -x "$PY" ]; then "$PY" server/imgtext_test.py || exit 1; fi
 # imgdoc composites THROUGH engine.py rather than owning a copy of the blend
@@ -553,6 +725,18 @@ if [ -x "$PY" ]; then "$PY" server/provenance_embed_test.py || exit 1; fi
 # disk rather than a placeholder.
 node server/welcome/ui_test.js || exit 1
 node server/welcome/catalogue_test.js || exit 1
+# THE SHELL (UI_PLAN B1, B3-B6, E1): a fresh install opens Simple and an install
+# in use keeps Advanced (written for it), an unparseable settings.json is never
+# written over, a Home card opens Simple either way, every "Advanced adds"
+# tooltip names controls Simple really hides, the first-run lines on eight
+# imaginary machines, the rail (Make first, More tools folded, Models and
+# Settings pinned), the phone media rule, plain words for every run, and the
+# Make buttons (a writing model is yes, no or not known yet).
+node --check web/level.js || exit 1
+node --check web/rail.js || exit 1
+node --check web/runwords.js || exit 1
+node --check web/writer.js || exit 1
+node server/welcome/level_test.js || exit 1
 # THE VIDEO LAB's parity gate and its arithmetic. The gate runs the usual
 # two-directional census in BOTH surfaces (an action a person cannot reach and
 # an action an agent cannot reach are both failures here — the first run found
@@ -586,6 +770,30 @@ node server/videolab/store_test.js || exit 1
 # developer's machine — it passed 46/46 against the reintroduced defect until
 # it parsed the source instead.
 node server/fit_test.js || exit 1
+# H3'S CARD TIERS (server/h3tier.js), the one source for which size and length
+# H3 is offered at on a 12, 8, 6 GB card: the boundaries on real readings, the
+# lab's VRAM fit against its seven capped runs, the 17k+5 frame grid against
+# workflow.js, the RAM warning, and that every H3-family Models row reads it.
+node server/h3tier_test.js || exit 1
+# THE VIDEO SCREEN FOLLOWS THE CARD (the H3 lab's #1, #2, #4-#7; UI_PLAN C3):
+# what a size needs against the card, the size chips and start size per card,
+# sol-attn on the Fast setting only (the lab's A3 node), FastH3 Advanced-only on
+# Kitchen, the engine asked for sol-attn before it is sent, ComfyUI failures in
+# words, the render plan's said changes, web/vidfit.js holding no opinion and
+# run on three machines, and the Video Lab mirroring the form's controls.
+node --test server/vidfit_test.js || exit 1
+# REFERENCES ON AN ENGINE THAT IGNORES THEM (UI_PLAN E4): one server sentence,
+# shown in the reference slots and said by make_clip; such a clip is refused,
+# never rendered without them; a tag nothing answers leaves the description.
+node --test server/video-refs_test.js || exit 1
+# KEEP MY CHARACTER (the REWIND A/B, 2026-09-24): res_multistep on the reference path, the reference build's own step count, a saved character bound before the safety check, the Keep row shown in Simple in the server's words, make_clip persona.
+node --test server/keep-character_test.js || exit 1
+# A FAILED CLIP IN WORDS, through the real ArtRunner with the engine door
+# stubbed: a submission ComfyUI refused before it ran (client.js throws) and a
+# run that failed while rendering both become the sentence, the engine's text
+# kept on the row, for a waiter, in lastError and the log; the card's memory
+# and the PC's are two different sentences. Temp folders, no engine.
+node --test server/video-fail_test.js || exit 1
 # ...AND THE HALF OF IT A PERSON ACTUALLY SEES. fit.js can be perfectly right
 # and the Models screen still recommend nothing, silently: the block only
 # appears because app.js imports web/modelfit.js, calls paintFit AFTER the list
@@ -601,6 +809,8 @@ node server/fit_test.js || exit 1
 # ungated. A suite outside the hook is a comment with a shebang.
 node --check web/modelfit.js || exit 1
 node server/modelfit_test.js || exit 1
+node --check web/modelsearch.js || exit 1
+node --test server/modelsearch_test.js || exit 1
 # THE TWO DOCUMENTS A STRANGER READS BEFORE TRUSTING ANY OF THIS. The model
 # tables in README.md and INSTALL.md are GENERATED from server/models.js, the
 # same bargain as NOTICE above — hand-kept, one listed 13 of 17 models and the
@@ -624,6 +834,11 @@ node server/style-tags_test.js || exit 1
 node server/roulette_test.js || exit 1
 node server/prompt-tools_test.js || exit 1
 node --test server/apimode-picker_test.js || exit 1
+# No strong card? Friend first, then your own key: no paid run starts without its
+# own confirmation, none starts with the switch off, and no key is read that
+# the person did not type into Studio (server/cloud-switch.js).
+node --test server/cloud-confirm_test.js || exit 1
+node --check web/cloudswitch.js || exit 1
 node --test server/library-batch_test.js || exit 1
 node --test server/ace-step_test.js || exit 1
 node --test server/simple-remix_test.js || exit 1
@@ -645,8 +860,24 @@ node --test server/gpu_test.js || exit 1
 node --test server/download_test.js || exit 1
 # Changing the models folder keeps what is already downloaded.
 node --test server/modelsdir_test.js || exit 1
+# FastH3: the third video engine's graph, its attention pair and its download row.
+node --test server/fasth3_test.js || exit 1
+node --test server/taomate_test.js || exit 1
+node --test server/video-speed_test.js || exit 1
+node --test server/fresh-engine_test.js || exit 1
+node --test server/blockcache_test.js || exit 1
+node --test server/video720_test.js || exit 1
+node --test server/clip-budget_test.js || exit 1
+# Comfy API mode: the Router client, run queue, result reader, simple forms
+# (checked against the published schemas in server/router/fixtures) and the mode.
+node --test server/router/router_test.js || exit 1
 # Your own LoRAs on the Video screen reach both video graphs.
 node --test server/video_lora_test.js || exit 1
+node --test server/power_test.js || exit 1
+node --test server/ui-kit_test.js || exit 1
+node --check web/ui.js || exit 1
+node --check web/battery.js || exit 1
+node --check web/picdrop.js || exit 1
 # WHY EVERY PICTURE SILENTLY FAILED. "Cover art: off" in Settings refused every
 # render queued as a cover — which is how the Images screen queues one — and the
 # route answered ok with nothing queued, so the screen said "Queued." forever
@@ -668,6 +899,48 @@ node server/artgate_test.js || exit 1
 # cache keyed on the graph — so it needs no GPU, and it covers both halves: the
 # miss that renders, and the hit that must resolve to the twin rather than die.
 node server/art_cache_test.js || exit 1
+# TIMED LYRICS SAY WHY THEY FAILED. A new user got "alignment failed" for a
+# whisper python that did not exist; art.js kept only lrc.py's stdout, so a
+# missing interpreter, a percent-encoded script path ("AIPLAY%20Studio"), a
+# native cuDNN abort and a stray traceback all read as those two words. Stub
+# interpreters pin each sentence; the real lrc.py runs against fake whisper
+# modules (no torch, no GPU) for the CPU fallback; and a sweep keeps every
+# server/ and scripts/ path off `import.meta.url).pathname`. The python half
+# skips only where no python runs at all.
+node server/lrc_test.js || exit 1
+# WHISPER AS A TOOL: /api/whisper and the whisper_* MCP tools. The door's
+# arguments and its output-folder guard, the "whisper" kind on the art queue
+# (a fake python, so no whisper and no GPU), the saved model, and whisper.py
+# against fake whisper modules. The python half skips where no python runs.
+node server/whisper_test.js || exit 1
+# ONE-CLICK TIMED LYRICS: [Set up timed lyrics] builds a private Python with the
+# kept uv (server/setup/venv.js). A fake uv (a Node script) records what it is
+# told: the CUDA 12.6 index on NVIDIA and the CPU index otherwise, the setting
+# written only after the both-modules probe passed, a working setup a no-op,
+# network paths and foreign folders refused, the cache kept on failure, a long
+# job answering its request at once, the door's guard and size cap, and the MCP
+# tools (setup_feature withheld from the chat). No network, no Python, no GPU.
+node server/setup_venv_test.js || exit 1
+# A MISSING MODULE BECOMES AN INSTALL BUTTON: "No module named 'scipy'" from
+# hum-to-score, the tokenizer, the compositor or the DAW answers 409 with the
+# module, the python and the pip line, and setup "studio-packages" only where
+# Studio's own engine setup would fix that python; the repair runs --add-only
+# against the frozen constraints. Stand-in pythons, no network, no GPU.
+node server/setup/engine-refusal_test.js || exit 1
+# WHO MAY OPEN THE DOORS THAT CHOOSE WHAT RUNS HERE. A cross-site no-cors POST
+# (text/plain, no preflight) moved the rig Studio launches, the output and
+# models folders, switched paid API mode on with its cap at $1000, stored its
+# own key and queued a song; only addAlso said 403. The real route text, sliced
+# out of index.js, with the real sameOriginLocalJson: /api/models (every
+# action), /api/settings (and its network/device path refusal), /api/apimode,
+# /api/generate, and /api/audio's sandbox header. Temp folders, no server.
+node --test server/cross-origin-doors_test.js || exit 1
+# THE AUDIO DOOR LETS GO OF THE SONG WHEN THE PLAYER DOES (the EPERM on a
+# cover embed): the real /api/audio route with a client that hangs up after
+# its first chunk; the read stream closes, the file can be renamed over on
+# win32, the old .pipe(res) shape is the control; 206/416/HEAD and a suffix
+# range still answer as the player needs. Loopback only, no Studio.
+node --test server/audio-door_test.js || exit 1
 # THE PREVIEW CACHE KEY, against real files in a temp directory. The cache was
 # keyed on the root comp's updatedAt alone, so an edit inside a CHILD comp
 # repainted the parent and its cached frames went on being served. No python and
@@ -1034,6 +1307,17 @@ node server/music-gguf-input-ui_test.js || exit 1
 node server/music-native-progress-ui_test.js || exit 1
 node server/music-gguf-q8-ui_test.js || exit 1
 node server/music-params-layout_test.js || exit 1
+# EVERY YuE2 ROW THE MUSIC PAGE SHOWS IS ONE THE CHOSEN BUILD TAKES (a new
+# user's report, 2026-09-24: Key, Tempo, Meter and the sampler dials set on
+# YuE2 GGUF and none of it reached the song). The page's own painters and
+# spec builders, sliced out of web/app.js, run over the real Music markup once
+# per YuE2 build with a value in every row: a shown row is sent, a hidden one
+# is not, and the spec passes that build's real door (prepareGgufJob, the
+# ComfyUI validator, the kit's body reads). Plus the example score parses,
+# the refusal hooks offer their setup, the stems python row, the Jobs
+# "stopping…"/"stopped", the transcription's own Stop and the rights words.
+# No server, no GPU, under a second.
+node --test server/music-engine-rows_test.js || exit 1
 # The derivative that makes music LoRA training possible. Skips where the
 # engine's python is absent; a WRONG answer here trains happily on gradients
 # pointing the wrong way, so it is checked rather than trusted.
@@ -1045,10 +1329,19 @@ node server/music/train_test.js || exit 1
 node --test server/music/train-ui_test.js server/overnight-image_test.js || exit 1
 # Qwen native graphs/readiness, frozen Collab previews, and reactive reference anchors.
 node --test server/qwen-api_test.js server/qwen-image_test.js server/qwen-modelpick_test.js server/qwen-models_test.js server/qwen-status_test.js server/collab/preview_test.js server/collab/ui_test.js server/reactive_profile_test.js || exit 1
+# FAST DRAFT for Qwen Image 2.1 (Viggle's turbo LoRA, arm C of the 2026-09-24
+# A/B): the one sigma helper against the three measured schedules, the graph
+# node for node, every base-only refusal, readiness for the LoRA, the ~3 s /
+# ~12 s estimate, and the Pictures chip's gating sliced out of web/app.js.
+node --test server/qwen-draft_test.js || exit 1
 if [ -n "$ADAPTER_PY" ]; then "$ADAPTER_PY" server/sparsectrl_pairs_test.py || exit 1; fi
 if [ -n "$ADAPTER_PY" ] && "$ADAPTER_PY" -c "import numpy" >/dev/null 2>&1; then "$ADAPTER_PY" server/sparsectrl_lifecycle_test.py || exit 1; fi
 if [ -n "$ADAPTER_PY" ] && "$ADAPTER_PY" -c "import numpy" >/dev/null 2>&1; then "$ADAPTER_PY" server/yue2_continue_test.py || exit 1; fi
 if [ -n "$ADAPTER_PY" ] && "$ADAPTER_PY" -c "import numpy, scipy" >/dev/null 2>&1; then "$ADAPTER_PY" server/reactive_rms_test.py || exit 1; fi
+# The minors rule's backstop INSIDE ComfyUI (server/comfy_nodes/aiplay_safety_gate.py):
+# stdlib only, so it runs on whatever python is here. It must never raise, since
+# ComfyUI swallows a handler's exception and runs the original prompt.
+if [ -n "$ADAPTER_PY" ]; then "$ADAPTER_PY" server/safety_gate_test.py || exit 1; fi
 # The final grade on every music video. eq=contrast=1.09 ran the bottom of the
 # range into zero and flattened thirteen shadow codes into one; this measures a
 # ramp through the grade the renderer actually composes. Skips without ffmpeg.

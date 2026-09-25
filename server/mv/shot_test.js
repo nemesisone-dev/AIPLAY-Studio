@@ -119,11 +119,30 @@ ok("a scene with cast routes to H3 under the default hybrid mode", r.engine === 
   ok("...and an explicit ltx is honoured rather than overridden by the presence of a sheet",
     resolveShot(d3, "s1_0").engine === "ltx" && resolveShot(d3, "s1_0").useRefs === false);
   const d4 = baseDoc(); d4.brief.videoEngine = "h3"; d4.boards[0].characterRefs = [];
-  ok("...and an explicit h3 is honoured on a scene with no cast at all",
-    resolveShot(d4, "s1_0").engine === "h3");
+  const r4 = resolveShot(d4, "s1_0");
+  ok("...and an explicit h3 is honoured on a scene with no cast at all", r4.engine === "h3");
+  /* ⚠ THE HALF THIS PANEL USED TO LEAVE UNCHECKED, AND IT WAS THE BROKEN HALF.
+   * The line above asserted the ENGINE and stopped. `useRefs` was gated on the
+   * ROUTER's question — "is there cast?" — so on an explicit-h3 project a board
+   * with no person on it ran on H3, paid H3's price, and had its pictures
+   * withheld. Eight of ABOVE THE WATER's 34 shots and nine of the coda's twelve
+   * went out that way. The engine assertion passed the whole time. */
+  ok("...AND ITS PICTURES ARE ACTUALLY SENT, because H3 is the engine that will run",
+    r4.useRefs === true && r4.refsSent === true && r4.refs.length > 0,
+    `useRefs ${r4.useRefs}, refsSent ${r4.refsSent}, refs ${r4.refs.length}`);
+  ok("...so the flux storyboard is NOT pinned as frame 0 on a room with nobody in it",
+    r4.opensOn === null && r4.guideMode === "none",
+    `opensOn ${r4.opensOn}, guideMode ${r4.guideMode}`);
+  const d4b = baseDoc(); d4b.brief.videoEngine = "h3";
+  d4b.boards[0].characterRefs = []; d4b.boards[0].propRefs = []; d4b.boards[0].backgroundRefs = [];
+  ok("...and a board that names nothing at all sends nothing, h3 or not",
+    resolveShot(d4b, "s1_0").useRefs === false, "no pictures is not the same as pictures withheld");
   const d5 = baseDoc(); d5.brief.castRefs = false;
   ok("...and castRefs:false drops the references instead of collecting and discarding them",
     resolveShot(d5, "s1_0").useRefs === false && resolveShot(d5, "s1_0").engine === "ltx");
+  const d5b = baseDoc(); d5b.brief.castRefs = false; d5b.brief.videoEngine = "h3";
+  ok("...on an explicit h3 project too, which is the only thing that switch ever claimed",
+    resolveShot(d5b, "s1_0").useRefs === false);
 }
 
 /* ── RESOLVED IS NOT SENT ────────────────────────────────────────────────
@@ -509,6 +528,38 @@ ok("...and no stray control byte crept into the source",
   refreshBoardStale(b5);
   ok("...and never INVENTS staleness from a bumped updatedAt, which a no-op save moves",
     b5.staleRefs === false, JSON.stringify(b5));
+}
+
+/* ── THE SONG UNDER THE CLIP, said on the shot (2026-09-24) ───────────────
+ * A new project starts on Song under the clip "always" (store.js, the REWIND
+ * A/B), so a ticked character with a sheet goes to H3 with its picture named
+ * first and the song under the clip; an "auto" brief on a board not marked as
+ * sung says, before anything is spent, that the mouth will not follow. */
+{
+  const { blankProject } = await import("./store.js");
+  const fresh = () => ({ ...blankProject("Rewind"), styleBible: "Anime night", song: { file: "song.flac" },
+    characters: [{ id: "c1", name: "Senzu", imageFile: "senzu.png", takes: [] }], backgrounds: [], props: [],
+    segments: [{ id: "s1_0", index: 0, startSec: 0, endSec: 4, durationSec: 4, kind: "lyrical", mode: "generate", thesisLine: "I miss her" }],
+    boards: [{ id: "bd1", segmentId: "s1_0", segmentIndex: 0, shots: [{ action: "Senzu sings the line to camera" }],
+      characterRefs: ["Senzu"], backgroundRefs: [], propRefs: [], refProminence: {}, imageFile: null, takes: [] }],
+    clips: [] });
+  const r1 = resolveShot(fresh(), "s1_0", { ltxReady: true });
+  ok("a new project's scene with a ticked character goes to H3 with its picture",
+    r1.engine === "h3" && r1.useRefs === true && r1.refsSent === true, JSON.stringify({ engine: r1.engine, useRefs: r1.useRefs }));
+  ok("...its prompt names the picture first after the style", r1.prompt.startsWith("Anime night. <Picture 1> is Senzu."), r1.prompt.slice(0, 80));
+  ok("...and the song is under the clip, said in the brief's words",
+    r1.songUnder === true && /^song under this clip: the brief puts it under every scene/.test(r1.songLine), r1.songLine);
+  const auto = fresh();
+  auto.brief.songConditioning = "auto";
+  const r2 = resolveShot(auto, "s1_0", { ltxReady: true });
+  ok("an auto brief on a board not marked as sung: no song, and the shot says the mouth will not follow",
+    r2.songUnder === false && /^no song under this clip: Song under the clip is auto/.test(r2.songLine), r2.songLine);
+  auto.boards[0].lipSync = true;
+  ok("...a board marked as sung has it", resolveShot(auto, "s1_0", { ltxReady: true }).songLine === "song under this clip: this board sings (lip-sync)");
+  const none = fresh();
+  none.song = null;
+  ok("...and with no song attached, the shot says so", resolveShot(none, "s1_0").songUnder === false
+    && resolveShot(none, "s1_0").songLine === "no song attached to this project");
 }
 
 console.log(`\n  ${pass} passed, ${failures.length} failed\n`);

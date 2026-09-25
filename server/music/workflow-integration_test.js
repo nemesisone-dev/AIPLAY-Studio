@@ -9,6 +9,7 @@ import os from "node:os";
 import { createListeningLab, listeningPairRequests } from "./listening-lab.js";
 import { createListeningLabRuntime } from "./lab-runtime.js";
 import { buildYue2ComfyGraph, INSTRUMENTAL_PLANNER_LORA } from "../workflow.js";
+import { yue2ComfyFields } from "./yue2-comfy-input.js";
 
 // Git may check these sources out as CRLF on Windows. Normalize only line endings
 // so executable-boundary markers behave identically in a checkout and a worktree.
@@ -90,12 +91,15 @@ function createRouteHarness() {
     { folder: "loras", name: "mine.safetensors" },
     { folder: "loras", name: INSTRUMENTAL_PLANNER_LORA },
   ];
-  const scope = { path, INSTRUMENTAL_PLANNER_LORA,
+  const scope = { path, INSTRUMENTAL_PLANNER_LORA, yue2ComfyFields,
     config: { music: { yue2Checkpoint: "global-wrong.safetensors", yue2Lora: "saved-wrong.safetensors",
       yue2LoraClip: INSTRUMENTAL_PLANNER_LORA, engines: { "yue2-comfy": { maxDuration: 300 } }, precision: "int8" }, audioRef: { denoise: .5 } },
     scanBases: async () => shelf, modelBases: async () => [], probeModel: async file => ({ family: file === "reviewed" ? "yue2" : "flux" }),
     json: (_res, status, value) => ({ status, value }), bareName: value => value, prov: { actorFrom: () => "agent:lab" },
-    deriveTitle: () => "Untitled", jobReceipt: job => ({ id: job.id }), jobs: { enqueue: spec => { const job = { ...spec, id: `queued-${queued.length}` }; queued.push(job); return job; } } };
+    deriveTitle: () => "Untitled", jobReceipt: job => ({ id: job.id }), jobs: { enqueue: spec => { const job = { ...spec, id: `queued-${queued.length}` }; queued.push(job); return job; } },
+    /* Decided above this slice by the paid-song gate (server/cloud-switch.js);
+     * a YuE2 song is never a hosted one. */
+    paidSong: false };
   const body = between(index, "      let yueLora = null", "\n    /**\n     * Extend an existing take.");
   // The slice ends at the enclosing generate-route brace; execute its branch.
   const route = new AsyncFunction(...Object.keys(scope), "body", `const musicEngine = 'yue2-comfy', aceJob = null, req = {}, res = {}; { ${body}`);

@@ -8,8 +8,24 @@ import * as provenance from "../provenance.js";
 import { TOOL, normalizeActor } from "../provenance.js";
 import { killMeshProcessTree, sha256File } from "../mesh/runner.js";
 import { YUE2_RIGHTS, refuseLyrics } from "./yue.js";
+import { outputRightsFor, rightsStampFor } from "../models.js";
 
 export const YUE_GGUF_MODEL = "yue2-gguf";
+
+/* THE RIGHTS A GGUF RENDER CARRIES: the catalogue's own row for this engine
+ * (musicYue2Gguf: the authors' statement, with its weights-vs-native-code
+ * note), and yue.js's reading of the licence file only when there is none. */
+function ggufRights() {
+  const r = outputRightsFor(YUE_GGUF_MODEL);
+  return r?.class && r.class !== "unknown" ? r : YUE2_RIGHTS;
+}
+/* The record's copy is the claim, not the whole page: the ledger appends the
+ * record twice per render (delegate, generate), and the verbatim quotes and
+ * notes stay in the catalogue, as models.js rightsStampFor says they must. */
+export function rightsForRecord(r) {
+  return { class: r.class, sellable: r.sellable ?? null, chip: r.chip || null, basis: r.basis || "licence", url: r.url || null,
+    ...(r.licenceFile ? { licenceFile: { name: r.licenceFile.name, url: r.licenceFile.url || null } } : {}) };
+}
 export const MIN_FREE_VRAM_MB = null; // Native peak memory has not been measured.
 export const killGgufProcessTree = killMeshProcessTree;
 export const YUE_GGUF_RUNTIME = Object.freeze({
@@ -216,18 +232,34 @@ export async function yueGgufStatus({ settings = SETTINGS(), statFn = stat, quan
   }));
   return { enabled: !!settings.enabled, installed: why.length === 0, cli, cliPresent,
     modelDir, threads: settings.threads, quantization, modelFile: variant.modelFile, weights, why, runtime: YUE_GGUF_RUNTIME,
-    rights: YUE2_RIGHTS, experimental: true, minimumVramMb: MIN_FREE_VRAM_MB };
+    rights: ggufRights(), experimental: true, minimumVramMb: MIN_FREE_VRAM_MB };
 }
 
+/* The sampler's own dials: the runtime's request option, the field the page
+ * and make_song send for it (the Python kit's names), and its bounds. ONE list:
+ * music-gguf-input.js maps the page's fields through it. The runtime names are
+ * the same in model_specs/yue2.json of the pinned cda0e3a build and of the
+ * official v0.8.1 (v0.8 renamed only cfg_scale → guidance_scale, cfgKey
+ * below): performance = semantic, planner = abc. Bounds are the Python kit's
+ * door's (index.js, protocol.py Sampling), inside the runtime's own
+ * (temperature 0-5, top-p 0-1). */
+export const GGUF_DIALS = Object.freeze({
+  semantic_temperature: Object.freeze({ from: "temperature", range: [0, 5] }),
+  semantic_top_p: Object.freeze({ from: "topP", range: [0.01, 1] }),
+  abc_temperature: Object.freeze({ from: "planTemperature", range: [0, 5] }),
+  abc_top_p: Object.freeze({ from: "planTopP", range: [0.01, 1] }),
+});
 const FIELDS = new Set(["style", "lyrics", "cot", "seed", "narSteps", "cfg_scale", "abc", "id",
   "out", "actor", "via", "project", "subject", "signal", "onProgress", "timeoutMs", "audioSeconds",
-  "allowEmptyLyrics", "allowSectionLabels", "quantization"]);
+  "allowEmptyLyrics", "allowSectionLabels", "quantization", ...Object.keys(GGUF_DIALS)]);
 /** Pure API/queue preflight. Unsupported Python/runtime/audio-reference options are never ignored. */
 export function validateGgufRequest(request = {}) {
   if (!request || typeof request !== "object" || Array.isArray(request)) fail("request", "Expected a native YuE2 request object.");
   const unknown = Object.keys(request).filter((key) => !FIELDS.has(key));
   if (unknown.length) fail("unknown-option", `Native YuE2 does not support: ${unknown.join(", ")}.`);
-  const r = { ...request, cot: request.cot ?? "full", seed: request.seed ?? 831001,
+  /* No seed: a new one, as every other engine rolls. It was 831001 every
+   * time, so the same words made the same song (2026-09-24). */
+  const r = { ...request, cot: request.cot ?? "full", seed: request.seed ?? Math.floor(Math.random() * 2 ** 32),
     narSteps: request.narSteps ?? 32, id: request.id ?? "song", timeoutMs: request.timeoutMs ?? 60 * 60 * 1000,
     quantization: request.quantization === undefined ? "q4_0" : request.quantization };
   ggufVariant(r.quantization);
@@ -248,6 +280,17 @@ export function validateGgufRequest(request = {}) {
   if (r.cfg_scale != null && (!Number.isFinite(r.cfg_scale) || r.cfg_scale < 0 || r.cfg_scale > 20)) fail("request", "cfg_scale must be finite and between 0 and 20.");
   if (r.abc != null && (typeof r.abc !== "string" || !r.abc.trim() || r.abc.includes("\0")
     || Buffer.byteLength(r.abc) > 65536 || r.cot === "off")) fail("request", "abc must be nonempty text up to 64 KiB with cot melody or full.");
+  for (const [key, { range: [lo, hi] }] of Object.entries(GGUF_DIALS)) {
+    if (r[key] !== undefined && (typeof r[key] !== "number" || !Number.isFinite(r[key]) || r[key] < lo || r[key] > hi)) {
+      fail("sampling", `A sampler dial is out of range: ${key} must be a number from ${lo} to ${hi}. Temperature 0–5, top-p 0.01–1. Nothing was queued.`);
+    }
+  }
+  /* The planner writes the score; with a score supplied, or the chain of
+   * thought off, it does not run, and its dials would change nothing. Said,
+   * not dropped: this engine never ignores what it was asked for. */
+  const planDial = r.abc_temperature !== undefined || r.abc_top_p !== undefined;
+  if (planDial && r.abc != null) fail("sampling", "With a supplied score the planner does not run, so Planner temperature and top-p do nothing. Clear them, or clear the score. Nothing was queued.");
+  if (planDial && r.cot === "off") fail("sampling", "With Thinking off the planner does not run, so Planner temperature and top-p do nothing. Clear them, or set Thinking to full or melody. Nothing was queued.");
   if (typeof r.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(r.id)) fail("request", "id must be 1–80 filename-safe letters, digits, underscores, or hyphens.");
   if (!Number.isInteger(r.timeoutMs) || r.timeoutMs < 1 || r.timeoutMs > 6 * 60 * 60 * 1000) fail("request", "timeoutMs must be between 1 ms and 6 hours.");
   if (r.audioSeconds != null && (!Number.isFinite(r.audioSeconds) || r.audioSeconds <= 0)) fail("request", "audioSeconds is advisory only and must be positive if provided.");
@@ -270,6 +313,7 @@ export function buildGgufArgs(r, { modelDir, threads, output, abcFile = null, cl
     "--request-option", `num_inference_steps=${r.narSteps}`];
   if (r.cfg_scale != null) args.push("--request-option", `${cfgKey}=${r.cfg_scale}`);
   if (abcFile) args.push("--request-option", `abc_file=${abcFile}`);
+  for (const key of Object.keys(GGUF_DIALS)) if (r[key] !== undefined) args.push("--request-option", `${key}=${r[key]}`);
   // Phase timing lines on stdout (ggufLogPhase). They carry names and milliseconds, never lyrics.
   args.push("--log", "--out", output);
   // Quotes and backslashes can double under Windows command-line serialization.
@@ -509,9 +553,10 @@ export async function renderGgufSong(request = {}, { runner = runGgufDriver, pro
   const record = { runId, actor, via, appVersion: TOOL, model: YUE_GGUF_MODEL, models: [YUE_GGUF_MODEL],
     project: r.project ?? null, subject: r.subject ?? null, runtime: { ...YUE_GGUF_RUNTIME, backend, version: rt.version, cli: settings.cli, threads: settings.threads },
     weights: status.weights, quantization: r.quantization, modelFile: status.modelFile,
-    outputRights: YUE2_RIGHTS, rights: YUE2_RIGHTS, dir, generationLimits,
+    outputRights: rightsStampFor(YUE_GGUF_MODEL), rights: rightsForRecord(ggufRights()), dir, generationLimits,
     args: { style: r.style, lyricsChars: r.lyrics.length, lyricsSha256: digestText(r.lyrics), cot: r.cot,
       seed: r.seed, quantization: r.quantization, num_inference_steps: r.narSteps, cfg_scale: r.cfg_scale ?? null,
+      ...Object.fromEntries(Object.keys(GGUF_DIALS).filter((k) => r[k] !== undefined).map((k) => [k, r[k]])),
       abcChars: r.abc?.length ?? 0, abcSha256: r.abc ? digestText(r.abc) : null,
       id: r.id, audioSecondsAdvisory: r.audioSeconds ?? null, allowEmptyLyrics: r.allowEmptyLyrics === true,
       allowSectionLabels: r.allowSectionLabels === true } };
@@ -593,7 +638,7 @@ export async function renderGgufSong(request = {}, { runner = runGgufDriver, pro
     return { ok: true, runId, status: "completed", out: output, dir, receipt, ...audio, sha256, elapsedSec,
       quantization: r.quantization, modelFile: status.modelFile, generationLimits, warnings,
       realtimeRatio: elapsedSec ? audio.audioSeconds / elapsedSec : null,
-      rights: YUE2_RIGHTS, record: data, ledger: { delegate, generate } };
+      rights: ggufRights(), record: data, ledger: { delegate, generate } };
   } catch (error) {
     error.runId = runId;
     error.dir = dir;

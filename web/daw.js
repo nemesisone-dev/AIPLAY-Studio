@@ -177,6 +177,18 @@ function sessionCurrent(session) {
 
 /* ────────────────────────────────────────────────────────── api */
 
+/** A refusal that names a one-click setup (R0 `setup`: SciPy missing from
+ *  Studio's own engine, which engine.py imports at the top) offers it with
+ *  the dialog from web/setup-feature.js, loaded only when one arrives. At
+ *  most once a minute per setup: a broken engine fails every render the
+ *  same way. The error still reaches the status line as before. */
+const setupOffered = new Map();
+function offerRefusalSetup(j) {
+  if (!j?.setup || Date.now() - (setupOffered.get(j.setup) || 0) < 60_000) return;
+  setupOffered.set(j.setup, Date.now());
+  import("./setup-feature.js").then((m) => m.offerSetup(j.setup, j.error)).catch(() => {});
+}
+
 async function api(body) {
   const r = await fetch("/api/daw", {
     method: "POST",
@@ -184,7 +196,10 @@ async function api(body) {
     body: JSON.stringify({ by: "user", ...body }),
   });
   const j = await r.json();
-  if (j.error) throw new Error(j.error);
+  if (j.error) {
+    if (typeof offerRefusalSetup === "function") offerRefusalSetup(j);
+    throw new Error(j.error);
+  }
   return j;
 }
 async function get(p) {
@@ -198,7 +213,10 @@ async function get(p) {
     if (err.name === "AbortError") throw new Error("The server took too long to respond. Please retry.");
     throw err;
   } finally { clearTimeout(timeout); }
-  if (!r.ok || j.error) throw new Error(j.error || `Request failed (${r.status})`);
+  if (!r.ok || j.error) {
+    if (typeof offerRefusalSetup === "function") offerRefusalSetup(j);
+    throw new Error(j.error || `Request failed (${r.status})`);
+  }
   return j;
 }
 
@@ -6380,7 +6398,7 @@ async function saveView(patch, label) {
     if (label) status(`${label} — ${$("viewNum").textContent}`);
     return r.view;
   } catch (err) {
-    if (sessionCurrent(session)) status(`set_view: ${err.message}`);
+    if (sessionCurrent(session)) status(`The layout was not saved: ${err.message}`);
     return null;
   }
 }
@@ -6941,7 +6959,7 @@ async function stopRecording() {
     status(`take landed: ${r.take.name} (${r.seconds}s) at sample ${r.start_sample}`
       + (rec.offsetMs ? ` (latency −${rec.offsetMs} ms applied)` : ""));
   } catch (err) {
-    status(`record_stop failed: ${err.message}`);
+    status(`The recording did not stop: ${err.message}`);
   }
 }
 
@@ -7096,7 +7114,7 @@ $("midiRecBtn").addEventListener("click", async () => {
     renderAndSwap(t0, performance.now(), r.dirty);
     status(`dropped ${r.added.length} performed note(s)${$("midiQuant").checked ? " (quantized)" : " (unquantized)"}`);
     MIDI.notes = [];
-  } catch (err) { status(`record_notes failed: ${err.message}`); }
+  } catch (err) { status(`The played notes were not added: ${err.message}`); }
 });
 
 /* ───────────────────────────────────────────────────────── projects */

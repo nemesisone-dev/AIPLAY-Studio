@@ -23,15 +23,23 @@ import { EventEmitter } from "node:events";
 import { randomUUID, createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdir, rename, readdir, stat, writeFile, readFile, unlink } from "node:fs/promises";
+import { stripPngText } from "./pngtext.js";
 import zlib from "node:zlib";
 import path from "node:path";
 import { config } from "./config.js";
-import { qwenImageGraph, QWEN_IMAGE_PRESET } from "./qwen-image.js";
+import { qwenImageGraph, qwenImageSettings, QWEN_IMAGE_PRESET } from "./qwen-image.js";
 import { qwenImageStatus } from "./qwen-status.js";
 import { resolvePick } from "./modelpick.js";
-import { animaGraph, coverGraph, coverPrompt, COVER_NODES, ideogramGraph, ideogramPassSeeds, nextIdeogramSeed, isRefusalCard, ideogramRefusalMessage, checkpointGraph, zImageGraph, krea2Graph, videoGraph, videoPrompt, alignFrames, videoEngine, enhanceGraph, restyleGraph } from "./workflow.js";
+import { animaGraph, coverGraph, coverPrompt, COVER_NODES, ideogramGraph, ideogramPassSeeds, nextIdeogramSeed, isRefusalCard, ideogramRefusalMessage, checkpointGraph, zImageGraph, krea2Graph, videoGraph, videoPrompt, alignFrames, videoEngine, enhanceGraph, restyleGraph, h3SparseFor, h3BlockCacheFor } from "./workflow.js";
+/* An engine failure as a sentence, the raw text behind Details (the Video screen's). */
+import { plainVideoFailure } from "./video-plain.js";
+import { chosenAttention, vendorOf } from "./comfyargs.js";
+import { createVideoSpeed } from "./video-speed.js";
 import { joinClips } from "./clipjoin.js";
+import { runLrc, LRC_SCRIPT, WHISPER_SCRIPT, whisperArgs, stderrTail } from "./lrc.js";
 import { buildCustom, assignedTo } from "./customWorkflows.js";
+import { killProcessTree } from "./proctree.js";
+import { demucsMeter, stemsPipLine, STEMS_SETTING_WORDS, STEMS_SETUP_BUTTON, stemsPythonEpoch, demucsEnv } from "./music/stems.js";
 /* The ledger, imported HERE and not only at the API seam in index.js: a clip
  * served from the engine's cache is a fact only the renderer can know, and it
  * is gone by the time the completion event is handled. */
@@ -49,6 +57,11 @@ import * as prov from "./provenance.js";
  * `const engine = job.engine || …` two lines above won. Caught by
  * art_cache_test.js on the first run, which is exactly what that test is for. */
 import { engine as engineDoor } from "./engine/client.js";
+/* The minors rule, asked at the queue's door as well as the engine's: a
+ * refusal here costs nothing and says so at once, before a job waits behind
+ * music for the GPU. server/safety/minors.js is the rule. */
+import { checkPrompt, fingerprintOf } from "./safety/minors.js";
+import { announceRefusal, refusalBody, CODE as SAFETY_CODE, REFUSAL } from "./safety/refusal.js";
 
 /**
  * Fold the track's filename into its seed.
@@ -162,6 +175,92 @@ function stableJson(v) {
 }
 
 /** A stable fingerprint of a submitted graph — this render's identity. */
+/**
+ * The options ModelAttentionBackend offers, from an /object_info answer.
+ *
+ * TWO SHAPES, because ComfyUI changed it: the v3 node API reports a combo as
+ * `["COMBO", { options: [...] }]` (what 0.36 sends, measured), older builds as
+ * `[[...options], { ... }]`. Reading only one would make every engine on the
+ * other shape look like it has no Comfy Kitchen — silently slow, never broken.
+ * Anything unreadable is an empty list, which means "not offered".
+ */
+export function attentionOptions(info) {
+  const spec = info?.ModelAttentionBackend?.input?.required?.attention;
+  if (!Array.isArray(spec)) return [];
+  if (Array.isArray(spec[0])) return spec[0].map(String);
+  if (spec[0] === "COMBO" && Array.isArray(spec[1]?.options)) return spec[1].options.map(String);
+  return [];
+}
+
+/**
+ * How long a clip may take before it counts as hung: 4x the estimate plus five
+ * minutes for a cold model load, never under 15 minutes. Generous on purpose:
+ * killing a nearly-finished render wastes everything spent on it.
+ *
+ * THE ESTIMATE IS AN NVIDIA ONE. The cost curve was fitted on the lab's card,
+ * so on any other card (AMD, Intel, one nobody could read) it gets three times
+ * the room. MEASURED 2026-09-24 on an RX 9060 XT (16 GB, ROCm): H3 at
+ * 1344x768, 124 frames, 8 steps took 1617 s against a 299 s estimate (5.4x).
+ * The old 4x limit gave up at 1497 s, two minutes before the clip landed, and
+ * the finished file was never filed.
+ */
+export function clipBudgetMs(expectedSeconds, vendor, factor = null) {
+  const slow = vendor === "nvidia" ? 1 : 3;
+  const base = Math.max(900_000, (expectedSeconds * 4 * slow + 300) * 1000);
+  /* Once this PC has rendered clips, its own measured factor (video-speed.js)
+   * counts too: whichever allows more. */
+  return Number(factor) > 0 ? Math.max(base, Math.round((expectedSeconds * factor * 4 + 300) * 1000)) : base;
+}
+
+/** Whether an H3-family clip starts on a clean card (config.js
+ *  video.freeBeforeClip, measured there): "auto" on any card but NVIDIA. */
+export function clipNeedsCleanCard(engine, { mode = "auto", vendor = null } = {}) {
+  if (engine !== "h3" && engine !== "fasth3") return false;
+  if (mode === "always") return true;
+  if (mode === "never") return false;
+  return vendor !== "nvidia";
+}
+
+/**
+ * Wait until nothing else is running on the card: no song (`musicBusy`) and
+ * nothing running or pending in ComfyUI's own queue (`engineQueue`, its
+ * /queue answer). True once quiet, false when `timeoutMs` passes first. A
+ * queue that cannot be read counts as quiet: the engine is not answering, so
+ * there is nothing in it to lose.
+ */
+export async function waitForQuietEngine({ musicBusy, engineQueue, timeoutMs = 20 * 60_000, pollMs = 2000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = Date.now } = {}) {
+  const until = now() + timeoutMs;
+  for (;;) {
+    let q = null;
+    try { q = await engineQueue?.(); } catch { q = null; }
+    const inQueue = q ? (q.queue_running || []).length + (q.queue_pending || []).length : 0;
+    if (!musicBusy?.() && inQueue === 0) return true;
+    if (now() >= until) return false;
+    await sleep(pollMs);
+  }
+}
+
+/** This PC's measured clip speed, per engine (server/video-speed.js). */
+export const videoSpeed = createVideoSpeed({ dir: config.paths?.appData });
+
+/**
+ * The methods BlockSparseAttention offers, from an /object_info answer, or
+ * null when the node is not there at all. Its `selection` is a DynamicCombo
+ * (ComfyUI 0.36 comfy_extras/nodes_sparse_attention.py: sol-attn, sla, vsa),
+ * reported as [type, { options: [{ key, inputs }] }]; a plain combo list is
+ * read too. A node whose options cannot be read counts as offering what it
+ * was built with, [] meaning "present, unknown".
+ */
+export function sparseMethods(info) {
+  const node = info?.BlockSparseAttention;
+  if (!node) return null;
+  const spec = node.input?.required?.selection;
+  if (!Array.isArray(spec)) return [];
+  if (Array.isArray(spec[0])) return spec[0].map(String);
+  const opts = spec[1]?.options;
+  return Array.isArray(opts) ? opts.map((o) => String(typeof o === "object" && o ? (o.key ?? o.name ?? "") : o)).filter(Boolean) : [];
+}
+
 export function graphHash(graph) {
   return createHash("sha256").update(stableJson(graph)).digest("hex").slice(0, 16);
 }
@@ -224,6 +323,28 @@ function bumpSavePrefix(graph, nonce) {
     }
   }
   return bumped;
+}
+
+/**
+ * The clip the graph's SaveVideo wrote: picked by NODE, never by position.
+ *
+ * ⚠ NOT `outputs[0]`. On ComfyUI 0.36 LoadVideo reports the file it READ as an
+ * output row of type "input", and /history keys outputs by node id, which a
+ * JSON parse hands back in ascending numeric order. The enhance graph loads at
+ * node 1 and saves at node 9, so the first row was the staged source: measured
+ * 2026-09-23, seven RIFE jobs finished on the GPU and then died renaming
+ * output/aiplay_enh_<hash>.mp4, a file that lives in the INPUT folder, while
+ * the real result sat in output/clips as enh_0000N_.mp4. Restyle (load 30,
+ * save 21) and a continuation or control video (load 70 or 30, save 15-29)
+ * were right only because their loaders carry the larger id.
+ *
+ * With no row from a SaveVideo node, the first row of type "output": an
+ * "input" echo or a "temp" preview is never a file in the output folder.
+ */
+export function savedClip(outputs, graph) {
+  const saves = new Set(Object.keys(graph || {}).filter((id) => graph[id]?.class_type === "SaveVideo"));
+  const written = (outputs || []).filter((o) => (o.type || "output") === "output");
+  return written.find((o) => saves.has(String(o.node))) || written[0] || null;
 }
 
 /* How many pass-seeds one Ideogram job may burn before it gives up. Each one
@@ -299,13 +420,50 @@ const IMAGE_DEFAULT_STEPS = { flux2: 4, zimage: 8, "zimage-base": 25, checkpoint
  * it is about to do. Same class of bug as costing a 2048² job as 1024²: the
  * number that reaches the deadline has to be the number the GRAPH uses. */
 const IDEOGRAM_PRESET_STEPS = { quality: 48, turbo: 12, default: 20 };
-/** Seconds one image job should honestly take on a quiet machine. */
-export function imageCostSeconds({ engine = "flux2", steps, count = 1, width, height, quality, cfg = 1, refImages = [], refResolution = 1024 } = {}) {
+/* FAST DRAFT'S CLOCK, measured on the 16 GB lab card on 2026-09-24 (the A/B
+ * in lab/qwen_turbo and its switch-cost follow-up), not guessed:
+ *   warm, the same prompt again     2.9 s at 1024² (3.1 s A/B median), and
+ *                                   about 3.1 s per megapixel of batch: 12.1 s
+ *                                   for 4 x 1344x768, 6.7 s at 1920x1088
+ *   anything else with Qwen loaded  ~12 s: a new prompt pays the text encode
+ *                                   (12.2 s), and a draft after a final
+ *                                   re-patches the model (11.7 s, +8.8 s)
+ *   Qwen not loaded                 36.7 s (the cold run)
+ * and a FINAL straight after drafts pays the re-patch the other way, +2.5 s.
+ * The two cannot stay loaded together with the stock loader: every switch
+ * re-streams 6.9 GB and re-merges the LoRA. Grouping drafts keeps them fast.
+ * Here these only size the queue's deadline (floored at 30 min for Qwen); the
+ * number a person sees is Overnight's plan, web/app.js ovMediaCost, which
+ * costs a draft take as a new prompt from the same figures
+ * (server/qwen-draft_test.js holds the two together). */
+export const QWEN_DRAFT_SECONDS = Object.freeze({
+  perMegapixel: 3.1, notWarm: 9, cold: 34, perReference: 3, finalAfterDrafts: 2.5,
+});
+
+/** The render context the draft clock depends on, as ArtRunner remembers it:
+ *  what the previous Qwen render was, keyed on what its text-encode cache
+ *  keys on (the words, the references and the encoder). */
+export function qwenRenderKey({ prompt = "", negative = "", refImages = [], refResolution = 1024, encoder = null } = {}) {
+  return createHash("sha1").update(JSON.stringify([prompt, negative || "", refImages || [], refResolution ?? 1024, encoder || null])).digest("hex").slice(0, 16);
+}
+
+/** Seconds one image job should honestly take on a quiet machine.
+ *  `previous` is the last Qwen render ({ draft, key }) or null when Qwen is
+ *  not known to be loaded; only the Qwen engine reads it. */
+export function imageCostSeconds({ engine = "flux2", steps, count = 1, width, height, quality, cfg = 1, refImages = [], refResolution = 1024, draft = false, key = null } = {}, { previous = null } = {}) {
+  if (engine === "qwen-image-2.1" && draft === true) {
+    const mp = Math.max((width || 1024) * (height || 1024), refImages.length ? (refResolution || 1024) ** 2 : 0) / 1048576;
+    const S = QWEN_DRAFT_SECONDS;
+    const warmSame = previous?.draft === true && key != null && previous.key === key;
+    return S.perMegapixel * mp * Math.max(1, count) + refImages.length * S.perReference
+      + (warmSame ? 0 : previous ? S.notWarm : S.cold);
+  }
   if (engine === "qwen-image-2.1") {
     // A provisional scheduling estimate, not a measured performance claim.
     // References add vision/latent processing, and cfg > 1 adds a second pass.
     const mp = Math.max((width || 1024) * (height || 1024), refImages.length ? (refResolution || 2048) ** 2 : 0) / 1048576;
-    return 120 + 2 * (steps || QWEN_IMAGE_PRESET.steps) * Math.max(1, count) * mp * (cfg > 1 ? 2 : 1) + refImages.length * 45;
+    return 120 + 2 * (steps || QWEN_IMAGE_PRESET.steps) * Math.max(1, count) * mp * (cfg > 1 ? 2 : 1) + refImages.length * 45
+      + (previous?.draft === true ? QWEN_DRAFT_SECONDS.finalAfterDrafts : 0);
   }
   const n = engine === "ideogram4"
     ? (IDEOGRAM_PRESET_STEPS[quality] ?? IDEOGRAM_PRESET_STEPS.default)
@@ -329,9 +487,9 @@ export function imageCostSeconds({ engine = "flux2", steps, count = 1, width, he
   const LOAD = { flux2: 30, zimage: 30, "zimage-base": 30, checkpoint: 45, ideogram4: 180 }[engine] ?? 45;
   return LOAD + PER_PASS_MP * n * slots * cfgPasses * mp;
 }
-export function imageDeadlineMs(job = {}) {
-  if (job.engine === "qwen-image-2.1") return Math.max(1_800_000, (imageCostSeconds(job) * 6 + 120) * 1000);
-  return Math.max(180_000, (imageCostSeconds(job) * 6 + 120) * 1000);
+export function imageDeadlineMs(job = {}, context = {}) {
+  if (job.engine === "qwen-image-2.1") return Math.max(1_800_000, (imageCostSeconds(job, context) * 6 + 120) * 1000);
+  return Math.max(180_000, (imageCostSeconds(job, context) * 6 + 120) * 1000);
 }
 
 /**
@@ -437,20 +595,67 @@ export function refusalCard(buf) {
   return isRefusalCard(pngLumaStats(buf));
 }
 
+/**
+ * The kinds that run a PROGRAM of their own (demucs, whisper) instead of a
+ * graph on the engine. Two things follow, and both were missing (Tika's
+ * report, 2026-09-24):
+ *
+ *  - Stop has to reach the program. Every Stop used to go to ComfyUI, which was
+ *    never running these, so a separation ran on to the end after Stop and the
+ *    Jobs row came straight back. The runner keeps the child on the job and
+ *    kills its whole tree (server/proctree.js).
+ *  - They do not wait for the engine to be ready. demucs never talks to
+ *    ComfyUI, so in Music-only mode (no ComfyUI) a separation queued for ever.
+ *    Music still comes first: nothing here starts while a song is running or
+ *    waiting.
+ *
+ * "whisper" is a transcription somebody asked for (server/whisper.js, POST
+ * /api/whisper): the timed-lyrics program pointed at any file. It is queued
+ * here, not run beside the queue, so it never shares the card with a render.
+ */
+export const SUBPROCESS_KINDS = new Set(["stems", "lrc", "whisper"]);
+
+/** What a job the person stopped reads, in the Jobs list and to its waiters.
+ *  Non-null on purpose: art-wait.js and index.js standing() read a job with an
+ *  error as not-a-success, and a stopped job is not one. */
+export const STOPPED_ERROR = "Stopped before it finished (you pressed Stop).";
+
+/** A failure a separation meets when this python's PyTorch has no kernels for
+ *  the card (an RTX 50 under a CUDA 12.6-or-older build prints both lines). */
+const CUDA_ARCH_RE = /no kernel image is available|is not compatible with the current PyTorch installation|CUDA error: invalid device function/i;
+
 export class ArtRunner extends EventEmitter {
   /**
    * @param {import("./comfy.js").ComfySupervisor} comfy
    * @param {import("./jobs.js").JobRunner} jobs   consulted for idleness only
    */
-  constructor(comfy, jobs, { qwenStatus = qwenImageStatus } = {}) {
+  /**
+   * `spawnPython(python, args, opts)` replaces the spawn of the stems and
+   * timed-lyrics interpreters when given. Tests pass a fake python (a Node
+   * script) through it; nothing else does.
+   */
+  constructor(comfy, jobs, { qwenStatus = qwenImageStatus, spawnPython = null } = {}) {
     super();
     this.comfy = comfy;
     this.jobs = jobs;
     this.qwenStatus = qwenStatus;
+    this.spawnPython = typeof spawnPython === "function" ? spawnPython : null;
     this.queue = [];
     this.current = null;
     this.done = [];
     this.lastError = null;
+    this.lastRefusal = null;
+    /* The job a refusal was about, when there is one: a second separation of a
+     * song already being separated is refused, and the caller joins this. */
+    this.lastRefusalJob = null;
+    /* Set for this session when a separation met a card its PyTorch cannot run
+     * (see CUDA_ARCH_RE): { python, epoch, why }. Later separations go straight
+     * to the processor instead of failing first, but ONLY in that python and
+     * only until the stems python may have changed (stemsPythonEpoch(): a
+     * setup finishing, or a new choice in Settings). A venv rebuilt in place
+     * with a PyTorch that runs on the card must not stay on the processor for
+     * the rest of the session. Not saved; the "stems" setup saves `stems.device`. */
+    this.stemsOnCpu = null;
     this.enabled = config.art.enabled;
     this.paused = false;
     this.#timer = null;
@@ -475,10 +680,186 @@ export class ArtRunner extends EventEmitter {
     engineDoor.on("rebound", () => {
       try { this.#ws?.close(); } catch { /* already gone */ }
       this.#ws = null;
+      /* A restarted engine may be a different ComfyUI (an update, another
+       * launch flag), so what it offers is asked again, not remembered. */
+      this.#ckOffered = undefined;
+      this.#sparseOffered = undefined;
+      this.#cacheOffered = undefined;
+      this.#lastQwen = null;
     });
   }
 
   #ws;
+
+  /* THE LAST QWEN RENDER, { draft, key }, or null when Qwen is not known to be
+   * loaded (nothing yet, a music model came back, another engine or a clip
+   * ran, the engine restarted). Fast draft's estimate reads it: ~3 s only
+   * straight after a draft of the same words, ~12 s otherwise, and a final
+   * after drafts pays +2.5 s (imageCostSeconds, QWEN_DRAFT_SECONDS). */
+  #lastQwen = null;
+  /** For tests and the status reader: what the next Qwen render follows. */
+  get lastQwen() { return this.#lastQwen; }
+
+  /* undefined = not asked this boot; true/false = the engine's own answer. */
+  #ckOffered;
+  /* The same for BlockSparseAttention's methods: undefined = not asked, null =
+   * no node, [] = a node whose options could not be read, else the list. */
+  #sparseOffered;
+
+  /* Files refused under the minors rule, remembered briefly so a caller that
+   * starts waiting AFTER request() returned (MV's awaitArt) still hears the
+   * refusal instead of waiting twenty minutes for an event already gone. */
+  #refused = new Map();
+
+  /** The refusal for a file this runner just refused under the minors rule,
+   *  or null. */
+  refusalFor(file) {
+    return this.#refused.get(file) || null;
+  }
+
+  /**
+   * The words a job will be rendered from, derived exactly the way #render,
+   * #clip and #restyle derive them. Null for kinds that make no picture
+   * (stems, timed lyrics, sound effects, enhancement): those are not checked.
+   */
+  #renderedWords(job) {
+    if (job.kind === "video") return job.prompt || videoPrompt({ caption: job.caption, title: job.title, seed: job.seed });
+    if (job.kind === "restyle") return job.prompt || "";
+    if (job.kind === "cover" || !job.kind) {
+      return String(job.file).startsWith("image:")
+        ? (job.prompt || "")
+        : coverPrompt({ caption: job.caption, title: job.title, seed: job.seed, lyrics: job.lyrics });
+    }
+    return null;
+  }
+
+  /**
+   * Which attention an H3 graph should carry: "ck" or null (no node).
+   *
+   * THREE CONDITIONS, AND THE ORDER IS THE POINT.
+   *  1. An EXPLICIT attention choice in the launcher's Advanced settings wins.
+   *     Somebody who picked PyTorch there — to debug, or because a model
+   *     misbehaved — asked for it, and a per-graph node would overrule them
+   *     without a word. Only "no choice" or "Comfy Kitchen" lets CK through.
+   *     The AMD/Intel fix's own PyTorch value is not a choice (comfyargs.js
+   *     chosenAttention): the launcher shows it and a Save stores it.
+   *  2. config.video.engines.h3.attention says "ck" (see the measurement there).
+   *  3. The RUNNING engine offers the option. ModelAttentionBackend lists
+   *     "comfy kitchen attention" only when comfy_kitchen int8 is available, and
+   *     a value its COMBO does not list fails the WHOLE prompt at validation —
+   *     so on a card without the kernel, asking would not be slower, it would
+   *     be a render that never starts. Asked once per engine boot; a probe that
+   *     fails is "not offered", never an exception.
+   */
+  async h3Attention() {
+    const chosen = chosenAttention(config.comfy?.options?.attention,
+      { fix: config.comfy?.amdFix, vendor: vendorOf(config.gpu, config.torchBackend) });
+    if (chosen && chosen !== "--use-ck-attention") return null;
+    if ((config.video.engines.h3?.attention ?? "ck") !== "ck") return null;
+    return (await this.#kitchenOffered()) ? "ck" : null;
+  }
+
+  /** Condition 3 on its own: whether the RUNNING engine's ModelAttentionBackend
+   *  lists "comfy kitchen attention". Asked once per engine boot (the rebound
+   *  handler forgets it); a probe that fails is "not offered", never a throw. */
+  async #kitchenOffered() {
+    if (this.#ckOffered === undefined) {
+      try {
+        const info = await engineDoor.objectInfo("ModelAttentionBackend");
+        this.#ckOffered = attentionOptions(info).includes("comfy kitchen attention");
+      } catch { this.#ckOffered = false; }
+    }
+    return this.#ckOffered;
+  }
+
+  /** The attention a video graph carries, for any engine. LTX: none (null).
+   *  H3: h3Attention(), "ck" or null.
+   *
+   *  An engine with its own picker (config `sparseAttention`, FastH3) gets the
+   *  backend the person PICKED, written into the graph: "ck" or "pytorch", never
+   *  null. Leaving the node out would hand the dense part of the schedule to
+   *  whatever the launcher started ComfyUI with (Sage, CK int8 or PyTorch), so a
+   *  "PyTorch" pick ran under Sage and a "Kitchen" pick ran PyTorch, with nothing
+   *  on screen saying so. H3's launcher veto is H3's rule for having NO per-render
+   *  choice, so it does not apply here; the engine-offers probe still does, and a
+   *  Kitchen pick the engine does not offer becomes an explicit PyTorch node,
+   *  which is what ComfyUI would fall back to anyway. */
+  async videoAttention(job) {
+    const name = job.engine || config.video.engine;
+    if (name === "ltx") return null;
+    const eng = config.video.engines[name];
+    if (eng?.sparseAttention) {
+      const want = job.attention ?? eng.attention;
+      if (want !== "kitchen" && want !== "ck") return "pytorch";
+      return (await this.#kitchenOffered()) ? "ck" : "pytorch";
+    }
+    return this.h3Attention();
+  }
+
+  /**
+   * H3's sparse attention for one render: "sol-attn" or "off" (FastH3 and LTX:
+   * undefined, the graph decides; FastH3 always runs its own VSA).
+   *
+   * The person's per-render choice, else the saved one (config `sparse`), and
+   * sol-attn only where the RUNNING engine has the node and the mode: a node
+   * type or a DynamicCombo key the engine does not have fails the whole prompt
+   * at validation, so asking would be a render that never starts. The node
+   * itself runs dense on a card without the sol_attn kernel. Asked once per
+   * engine boot, and only for a render whose graph would carry it (the Fast
+   * setting's plain path, workflow.js h3SparseFor): a Standard, Best,
+   * reference, continuation or video-to-video render never takes it, so it
+   * neither asks nor gets a note. Where the graph would have carried it and
+   * the engine cannot, the job says so (`sparseNote`, the clip's metadata).
+   */
+  async videoSparse(job) {
+    const name = job.engine || config.video.engine;
+    if (name !== "h3") return undefined;
+    const want = job.sparse ?? config.video.engines.h3?.sparse ?? "off";
+    if (want !== "sol-attn") return "off";
+    const eng = { ...config.video, ...config.video.engines.h3, ...(job.models || {}) };
+    const refs = (Array.isArray(job.refImages) && job.refImages.some(Boolean))
+      || (Array.isArray(job.refAudios) && job.refAudios.some((a) => a && a.name));
+    const would = h3SparseFor(eng, { steps: job.steps ?? eng.steps, refs, sparse: want,
+      continuation: !!job.continueFrom?.file, control: !!(job.controlVideo && job.controlPatch) });
+    if (!would) return "off";
+    if (this.#sparseOffered === undefined) {
+      try { this.#sparseOffered = sparseMethods(await engineDoor.objectInfo("BlockSparseAttention")); }
+      catch { this.#sparseOffered = null; }
+    }
+    const m = this.#sparseOffered;
+    const ok = Array.isArray(m) && (m.length === 0 || m.includes("sol-attn"));
+    if (!ok) job.sparseNote = "This clip ran dense attention: the Fast setting's sparse attention (sol-attn) needs "
+      + "ComfyUI's BlockSparseAttention in sol-attn mode, which this engine does not have (0.36 or newer has it).";
+    return ok ? "sol-attn" : "off";
+  }
+
+  /**
+   * H3's block cache for this job (h3tier.js H3_BLOCK_CACHE): true only when
+   * video_settings block_cache is on, the render would carry it (plain path,
+   * no sparse attention: workflow.js h3BlockCacheFor) and the engine has the
+   * custom node. Where it would and cannot, the job says so (blockCacheNote).
+   */
+  async videoBlockCache(job) {
+    const name = job.engine || config.video.engine;
+    const eng = { ...config.video, ...(config.video.engines[name] || {}), ...(job.models || {}) };
+    if (eng.blockCache !== true) return false;
+    /* The same answer the graph gets for sparse attention (asked, not guessed). */
+    const sparse = await this.videoSparse(job);
+    const refs = (Array.isArray(job.refImages) && job.refImages.some(Boolean))
+      || (Array.isArray(job.refAudios) && job.refAudios.some((a) => a && a.name));
+    const sparseCfg = h3SparseFor(eng, { steps: job.steps ?? eng.steps, refs, sparse,
+      continuation: !!job.continueFrom?.file, control: !!(job.controlVideo && job.controlPatch) });
+    if (!h3BlockCacheFor(eng, { blockCache: true, refs, continuation: !!job.continueFrom?.file,
+      control: !!(job.controlVideo && job.controlPatch), sparse: sparseCfg })) return false;
+    if (this.#cacheOffered === undefined) {
+      try { this.#cacheOffered = !!(await engineDoor.objectInfo(eng.blockCacheRecipe.node))?.[eng.blockCacheRecipe.node]; }
+      catch { this.#cacheOffered = false; }
+    }
+    if (!this.#cacheOffered) job.blockCacheNote = "This clip ran without the block cache: it needs the MiniMax H3 Block Cache (T8) "
+      + "custom node in ComfyUI, which this engine does not have.";
+    return this.#cacheOffered;
+  }
+  #cacheOffered;
 
   /** Idempotent, lazy, and never fatal — progress is a nicety, not the work. */
   #connect() {
@@ -556,21 +937,194 @@ export class ArtRunner extends EventEmitter {
    * the work queued behind it. Interrupting ComfyUI is the whole mechanism —
    * the job's own awaiter then fails down the same path any dead render takes,
    * and the runner picks up the next item by itself. */
+  /* A job that runs a program of its own (SUBPROCESS_KINDS) is stopped by
+   * killing that program's whole tree: ComfyUI never had it, so interrupting
+   * the engine did nothing and the Jobs row came straight back (Tika's report).
+   *
+   *   → { stopped: title|null, kind, queued, killed, stopping }
+   * `killed` is true when the tree is gone before the reply; `stopping` is true
+   * while the program has not yet closed (the row then reads "stopping…"). */
   async stopCurrent() {
-    const was = this.current?.title || null;
-    if (!was) return { stopped: null, queued: this.queue.length };
-    /* Never throws — the client reports rather than raising, because Comfy
-     * already being gone is a perfectly good outcome for "stop it": the job's
-     * awaiter then fails down the same path any dead render takes, and the
-     * ledger keeps the interrupted run's record with status "error". */
-    await engineDoor.interrupt();
-    return { stopped: was, queued: this.queue.length };
+    const job = this.current;
+    const none = { stopped: null, kind: null, queued: this.queue.length, killed: false, stopping: false };
+    if (!job) return none;
+    try {
+      if (SUBPROCESS_KINDS.has(job.kind)) {
+        const r = await this.#stopChild(job);
+        return { stopped: job.title || null, kind: job.kind || null, queued: this.queue.length, killed: r.killed, stopping: r.stopping };
+      }
+      /* AN ENGINE RENDER: cancelled BY RUN ID, and only a run of this queue's
+       * own (its `via` starts with "art."; the queue renders one job at a time,
+       * so that is this job's render, or an orphan of an earlier one nobody
+       * waits on). Only a cancel the door confirms marks the job stopped: an
+       * untargeted /interrupt answers {stopped:true} whatever ComfyUI was
+       * running, and a job marked "stopping" on that word could render on to
+       * the end with its Stop button disabled, then have a real failure
+       * reported as the Stop sentence (review, 2026-09-24). */
+      const live = await engineDoor.status().catch(() => ({ running: [] }));
+      const mine = (live?.running || []).filter((r) => String(r.via || "").startsWith("art."));
+      if (mine.length) {
+        const stops = await Promise.all(mine.map((r) => engineDoor.cancelRun({ runId: r.runId }).catch(() => ({ stopped: false }))));
+        if (stops.some((s) => s?.stopped === true) && this.current === job) {
+          job.cancelled = true; job.stopping = true; this.emit("update");
+        }
+      } else {
+        /* Not on the engine yet (a preflight, a model load), or a door that
+         * keeps no record: the old way, an interrupt, and the job is NOT
+         * marked. Never throws: Comfy already being gone is a perfectly good
+         * outcome for "stop it", and the job's awaiter then fails down the same
+         * path any dead render takes. */
+        await engineDoor.interrupt();
+      }
+      return { stopped: job.title || null, kind: job.kind || null, queued: this.queue.length,
+        killed: false, stopping: this.current === job && !!job.stopping };
+    } catch {
+      return { ...none, stopped: job.title || null, kind: job.kind || null };
+    }
+  }
+
+  /**
+   * STOP WHAT IS MINE: every queued art job, then the running one. The Stop
+   * button's half for art (/api/cancel), moved here from index.js, which used
+   * to reach into this queue itself and could not reach a program at all.
+   *
+   *   - queued jobs are dropped (they were never sent anywhere);
+   *   - a running program (stems, timed lyrics) has its tree killed;
+   *   - an engine render is cancelled through the door, BY RUN ID, and only a
+   *     run whose `via` starts with "art." — a chat turn or a gate render
+   *     queued beside it is somebody else's work and keeps its place (the
+   *     reason /api/cancel never calls stopAll(), measured 2026-09-05).
+   *
+   *   → { dropped, wasRunning, kind, killed, stopping, interrupted, engineCancelled }
+   * Never throws: a Stop button must not fail because a status read did.
+   */
+  async stopMine() {
+    const out = { dropped: 0, wasRunning: null, kind: null, killed: false, stopping: false, interrupted: false, engineCancelled: 0 };
+    try {
+      const queued = this.queue;
+      this.queue = [];
+      /* Each dropped job is SAID to have stopped, the way a stopped running job
+       * is: a waiter polling for it reads "stopped", and a listener (an
+       * Overnight row, an image or clip waiter, ensureStem) ends at once
+       * instead of waiting out its own deadline. They were never started, so
+       * they join no history row. */
+      for (const j of queued) {
+        j.cancelled = true;
+        j.error = STOPPED_ERROR;
+        try { this.emit("failed", { file: j.file, kind: j.kind, owner: j.owner || null, error: STOPPED_ERROR, runId: null, cancelled: true }); }
+        catch { /* a listener's fault must not keep the rest of the Stop from happening */ }
+      }
+      out.dropped = queued.length;
+      if (queued.length) this.emit("update");
+      const job = this.current;
+      out.wasRunning = job?.title || null;
+      out.kind = job?.kind || null;
+      if (job && SUBPROCESS_KINDS.has(job.kind)) {
+        const r = await this.#stopChild(job);
+        out.killed = r.killed;
+        out.stopping = r.stopping;
+      }
+      /* The door's own record of who is running what. An orphaned render (its
+       * waiter gave up) is still ours, so this is asked whatever is current. */
+      const live = await engineDoor.status().catch(() => ({ running: [] }));
+      const mine = (live?.running || []).filter((r) => String(r.via || "").startsWith("art."));
+      const stops = await Promise.all(mine.map((r) => engineDoor.cancelRun({ runId: r.runId }).catch(() => ({ stopped: false }))));
+      out.engineCancelled = stops.filter((s) => s?.stopped === true).length;
+      out.interrupted = out.engineCancelled > 0;
+      if (out.interrupted && job && !SUBPROCESS_KINDS.has(job.kind) && this.current === job) {
+        job.cancelled = true; job.stopping = true; out.stopping = true;
+        this.emit("update");
+      }
+    } catch { /* what was done is reported; the rest is not a reason to fail the button */ }
+    return out;
+  }
+
+  /** The running job, or a waiting one, with this file and kind; else null.
+   *  A running job that is being stopped does not count: it is going. */
+  findJob(file, kind) {
+    const c = this.current;
+    if (c && c.file === file && c.kind === kind && !c.cancelled) return c;
+    return this.queue.find((j) => j.file === file && j.kind === kind) || null;
+  }
+
+  /* Kill a running program's tree and wait a moment for it to close.
+   * → { killed, stopping }. A job that has not started its program yet is
+   * only marked: #runChild and the lyrics launcher refuse to start it. */
+  async #stopChild(job) {
+    job.cancelled = true;
+    const child = job.child;
+    if (!child) { this.emit("update"); return { killed: false, stopping: false }; }
+    job.stopping = true;
+    this.emit("update");
+    const closed = new Promise((resolve) => {
+      if (job.child !== child) return resolve();
+      child.once("close", () => resolve());
+    });
+    const killed = await killProcessTree(child).catch(() => false);
+    await Promise.race([closed, new Promise((r) => setTimeout(r, 1500))]);
+    const stopping = job.child === child;
+    return { killed: killed || !stopping, stopping };
+  }
+
+  /* Keep the program on its job, and let go of it when it closes. A Stop that
+   * arrived while it was being started is carried out at once. */
+  #adopt(job, proc) {
+    job.child = proc;
+    const gone = () => {
+      if (job.child === proc) job.child = null;
+      if (job.stopping) { job.stopping = false; this.emit("update"); }
+    };
+    proc.once?.("close", gone);
+    proc.once?.("error", () => { if (proc.pid === undefined) gone(); });
+    if (job.cancelled) killProcessTree(proc).catch(() => {});
+    return proc;
+  }
+
+  /**
+   * Run one program to its end: { code, signal, stderr, stdout, spawnError }.
+   * Resolves on 'close' (its output is complete), or 3 s after 'exit' when a
+   * grandchild holds the pipes open, or at once when it could not start.
+   * `onOutput(text)` sees stderr and stdout as they come.
+   */
+  #runChild(job, start, { onOutput = null } = {}) {
+    return new Promise((resolve) => {
+      const r = { code: null, signal: null, stderr: "", stdout: "", spawnError: null };
+      let settled = false, grace = null;
+      const finish = () => { if (!settled) { settled = true; clearTimeout(grace); resolve(r); } };
+      if (job.cancelled) {
+        r.spawnError = Object.assign(new Error("stopped before it started"), { code: "STOPPED" });
+        return finish();
+      }
+      let proc;
+      try { proc = start(); } catch (e) { r.spawnError = e; return finish(); }
+      this.#adopt(job, proc);
+      const take = (key, cap) => (d) => {
+        const s = String(d);
+        r[key] = (r[key] + s).slice(-cap);
+        if (onOutput) { try { onOutput(s, key); } catch { /* a meter never fails the run */ } }
+      };
+      proc.stderr?.setEncoding?.("utf8");
+      proc.stdout?.setEncoding?.("utf8");
+      proc.stderr?.on("data", take("stderr", 64_000));
+      /* Read stdout too: demucs prints its "bag of N models" line there, and a
+       * pipe nobody reads fills and stalls the program. */
+      proc.stdout?.on("data", take("stdout", 16_000));
+      proc.on("error", (e) => { r.spawnError = e; if (proc.pid === undefined) finish(); });
+      proc.on("exit", (code, signal) => { r.code = code; r.signal = signal; grace = setTimeout(finish, 3000); });
+      proc.on("close", (code, signal) => { if (r.code === null && r.signal === null) { r.code = code; r.signal = signal; } finish(); });
+    });
   }
 
   async stopAll() {
     const dropped = this.queue.length;
     const wasRunning = this.current?.title || null;
     this.queue = [];
+    /* A running program of its own (demucs, whisper) is not on the engine, so
+     * the interrupt below never reached it: Battery Safe said "stopped" while
+     * a separation kept the card busy. Its tree is killed too; what this
+     * method returns is unchanged. */
+    const cur = this.current;
+    if (cur && SUBPROCESS_KINDS.has(cur.kind)) await this.#stopChild(cur).catch(() => {});
     /* Two halves and both are needed: clearing OUR queue (above) stops what has
      * not been submitted, interrupting stops what is rendering, and clearing
      * ComfyUI's own queue catches what it accepted but has not started. */
@@ -589,20 +1143,43 @@ export class ArtRunner extends EventEmitter {
         enabled: this.enabled,
         paused: this.paused,
         queued: this.queue.length,
+        /* "Every row below carries its job's `id`", SAID rather than inferred.
+         * A waiter that guessed it from the rows present read an empty queue
+         * and an empty history (a Studio just restarted) as a server without
+         * ids, and reported a job that no longer existed as a success at once.
+         * server/art-wait.js keys on this flag and nothing else. */
+        jobIds: true,
         // Offline engine work remains queued, with an explicit reason. Once
         // ready, Qwen's file/node preflight either dispatches or records a
         // normal failed-job event; an unavailable model is never substituted.
+        /* Only a job that needs the engine waits for it: stems and timed
+         * lyrics run their own program and start without it. */
         deferred: this.queue.length > 0 && !this.current && !this.paused && !this.comfy.ready
+          && this.queue.some((j) => !SUBPROCESS_KINDS.has(j.kind))
           ? { reason: "engine", message: "Waiting for the image engine to start; model readiness has not been verified." }
           : null,
         // `kind` is reported so the UI can name the stage that is actually
         // running. Without it the status line said "Drawing a cover for X"
         // while the queue was separating stems or rendering a 30 s clip.
         current: this.current && {
+          /* `id` on the running, the waiting and the finished rows alike: it is
+           * the handle the routes already return as `job.id`, and the only one
+           * that names exactly one job. A waiter (MCP's and the chat's) watches
+           * ITS id through all three lists and reads its own `error`; see
+           * server/art-wait.js for the verdict `lastError` used to borrow from
+           * strangers. */
+          id: this.current.id,
           file: this.current.file, title: this.current.title, kind: this.current.kind,
-          // Real per-step progress from the engine, not a timer.
+          // Real per-step progress from the engine, not a timer. For stems,
+          // demucs's own bars on stderr (music/stems.js demucsMeter).
           progress: this.progress,
           elapsed: this.startedAt ? Math.round((Date.now() - this.startedAt) / 1000) : 0,
+          /* Stop was pressed and the program has not closed yet: the row
+           * says "stopping…" rather than offering Stop again. */
+          stopping: !!this.current.stopping,
+          /* What the bar alone cannot say: "fetching the separation model,
+           * 336 MB, first run only", "model 2 of 4". */
+          note: this.current.note || null,
         },
         queuedKinds: this.queue.reduce((m, j) => (m[j.kind] = (m[j.kind] || 0) + 1, m), {}),
         // The mini queue's ETA inputs: what this session actually measured.
@@ -615,7 +1192,8 @@ export class ArtRunner extends EventEmitter {
          * finished and not one of them what they were or where the file went.
          * Trimmed to what a list needs — the full job objects carry graphs and
          * buffers that have no business crossing the wire. */
-        recent: (this.done || []).slice(0, 200).map((j) => ({
+        recent: (this.done || []).slice(0, 200).map((j, i) => ({
+          id: j.id || null,
           kind: j.kind,
           title: j.title || null,
           file: j.file || null,
@@ -631,13 +1209,24 @@ export class ArtRunner extends EventEmitter {
             : (j.startedAt && j.finishedAt) ? j.finishedAt - j.startedAt : null,
           at: j.finishedAt || j.at || null,
           error: j.error ? String(j.error).slice(0, 200) : null,
+          /* Stopped by the person, not failed: the row reads "stopped". */
+          cancelled: !!j.cancelled,
+          /* The whole failure, for the newest rows only: `lastError` used to
+           * be the one place the uncut text lived, and it now clears on the
+           * next success (art-wait.js ownFailure reads this first). */
+          ...(i < 20 && j.error && String(j.error).length > 200 ? { fullError: String(j.error).slice(0, 4000) } : {}),
+          /* A render failure said in words (a clip's, video-plain.js): the raw
+           * engine text beside it, for the page's Details, and the whole of
+           * both in fullError for a waiter (art-wait.js reads it first). */
+          ...(i < 20 && j.error && j.errorDetail ? { detail: String(j.errorDetail).slice(0, 4000), errorReason: j.errorReason || null,
+            fullError: `${String(j.error)} Details: ${String(j.errorDetail)}`.slice(0, 4000) } : {}),
         })),
         stats: this.stats || {},
         nextTitles: this.queue.slice(0, 3).map((j) => ({ kind: j.kind, title: j.title })),
         /* EVERY waiting job, not just the next three. A queue you cannot see
          * is a queue you cannot manage — the UI needs one row per job, with
          * the `file` key that drop() takes. */
-        items: this.queue.map((j) => ({ file: j.file, kind: j.kind, title: j.title || null })),
+        items: this.queue.map((j) => ({ id: j.id, file: j.file, kind: j.kind, title: j.title || null })),
         lastError: this.lastError,
       },
     };
@@ -657,9 +1246,35 @@ export class ArtRunner extends EventEmitter {
    * someone wait for music. One queue means one idleness rule and one place
    * where music preempts.
    */
-  request({ file, caption, title, seed, lyrics, kind = "cover", force = false, video, actor, asked = false }) {
+  /* ⚠ THIS LIST IS THE WHOLE CONTRACT. It is a DESTRUCTURED parameter list,
+   * so a field the caller sets and this line does not name is dropped in
+   * silence — the job is built from these names and nothing else. That has
+   * bitten before (engine, checkpoint and seed had to move inside `video`),
+   * and it bit `private` the same way: the route set it, the render ran, and
+   * the prompt went into the ledger verbatim because the flag never arrived.
+   * Anything new belongs here AND on the job below. */
+  request({ file, caption, title, seed, lyrics, kind = "cover", force = false, video, whisper, actor, asked = false, private: isPrivate = false }) {
     this.lastRefusal = null;
+    /* Set only when the refusal is the minors rule, so a route can answer 422
+     * with the one sentence rather than its generic "not queued" 409. */
+    this.lastRefusalCode = null;
+    this.lastRefusalBody = null;
+    this.lastRefusalJob = null;
     if (!file) return this.#refuse("nothing to render — no file was named");
+    /* ONE SEPARATION PER SONG AT A TIME, force or not. `force` exists so a
+     * caller can queue a second cover of the same song; for stems it made a
+     * Transcribe with "Voice only", a Create "Start from its voice", Tokenize
+     * and the row's "Separate stems" each queue their own demucs run of the
+     * same file (Tika's report), and the running one was never checked at all.
+     * The refusal names the job, and the callers join it (music/stems.js
+     * ensureStem, /api/stems). */
+    if (kind === "stems") {
+      const already = this.findJob(file, "stems");
+      if (already) {
+        this.lastRefusalJob = already;
+        return this.#refuse(`${already.title || file} is already being separated`);
+      }
+    }
     /* `enabled` is the COVER ART setting, and it used to gate every kind.
      *
      * That made one dropdown labelled "Cover art" a silent master switch over
@@ -698,6 +1313,10 @@ export class ArtRunner extends EventEmitter {
        * line can say "your picture" and so a future reader can tell a render
        * that was asked for from one the app decided to make. */
       asked: !!asked,
+      /* Redact this render's words everywhere they would be written. Carried on
+       * the job because a render is asynchronous: the request that asked for it
+       * is long gone by the time the file lands and the ledger line is written. */
+      private: !!isPrivate,
       title: title || file,
       caption: caption || "",
       lyrics: lyrics || "",
@@ -724,7 +1343,42 @@ export class ArtRunner extends EventEmitter {
       // audioRef in jobs.js and the video stage in batch.js — the caller already
       // validated this object, and adding a knob should not need three edits.
       ...(video || {}),
+      /* A transcription's own spec (server/whisper.js validated and resolved
+       * it): kept whole on its own key rather than spread, so none of its
+       * fields can land on a name a render reads. */
+      ...(kind === "whisper" ? { whisper: whisper || null } : {}),
     };
+    /* ⚠ SEXUAL CONTENT INVOLVING MINORS IS NOT QUEUED. Checked on the words
+     * this job WILL render — a cover's prompt written from lyrics, a clip's from
+     * its caption — plus any `safetyContext` the caller attached (an MV cast
+     * member's description behind a <Picture n>) and any `safetyFlags` (the
+     * wordless fingerprints of the pictures it is handed). The engine door
+     * checks the final graph again; this answer is the early, free one.
+     *
+     * Several callers ignore request()'s return and wait on events (MV's
+     * awaitArt, sfxcue), so a refusal is also announced as `failed` for this
+     * file and remembered for a late listener (refusalFor). */
+    const words = this.#renderedWords(job);
+    if (words !== null) {
+      const verdict = checkPrompt([words], { context: job.safetyContext, flags: job.safetyFlags });
+      if (!verdict.ok) {
+        announceRefusal({ door: "art.request", via: `art.${kind}`, actor: job.actor });
+        const body = refusalBody({ hint: verdict.hint, found: verdict.found });
+        this.lastRefusalCode = SAFETY_CODE;
+        this.lastRefusalBody = body;
+        this.#refused.delete(file);
+        this.#refused.set(file, { error: body.error, code: SAFETY_CODE, hint: verdict.hint || null });
+        if (this.#refused.size > 200) this.#refused.delete(this.#refused.keys().next().value);
+        this.emit("failed", { file, kind, owner: job.owner || null, error: body.error, code: SAFETY_CODE, runId: null });
+        return this.#refuse(REFUSAL);
+      }
+    }
+    /* A file refused earlier and asked for again with words that pass is no
+     * longer refused: a late waiter must not hear the old answer. */
+    this.#refused.delete(file);
+    /* The wordless fingerprint of what this job will make (server/safety/
+     * lineage.js): kept on the job, stamped on the picture or clip it makes. */
+    job.safety = fingerprintOf([words ?? ""], { context: job.safetyContext, flags: job.safetyFlags });
     this.queue.push(job);
     this.emit("update");
     this.#schedule();
@@ -744,6 +1398,17 @@ export class ArtRunner extends EventEmitter {
   #refuse(why) {
     this.lastRefusal = why;
     return null;
+  }
+
+  /* The index of the next job that may start now, or -1. Music first: nothing
+   * starts while a song is running or waiting. Then the engine: a job that
+   * renders on it waits until it is ready, while a program of its own
+   * (SUBPROCESS_KINDS) does not, so a separation queued behind a cover still
+   * runs while ComfyUI is down (Music-only mode has none at all). */
+  #nextRunnable() {
+    if (this.jobs?.current || (this.jobs?.queue?.length || 0) > 0) return -1;
+    if (this.comfy?.ready) return this.queue.length ? 0 : -1;
+    return this.queue.findIndex((j) => SUBPROCESS_KINDS.has(j.kind));
   }
 
   #schedule() {
@@ -775,11 +1440,13 @@ export class ArtRunner extends EventEmitter {
      * and music is not waiting". */
     if (this.current || this.paused) return;
     if (this.queue.length === 0) return;
-    if (!this.idle) return this.#schedule();      // music is busy; check back
+    if (this.#nextRunnable() < 0) return this.#schedule();   // music is busy (or the engine is not up); check back
 
     while (this.queue.length) {
-      if (!this.idle || this.paused) break;       // yield to music
-      const job = this.queue.shift();
+      if (this.paused) break;
+      const at = this.#nextRunnable();
+      if (at < 0) break;                          // yield to music
+      const [job] = this.queue.splice(at, 1);
       this.current = job;
       this.progress = 0;
       this.startedAt = Date.now();
@@ -792,10 +1459,17 @@ export class ArtRunner extends EventEmitter {
       if (this.jobs.loaded) {
         console.log(`  [art] unloading ${this.jobs.loaded.key} before the ${job.kind || "image"} job`);
         await this.jobs.unloadModels().catch(() => {});
+        this.#lastQwen = null;             // a music model had the card: Qwen is not warm
       }
-      this.jobs.artResident = true;
+      /* A program of its own puts nothing into the engine and reports no
+       * progress over its socket: neither the resident flag nor the socket. */
+      const ownProgram = SUBPROCESS_KINDS.has(job.kind);
+      if (!ownProgram) this.jobs.artResident = true;
+      /* A clip, a separation or anything but a picture uses the card: Qwen is
+       * not known to be warm after it. A picture sets this itself below. */
+      if (job.kind !== "cover") this.#lastQwen = null;
       job.startedAt = this.startedAt;
-      this.#connect();
+      if (!ownProgram) this.#connect();
       this.emit("update");
       try {
         if (job.kind === "stems") {
@@ -869,6 +1543,13 @@ export class ArtRunner extends EventEmitter {
                * Carries the graph fingerprint, so "why is this the same file?"
                * has an answer that can be checked. */
               cacheHit: job.cacheHit || null,
+              // The wordless minors fingerprint (server/safety/lineage.js).
+              safety: job.safety || null,
+              /* The sparse attention the graph carried, and why not where
+               * sol-attn was asked for and the engine could not take it. */
+              sparse: job.sparseRan ?? null, sparseNote: job.sparseNote || null,
+              /* Whether H3's block cache ran, and why not where it was asked for. */
+              blockCache: !!job.blockCacheRan, blockCacheNote: job.blockCacheNote || null,
               at: Date.now(),
             },
           });
@@ -881,7 +1562,7 @@ export class ArtRunner extends EventEmitter {
             seconds: Math.round((Date.now() - this.startedAt) / 1000),
             runId: job.runId ?? null,
             meta: {
-              source: "restyle", from: job.file, prompt: job.prompt,
+              source: "restyle", from: job.file, prompt: job.prompt, safety: job.safety || null,
               guideEvery: job.guideEvery, strengths: job.strengths || null,
               width: job.width || null, height: job.height || null,
               clipSeconds: job.seconds || null,
@@ -917,6 +1598,15 @@ export class ArtRunner extends EventEmitter {
           const info = await this.#timeLyrics(job);
           this.done.unshift(job);
           this.emit("lrc", { file: job.file, ...info });
+        } else if (job.kind === "whisper") {
+          /* The whole answer stays on the job: GET /api/whisper?job=<id>
+           * reads it from the finished list, which is where the waiters
+           * (art-wait.js) already look for the verdict. */
+          const info = await this.#transcribe(job);
+          job.transcript = info;
+          job.lrc = info.lrc || null;
+          this.done.unshift(job);
+          this.emit("whisper", { file: job.file, id: job.id, language: info.language ?? null, lrc: job.lrc });
         } else if (job.kind === "sfx") {
           // Fork-only (FORK_DELTA): a 3-5 s sound effect through the same
           // queue as everything else, so music still preempts.
@@ -927,12 +1617,22 @@ export class ArtRunner extends EventEmitter {
         } else {
           const { covers, thumbs } = await this.#render(job);
           job.covers = covers;
+          /* What the next Qwen render follows: this one, if Qwen painted it;
+           * after any other engine, Qwen is not known to be warm. */
+          this.#lastQwen = job._qwenKey && job._paintedBy === "qwen-image-2.1"
+            ? { draft: job.draft === true, key: job._qwenKey } : null;
           this.done.unshift(job);
           this.emit("cover", { file: job.file, covers, thumbs, seed: job.seed, runId: job.runId ?? null,
                                durationMs: job.startedAt ? Date.now() - job.startedAt : null,
                                engine: job._paintedBy || job.engine || "flux2",
                                checkpoint: job._paintedWith || null,
-                               imageOptions: job._imageOptions || null });
+                               /* The wordless minors fingerprint (server/safety/lineage.js) rides in
+                                * imageOptions, which index.js spreads onto the picture's row, so it
+                                * is kept even when the picture is private and its words are not. It
+                                * is also on the event itself, for MV's takes. */
+                               imageOptions: job._imageOptions || job.safety
+                                 ? { ...(job._imageOptions || {}), ...(job.safety ? { safety: job.safety } : {}) } : null,
+                               safety: job.safety || null });
         }
         /* Stamp the finish ONCE, here, rather than in each of the seven
          * kind-specific branches above — every one of them falls through to
@@ -942,12 +1642,60 @@ export class ArtRunner extends EventEmitter {
          * could report it. */
         job.finishedAt = Date.now();
         job.durationMs = job.startedAt ? job.finishedAt - job.startedAt : null;
+        /* A Stop that came too late to matter: the work finished and is kept. */
+        job.cancelled = false; job.stopping = false;
+        /* A success clears the queue's last failure. It used to stay until a
+         * restart (the 2026-09-23 audit): Settings and studio_status kept
+         * reporting a failure the next render had already put right. Each
+         * finished row still carries its own `error`, and the newest ones
+         * their uncut `fullError` for the waiters (art-wait.js). */
+        this.lastError = null;
       } catch (err) {
         job.finishedAt = Date.now();
         job.durationMs = job.startedAt ? job.finishedAt - job.startedAt : null;
+        this.#lastQwen = null;               // a failed render leaves the engine's state unknown
+        /* A minors refusal is never read as a Stop, even when Stop was pressed
+         * at the same moment: it takes the refusal path below, which blanks
+         * the job's words before it is listed, logged or announced. */
+        if (job.cancelled && !err?.safety) {
+          /* STOPPED, NOT FAILED. The person pressed Stop: the row reads
+           * "stopped", the queue's last failure is left alone (nothing went
+           * wrong), and the event says `cancelled` so a waiter (ensureStem, an
+           * Overnight row) ends at once instead of reporting a fault. The error
+           * stays non-null: to art-wait.js and index.js standing() a stopped
+           * job is not a success. Nothing re-queues it. */
+          job.stopping = false;
+          job.error = STOPPED_ERROR;
+          if (!this.done.includes(job)) this.done.unshift(job);
+          console.log(`  [${job.kind}] ${job.title}: stopped (you pressed Stop)`);
+          this.emit("failed", {
+            file: job.file, kind: job.kind, owner: job.owner || null,
+            error: job.error, runId: job.runId ?? null, cancelled: true,
+          });
+          continue;
+        }
+        /* ...and its row reads as the refusal it is, not as "stopped". */
+        job.cancelled = false; job.stopping = false;
         job.error = String(err.message || err);
+        /* ⚠ A MINORS REFUSAL AT THE ENGINE DOOR LEAVES NO WORDS BEHIND. A
+         * picture's title is the first 48 characters of its prompt, and this
+         * job is about to be listed in status().art.recent, logged and shown as
+         * lastError. So its words go before any of that: the title, the
+         * prompt and the context, and the error is the sentence alone. */
+        if (err?.safety) {
+          job.title = null;
+          job.prompt = null;
+          job.usedPrompt = null;
+          job.caption = null;
+          job.lyrics = null;
+          job.safetyContext = null;
+        }
         if (!this.done.includes(job)) this.done.unshift(job);
-        this.lastError = `${job.title}: ${String(err.message || err)}`;
+        this.lastError = err?.safety ? String(err.message || err) : `${job.title}: ${String(err.message || err)}`
+          /* A failure said in words keeps the engine's own text beside it, so
+           * the log and Settings' last error are not left with the sentence
+           * alone. A minors refusal is the sentence alone: no title, no details. */
+          + (job.errorDetail ? ` Details: ${String(job.errorDetail).slice(0, 600)}` : "");
         console.error(`  [${job.kind}] ${this.lastError}`);
         /* ⚠ Announce the failure, or an Overnight row waits forever.
          *
@@ -961,6 +1709,9 @@ export class ArtRunner extends EventEmitter {
         this.emit("failed", {
           file: job.file, kind: job.kind, owner: job.owner || null,
           error: String(err.message || err),
+          /* Present when the engine door refused the graph under the minors
+           * rule, so a waiter can answer 422 rather than "render failed". */
+          ...(err?.safety ? { code: err.code } : {}),
           /* Present when the engine was actually reached: the door recorded the
            * failure too, with the status, the error and the elapsed time. A
            * render that died used to leave no trace of any kind. */
@@ -971,7 +1722,7 @@ export class ArtRunner extends EventEmitter {
          * session's hardware and settings rather than guessed — a budget video
          * and a native one differ 7x, and the average follows what the user is
          * actually rendering tonight. (FORK — see FORK_DELTA.md.) */
-        if (this.startedAt && !job.preflightFailed) {
+        if (this.startedAt && !job.preflightFailed && !job.cancelled) {
           const secs = (Date.now() - this.startedAt) / 1000;
           this.stats = this.stats || {};
           const s = this.stats[job.kind] || { n: 0, avg: 0 };
@@ -1069,6 +1820,9 @@ export class ArtRunner extends EventEmitter {
         refImages: job.refImages, refSizing: job.refSizing, refResolution: job.refResolution,
         transparent: job.transparent, thumbSize: config.art.thumbSize,
         dit: ownDit, encoder: ownEncoder, vae: ownVae,
+        /* Fast draft: the turbo LoRA and its 5-step schedule (qwen-image.js
+         * QWEN_DRAFT). Readiness below then also requires the LoRA on disk. */
+        ...(job.draft === true ? { draft: true } : {}),
       };
       // Automatic song covers bypass /api/image, so they need the same
       // readiness check here. Recheck manual jobs too: a queued request may
@@ -1081,7 +1835,14 @@ export class ArtRunner extends EventEmitter {
         throw new Error(`Qwen Image 2.1 is unavailable: ${readiness.error || "Check its native model files and compatible runtime in Models."}`);
       }
       graph = qwenImageGraph(qwenOptions);
-      job._imageOptions = { steps: graph[8].inputs.steps, cfg: graph[8].inputs.cfg,
+      const sampled = qwenImageSettings(graph);
+      job._qwenKey = qwenRenderKey({ prompt, negative: job.negative, refImages: job.refImages,
+        refResolution: graph[4].inputs.resolution, encoder: graph[2].inputs.clip_name });
+      job._imageOptions = { steps: sampled.steps, cfg: sampled.cfg,
+        /* PROVENANCE: a draft says so on the picture's row, with the LoRA and
+         * its strength, so "what made this" never reads as the full render.
+         * Absent on a final, whose row is unchanged. */
+        ...(sampled.draft ? { draft: true, lora: sampled.lora, loraStrength: sampled.loraStrength, sigmas: sampled.sigmas } : {}),
         refImages: job.refImages || [], refSizing: job.refSizing || "reference",
         refResolution: graph[4].inputs.resolution, transparent: !!job.transparent,
         requestedWidth: job.width, requestedHeight: job.height,
@@ -1219,7 +1980,8 @@ export class ArtRunner extends EventEmitter {
       /* Resolved the SAME way the ideogram branch above resolves it, because
        * that is the preset whose step count the graph will actually run. */
       quality: job.quality || config.art.quality,
-    });
+      draft: job.draft === true, key: job._qwenKey || null,
+    }, { previous: this.#lastQwen });
 
     // Poll history rather than sharing the job runner's websocket. Art progress
     // is not worth showing per-step — it is three seconds — and a second
@@ -1229,7 +1991,9 @@ export class ArtRunner extends EventEmitter {
      * failure bounds inside the client are stated as durations, so a fast
      * cadence buys latency without weakening them. */
     const done = await engineDoor.run({
+      private: job.private === true,
       graph, actor: job.actor, via: `art.${standalone ? "image" : "cover"}`,
+      safetyContext: job.safetyContext, safetyFlags: job.safetyFlags,
       clientId: this.clientId, timeoutMs: budget, pollMs: 400,
       label: job.title || job.file, project: null,
       /* The runner files these itself, under a name derived from the TRACK and
@@ -1270,7 +2034,18 @@ export class ArtRunner extends EventEmitter {
           // fallback looked defensive but recorded a path that does not exist
           // once the file has been moved, which is exactly how the cache-hit
           // bug stayed invisible: 16 tracks "succeeded" and wrote nothing.
-          await rename(src, path.join(outDir, name));
+          const landed = path.join(outDir, name);
+          await rename(src, landed);
+          /* ⚠ THE ENGINE STAMPS THE GRAPH INTO THE PICTURE, so the prompt
+           * travels wherever the file goes — a post, a zip, a backup. Measured
+           * on one real library: 40 of 40 covers carried it. Stripped here,
+           * losslessly (the chunk list is rewritten; IDAT is untouched), and the
+           * app's own XMP disclosure is deliberately kept: this is privacy about
+           * the words somebody typed, never about hiding what made a picture. */
+          if (job.private) {
+            await stripPngText(landed).catch((err) =>
+              console.warn(`[art] private render: could not strip metadata from ${name} (${err.message})`));
+          }
           names.push(name);
         }
         return names;
@@ -1373,6 +2148,7 @@ export class ArtRunner extends EventEmitter {
     };
 
     const done = await engineDoor.run({
+      private: job.private === true,
       graph, actor: job.actor, via: "art.sfx",
       clientId: this.clientId, timeoutMs: 300_000, pollMs: 500,
       label: `sfx: ${String(job.prompt || job.caption || "").slice(0, 60)}`,
@@ -1467,6 +2243,20 @@ export class ArtRunner extends EventEmitter {
       continueFrom: job.continueFrom || null,
       bridge: job.bridge, bridgeAlpha: job.bridgeAlpha,
       negative: job.negative, guidance: job.guidance, guideStrength: job.guideStrength,
+      /* Comfy Kitchen int8 attention on H3 — 1.5-1.9x on the sampler, measured
+       * (config.js). Named here for the reason the warning above gives: an
+       * option this call does not list is dropped in silence, and a speedup
+       * dropped in silence is invisible — the clip is merely slow.
+       * ONE `attention:` key in this object: a second one is not an error in
+       * JavaScript, the later simply wins (fasth3_test.js guards it). FastH3's
+       * per-render pick is read inside videoAttention(). */
+      attention: await this.videoAttention(job),
+      /* H3's sol-attn on the Fast setting (workflow.js h3SparseFor), after the
+       * engine was asked whether it has the node (videoSparse). Named here for
+       * the reason the warning above gives. */
+      sparse: await this.videoSparse(job),
+      /* H3's block cache, after the engine was asked for the node (videoBlockCache). */
+      blockCache: await this.videoBlockCache(job),
       // A clip under a song has that song's audio; a standalone one has nothing,
       // so H3's own audio is the only thing it could ever play.
       keepAudio: job.keepAudio ?? !job.file.startsWith("clip:"),
@@ -1477,6 +2267,10 @@ export class ArtRunner extends EventEmitter {
      * key for the render index above — and why it is the same thing ComfyUI's
      * own cache is keyed on. */
     const key = graphHash(graph);
+    /* Which sparse attention the graph really carries (node 81), for the
+     * clip's metadata: sol-attn on H3's Fast setting, vsa on FastH3. */
+    job.sparseRan = graph?.["81"]?.inputs?.selection || null;
+    job.blockCacheRan = graph?.["82"]?.class_type === config.video.engines.h3?.blockCacheRecipe?.node;
 
     // Generous: a clip is ~25 s warm but the first one after a music render pays
     // to load 29 GB of weights back in.
@@ -1501,9 +2295,37 @@ export class ArtRunner extends EventEmitter {
     const stepScale = engine === "ltx" ? 1 : (job.steps ?? v.steps) / 8;
     const expected = v.costFixedSeconds
       + v.costRate * Math.pow((px * frames) / 1e6, v.costExponent) * stepScale;
-    // 4x the estimate plus five minutes for a cold model load. Generous on
-    // purpose: killing a nearly-finished render wastes everything spent on it.
-    const budgetMs = Math.max(900_000, (expected * 4 + 300) * 1000);
+    const budgetMs = clipBudgetMs(expected, vendorOf(config.gpu, config.torchBackend), videoSpeed.factor(engine));
+
+    /* A FRESH ENGINE FIRST (config.js video.freeBeforeClip, measured there):
+     * a second H3 render in the same engine process spilled into shared
+     * memory and ran at half speed, and ComfyUI's /free with unload_models
+     * did not bring it back; a new process did. So an engine that has already
+     * rendered anything is restarted, same flags, before the clip (about 45
+     * s against about 9 minutes lost on an 8-step clip). Nothing is loaded
+     * afterwards: the music model is gone, Qwen is not warm. */
+    if (clipNeedsCleanCard(engine, { mode: config.video.freeBeforeClip, vendor: vendorOf(config.gpu, config.torchBackend) })
+        && engineDoor.ranSinceStart() > 0 && typeof this.comfy?.restart === "function") {
+      /* ...but never under someone else's work. A restart kills whatever the
+       * engine is running, so a song rendering at that moment, or a graph an
+       * agent sent through the engine door, died with it. Wait until neither
+       * the music queue nor the engine's own queue has anything running (at
+       * most restartWaitMs), and render on the old process if it never frees:
+       * slower, but nothing is lost. */
+      const free = await waitForQuietEngine({
+        musicBusy: () => !!this.jobs?.current,
+        engineQueue: () => engineDoor.queue(),
+      });
+      if (free) {
+        console.log(`  [art] restarting the engine before the ${engine} clip (it has rendered ${engineDoor.ranSinceStart()} since it started)`);
+        await this.comfy.restart().catch((e) => console.error(`  [art] engine restart failed: ${e.message}`));
+        this.jobs.loaded = null;
+        this.jobs.artResident = true;
+        this.#lastQwen = null;
+      } else {
+        console.log(`  [art] the engine stayed busy; the ${engine} clip renders without the fresh restart`);
+      }
+    }
 
     /* AT MOST TWO SUBMISSIONS, and the second one is rare — see the ENOENT arm
      * below for the only thing that reaches it. The deadline is per attempt
@@ -1513,24 +2335,52 @@ export class ArtRunner extends EventEmitter {
        * ledger with its own record — which is exactly right. The prefix bump
        * below changes the graph, so the two attempts are genuinely different
        * renders and recording one for both would be the lie. */
+      /* A SENTENCE, the raw text behind Details (server/video-plain.js). The
+       * person read ComfyUI's JSON here, 900 characters of it. The raw text
+       * rides on the job as `errorDetail`; status() carries it on the newest
+       * rows, art-wait.js hands both to an agent, and the log and lastError
+       * keep it too. Both ways a render fails go through it: a run that
+       * finished badly, and a submission the engine refused before it ran
+       * (engine/client.js THROWS "ComfyUI rejected the job: ..." for a
+       * /prompt 400, a missing file or a value not in a list). */
+      const failed = (raw, runId) => {
+        const said = plainVideoFailure(raw);
+        if (runId && !job.runId) job.runId = runId;
+        /* The minors refusal from the engine's own check (the backstop node
+         * inside ComfyUI) is already the one sentence: it is said as itself,
+         * never as "a file or option it does not have". */
+        if (String(raw).includes(REFUSAL)) return new Error(REFUSAL);
+        job.errorDetail = said.detail || null;
+        job.errorReason = said.reason;
+        return new Error(said.sentence);
+      };
       const done = await engineDoor.run({
+      private: job.private === true,
         graph, actor: job.actor, via: "art.clip",
+        safetyContext: job.safetyContext, safetyFlags: job.safetyFlags,
         clientId: this.clientId, timeoutMs: budgetMs, pollMs: 1000,
         label: job.title || job.file,
         // Renamed into the clip library below, or resolved to an earlier clip
         // entirely on the cache-hit path — neither name is knowable from here
         // before the POST, so the join is index.js's `generate` seam and runId.
         adopt: false,
+      }).catch((err) => {
+        /* ⚠ The engine door's minors refusal travels UNCHANGED: its `safety`
+         * flag is what wipes the job's words below and answers 422. */
+        if (err?.safety) throw err;
+        throw failed(String(err?.message || err), err?.runId);
       });
       job.runId = done.runId;
       if (done.status !== "completed") {
-        throw new Error(done.error || `the engine did not finish (${done.status})`);
+        throw failed(done.error || `the engine did not finish (${done.status})`);
       }
+      /* This PC's speed: what really rendered, against the curve's estimate. */
+      if (!done.cached) videoSpeed.record(engine, done.runningSec ?? done.elapsedSec, expected);
       // SaveVideo reports under `images` with animated:true, not a `videos` key —
       // the client normalises both into one list, so this no longer has to care.
-      const outs = done.outputs;
-      if (!outs.length) throw new Error("engine returned no clip");
-      const src = path.join(config.outputDir, outs[0].subfolder || "", outs[0].file);
+      const saved = savedClip(done.outputs, graph);
+      if (!saved) throw new Error("engine returned no clip");
+      const src = path.join(config.outputDir, saved.subfolder || "", saved.file);
       /* Standalone clips have no track to be named after, so they carry a
        * `clip:<id>` pseudo-file. Naming them after that keeps one flat folder
        * and one naming rule for both kinds. */
@@ -1639,6 +2489,7 @@ export class ArtRunner extends EventEmitter {
       const budgetMs = Math.max(900_000, (600 + load * 60) * 1000);
 
       const done = await engineDoor.run({
+      private: job.private === true,
         graph, actor: job.actor, via: "art.enhance",
         clientId: this.clientId, timeoutMs: budgetMs, pollMs: 1000,
         label: `enhance ${path.basename(job.file)}`,
@@ -1650,9 +2501,9 @@ export class ArtRunner extends EventEmitter {
       if (done.status !== "completed") {
         throw new Error(done.error || `the engine did not finish (${done.status})`);
       }
-      const outs = done.outputs;
-      if (!outs.length) throw new Error("engine returned no clip");
-      const out = path.join(config.outputDir, outs[0].subfolder || "", outs[0].file);
+      const saved = savedClip(done.outputs, graph);
+      if (!saved) throw new Error("engine returned no clip");
+      const out = path.join(config.outputDir, saved.subfolder || "", saved.file);
 
       /* Named for what was done, so the library reads as a list of versions
        * rather than a list of hashes. Collisions get a counter rather than
@@ -1727,7 +2578,9 @@ export class ArtRunner extends EventEmitter {
       // generous for the same reason it is everywhere else here: killing a
       // nearly-finished render wastes all of it.
       const done = await engineDoor.run({
+      private: job.private === true,
         graph, actor: job.actor, via: "art.restyle",
+        safetyContext: job.safetyContext, safetyFlags: job.safetyFlags,
         clientId: this.clientId, timeoutMs: 1_800_000, pollMs: 1000,
         label: `restyle ${path.basename(job.file)}`,
         adopt: false,   // named below with a collision counter, as in #enhance
@@ -1736,9 +2589,9 @@ export class ArtRunner extends EventEmitter {
       if (done.status !== "completed") {
         throw new Error(done.error || `the engine did not finish (${done.status})`);
       }
-      const outs = done.outputs;
-      if (!outs.length) throw new Error("engine returned no clip");
-      const out = path.join(config.outputDir, outs[0].subfolder || "", outs[0].file);
+      const saved = savedClip(done.outputs, graph);
+      if (!saved) throw new Error("engine returned no clip");
+      const out = path.join(config.outputDir, saved.subfolder || "", saved.file);
       const stem = path.basename(job.file).replace(/\.(mp4|webm)$/i, "");
       let name = `${stem}_restyled.mp4`;
       for (let i = 2; ; i++) {
@@ -1766,30 +2619,111 @@ export class ArtRunner extends EventEmitter {
    * poor trade for a few megabytes. Measured: ~12 s for a 30 s track, four stems
    * totalling ~4 MB.
    */
+  /*
+   * 2026-09-24 (Tika's report: "0% for four minutes, nothing in the log, Stop
+   * does nothing, it starts again"). The program is kept on the job so Stop can
+   * kill its tree; demucs's own progress bars are read off stderr; the start is
+   * logged with the interpreter; and each way it fails has its own sentence
+   * instead of "demucs failed — see the console" over a console that said
+   * nothing (the stderr tail was printed on the 'exit' path only, and a
+   * missing interpreter takes the 'error' path).
+   */
   async #separate(job) {
     const src = path.join(config.outputDir, job.file);
     const outRoot = path.join(config.outputDir, "stems");
     await mkdir(outRoot, { recursive: true });
+    const model = config.stems.model;
+    const python = config.systemPython;
 
-    const args = ["-m", "demucs", "-n", config.stems.model, "--flac", "-o", outRoot];
-    if (config.stems.twoStems) args.push("--two-stems", "vocals");
-    args.push(src);
+    const run = async (cpu) => {
+      const args = ["-m", "demucs", "-n", model, "--flac", "-o", outRoot];
+      if (config.stems.twoStems) args.push("--two-stems", "vocals");
+      /* "cpu" is saved by the stems setup when this card failed its tensor
+       * test; stemsOnCpu is this session's own finding (below). */
+      if (cpu) args.push("-d", "cpu");
+      args.push(src);
+      const meter = demucsMeter({ model });
+      const note = (n) => (cpu && n ? `${n} · on the processor` : cpu ? "on the processor" : n);
+      job.note = note(null);
+      /* Detached on POSIX, so the tree kill reaches demucs's process group;
+       * Windows walks the tree with taskkill instead. The environment puts an
+       * AIPLAY_FFMPEG folder on PATH: demucs 4.1 writes FLAC through the
+       * program named plain "ffmpeg" (music/stems.js demucsEnv). */
+      const env = demucsEnv();
+      const opts = { windowsHide: true, detached: process.platform !== "win32", ...(env ? { env } : {}) };
+      return this.#runChild(job,
+        () => (this.spawnPython ? this.spawnPython(config.systemPython, args, opts) : spawn(config.systemPython, args, opts)),
+        { onOutput: (text, stream) => {
+          const got = meter.feed(text, stream);
+          if (!got) return;
+          if (this.current === job) this.progress = got.progress;
+          job.note = note(got.note);
+          this.emit("update");
+        } });
+    };
 
-    const code = await new Promise((resolve) => {
-      const proc = spawn(config.systemPython, args, { windowsHide: true });
-      let err = "";
-      proc.stderr.on("data", (d) => (err += d));
-      proc.on("exit", (c) => { if (c) console.error(`  [stems] ${err.slice(-400)}`); resolve(c); });
-      proc.on("error", () => resolve(1));
-    });
-    if (code !== 0) throw new Error("demucs failed — see the console");
+    /* The setup's saved verdict counts only for the python it was measured on
+     * (stems.devicePython; none recorded = an older save, applied as before),
+     * and this session's own finding only for its python and epoch. */
+    const cpuSaved = config.stems.device === "cpu"
+      && (!config.stems.devicePython || config.stems.devicePython === python);
+    const known = this.stemsOnCpu;
+    const cpuSession = !!known && known.python === python && known.epoch === stemsPythonEpoch();
+    console.log(`  [stems] separating ${job.title} with ${python} (${model}${cpuSaved || cpuSession ? ", on the processor" : ""})`);
+    let r = await run(cpuSaved || cpuSession);
+    /* A Stop too late to matter (it finished anyway) keeps the work. */
+    if (job.cancelled && r.code !== 0) throw new Error(STOPPED_ERROR);
+    const said = (res) => stderrTail(res.stderr, 12);
+    const logTail = (res) => {
+      const tail = said(res);
+      console.error(`  [stems] ${python} ${res.spawnError ? `could not start (${res.spawnError.code || res.spawnError.message})` : res.signal ? `was stopped by ${res.signal}` : `exited ${res.code}`}`
+        + (tail.length ? `; its stderr ended:\n    ${tail.join("\n    ")}` : ""));
+    };
+    /* THE CARD ITS PYTORCH CANNOT RUN. A CUDA build without this card's
+     * kernels (an RTX 50 under CUDA 12.6 or older) fails on the first tensor.
+     * The separation is run again on the processor, and so is every later one
+     * in this python until it may have changed; the stems setup is what fixes
+     * it for good. */
+    if (!r.spawnError && r.code !== 0 && !cpuSaved && !cpuSession && CUDA_ARCH_RE.test(r.stderr)) {
+      logTail(r);
+      const why = said(r).reverse().find((l) => CUDA_ARCH_RE.test(l)) || "no kernel image for this card";
+      this.stemsOnCpu = { python, epoch: stemsPythonEpoch(), why };
+      console.error(`  [stems] this python's PyTorch cannot run on the card (${why}); separating ${job.title} on the processor instead`);
+      r = await run(true);
+      if (job.cancelled && r.code !== 0) throw new Error(STOPPED_ERROR);
+    }
+    if (r.spawnError) {
+      logTail(r);
+      if (r.spawnError.code === "ENOENT") {
+        throw new Error(`The stem separation python is not at ${python}. Set it in ${STEMS_SETTING_WORDS}, or press "${STEMS_SETUP_BUTTON}".`);
+      }
+      throw new Error(`Could not start the stem separation python ${python} (${r.spawnError.code || r.spawnError.message}).`);
+    }
+    if (r.code !== 0) {
+      logTail(r);
+      if (/No module named ['"]?demucs\b/.test(r.stderr)) {
+        throw new Error(`${python} has no demucs (No module named 'demucs'). Press "${STEMS_SETUP_BUTTON}", or run: ${stemsPipLine(python)}`);
+      }
+      /* demucs 4.1 raises this after every model has run, when it comes to
+       * write the FLAC files and finds no ffmpeg (the doors' preflight says it
+       * before anything is queued; a job queued without one lands here). */
+      if (/requires ffmpeg to be installed/.test(r.stderr)) {
+        throw new Error(`demucs separated the song but could not write its FLAC files: the demucs in ${python} writes them with ffmpeg, and none was found on PATH or in AIPLAY_FFMPEG. `
+          + "Put ffmpeg on PATH, or name it in AIPLAY_FFMPEG, then start Studio again.");
+      }
+      const last = said(r).at(-1) || "it printed nothing";
+      throw new Error(r.signal && r.code === null
+        ? `demucs was stopped by ${r.signal}: ${last}`
+        : `demucs stopped with exit code ${r.code}: ${last}`);
+    }
 
     // demucs writes <out>/<model>/<track name without extension>/<stem>.flac
+    // (the model it was run with: a Settings change mid-run must not move the folder)
     const stem = job.file.replace(/\.(flac|mp3|opus|wav)$/i, "");
-    const dir = path.join(outRoot, config.stems.model, stem);
+    const dir = path.join(outRoot, model, stem);
     try {
       const names = await readdir(dir);
-      return names.filter((n) => n.endsWith(".flac")).map((n) => `${config.stems.model}/${stem}/${n}`);
+      return names.filter((n) => n.endsWith(".flac")).map((n) => `${model}/${stem}/${n}`);
     } catch {
       throw new Error("demucs wrote nothing where expected");
     }
@@ -1812,7 +2746,6 @@ export class ArtRunner extends EventEmitter {
     const lyrics = (job.lyrics || "").trim();
     if (!lyrics) throw new Error("no lyrics to time (instrumental?)");
 
-    const here = path.dirname(new URL(import.meta.url).pathname.slice(1));
     const tmp = path.join(config.paths.appData, `lyr_${Date.now()}.txt`);
     await writeFile(tmp, lyrics, "utf8");
 
@@ -1821,7 +2754,6 @@ export class ArtRunner extends EventEmitter {
     await mkdir(LRC_DIR, { recursive: true });
 
     const args = [
-      path.join(here, "lrc.py"),
       path.join(config.outputDir, job.file),
       tmp,
       outStem,
@@ -1832,32 +2764,67 @@ export class ArtRunner extends EventEmitter {
     }
 
     try {
-      const out = await new Promise((resolve) => {
-        const proc = spawn(config.lyrics.python, args, {
-          windowsHide: true,
-          env: { ...process.env, AIPLAY_WHISPER_MODEL: config.lyrics.model },
-        });
-        let so = "", se = "";
-        proc.stdout.on("data", (d) => (so += d));
-        proc.stderr.on("data", (d) => (se += d));
-        proc.on("exit", () => resolve(so));
-        proc.on("error", () => resolve(""));
+      /* server/lrc.js runs server/lrc.py (LRC_SCRIPT, found with fileURLToPath)
+       * and turns every failure into a sentence that names its cause. This used
+       * to be an inline spawn that kept only stdout and threw "alignment failed"
+       * for a missing python, an unopenable script, a native cuDNN abort and a
+       * traceback alike: four causes, one message, no way to tell them apart. */
+      const info = await runLrc({
+        python: config.lyrics.python,
+        launch: this.#whisperLaunch(job),
+        script: LRC_SCRIPT,
+        args,
+        env: { ...process.env, AIPLAY_WHISPER_MODEL: config.lyrics.model },
+        model: config.lyrics.model,
       });
-      /* Take the LAST {...} in stdout rather than the last line.
-       *
-       * Splitting on newlines is wrong here: whisper's progress bars are drawn
-       * with carriage returns, so the whole animation and the JSON arrive as one
-       * "line" and JSON.parse chokes on "Transcribi…". The script now suppresses
-       * that output, but a library that prints one stray banner should not make
-       * a completed alignment look like a failure — which is exactly what
-       * happened: both LRC files were written and the job still reported an
-       * error. */
-      const m = out.match(/\{[\s\S]*\}/);
-      const info = JSON.parse(m ? m[0] : "{}");
-      if (!info.ok) throw new Error(info.error || "alignment failed");
       return { lrc: `${stem}.lrc`, wordLrc: `${stem}.word.lrc`, ...info };
     } finally {
       unlink(tmp).catch(() => {});
+    }
+  }
+
+  /* How timed lyrics and a transcription start the whisper python.
+   * config.lyrics.python is the interpreter scripts/extras_setup.mjs tells
+   * people to install into; server/docs_test.js pairs that claim with this spawn.
+   * The program is kept on the job, so Stop kills its tree the way it kills a
+   * separation's (it had the same hole: whisper ran on after Stop). A stopped
+   * job starts nothing more, and that includes runLrc's second, CPU run after a
+   * GPU crash. Detached on POSIX for the group kill. */
+  #whisperLaunch(job) {
+    return (argv, opts) => {
+      if (job.cancelled) throw Object.assign(new Error("stopped before it started"), { code: "STOPPED" });
+      const o = { ...opts, detached: process.platform !== "win32" };
+      return this.#adopt(job, this.spawnPython ? this.spawnPython(config.lyrics.python, argv, o) : spawn(config.lyrics.python, argv, o));
+    };
+  }
+
+  /**
+   * A transcription somebody asked for (kind "whisper"): server/whisper.py over
+   * any file, in the same python, with the same model and the same failure
+   * sentences as timed lyrics (server/lrc.js runLrc). `job.whisper` was
+   * validated and resolved by server/whisper.js: absolute input and vocal
+   * paths, the known lyrics, and the LRC stem when files were asked for.
+   */
+  async #transcribe(job) {
+    const w = job.whisper || {};
+    if (!w.input) throw new Error("nothing to transcribe (no input file)");
+    let tmp = null;
+    if (w.lyrics) {
+      tmp = path.join(config.paths.appData, `whisper_${job.id}_${Date.now()}.txt`);
+      await writeFile(tmp, w.lyrics, "utf8");
+    }
+    if (w.outStem) await mkdir(path.dirname(w.outStem), { recursive: true });
+    try {
+      return await runLrc({
+        python: config.lyrics.python,
+        launch: this.#whisperLaunch(job),
+        script: WHISPER_SCRIPT,
+        args: whisperArgs({ input: w.input, lyricsFile: tmp, outStem: w.outStem, language: w.language, words: w.words, vocals: w.vocals }),
+        env: { ...process.env, AIPLAY_WHISPER_MODEL: config.lyrics.model },
+        model: config.lyrics.model,
+      });
+    } finally {
+      if (tmp) unlink(tmp).catch(() => {});
     }
   }
 

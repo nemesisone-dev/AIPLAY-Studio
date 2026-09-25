@@ -13,6 +13,7 @@ import { spawn } from "node:child_process";
 import { config } from "../server/config.js";
 import { restyleGraph, guideStrengths } from "../server/workflow.js";
 
+import { postJSON } from "./lib/doorpost.mjs";
 /* ── THE DOOR ─────────────────────────────────────────────────────────────
  * This harness no longer knows where ComfyUI is, because nothing does: the app
  * binds the engine to an unpublished loopback port chosen fresh at every start.
@@ -30,7 +31,7 @@ const APP = process.env.AIPLAY_URL || "http://127.0.0.1:4173";
 async function door(body) {
   let r;
   try {
-    r = await fetch(`${APP}/api/engine`, {
+    r = await postJSON(`${APP}/api/engine`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-aiplay-actor": "script:restyle_test" },
       body: JSON.stringify({ action: "prompt", wait: true, adopt: false, pollMs: 2000, ...body }),
@@ -126,5 +127,6 @@ if (d.status !== "completed") {
   console.error(`\n${d.status.toUpperCase()}:`, String(d.error || "").slice(0, 1000));
   process.exit(1);
 }
-const o = d.outputs[0];
+// Not outputs[0]: on ComfyUI 0.36 LoadVideo echoes the file it read as a row of type "input".
+const o = d.outputs.find((r) => (r.type || "output") === "output");
 console.log(`\n  ${d.elapsedSec.toFixed(0)}s -> ${o?.subfolder}/${o?.file}`);

@@ -17,8 +17,11 @@
  * the server; the legacy Studio canvas export remains browser-based.
  */
 import http from "node:http";
-import { URL } from "node:url";
+import { URL, fileURLToPath } from "node:url";
 import path from "node:path";
+import { realpathSync } from "node:fs";
+/* h3tier.js is pure (no config.js): the lab's words for FastH3 and sol-attn, one copy. */
+import { h3Brief, H3_SOL_ATTN, H3_MORE_MOTION } from "./h3tier.js";
 import { vfxTools } from "./mcp-vfx.js";
 import { dawTools } from "./mcp-daw.js";
 // Video Workflow tools (FORK — see FORK_DELTA.md).
@@ -48,8 +51,16 @@ import { audioTools } from "./mcp-audio.js";
 import { scoreTools } from "./mcp-music-score.js";
 import { musicAuditionTools } from "./mcp-music-auditions.js";
 import { yueSetupTools } from "./mcp-yue-setup.js";
+/* One-click setups (timed lyrics): server/setup/, the [Set up timed lyrics] button's door. */
+import { setupTools } from "./mcp-setup.js";
 import { avatarTools } from "./mcp-avatars.js";
+import { avatarWeightTransferTools } from "./mcp-avatar-weight-transfer.js";
+import { avatarPlaybackTools } from "./mcp-avatar-playback.js";
+import { avatarWardrobeTools } from "./mcp-avatar-wardrobe.js";
+import { avatarFittingTools } from "./mcp-avatar-fitting.js";
 import { videoLoraInput } from "./video-lora-validation.js";
+import { waitForArtJob, emptyResultNote } from "./art-wait.js";
+import { WHISPER_MODELS } from "./config.js";
 
 /* The welcome window's catalogue (FORK): what the studio is and can make, in
  * the same words the app shows a new person. */
@@ -57,6 +68,7 @@ import { welcomeTools } from "./mcp-welcome.js";
 /* The Models screen's hardware answer: which of these an agent's user can
  * actually run, and what to fetch first. */
 import { modelTools } from "./mcp-models.js";
+import { cloudTools } from "./mcp-cloud.js";
 import { collabTools } from "./mcp-collab.js";
 import { workspaceTools } from "./mcp-workspace.js";
 import { excludedTerritoriesText } from "./models.js";
@@ -80,6 +92,28 @@ const ACTOR = "agent:" + ((process.env.AIPLAY_AGENT || "mcp")
   .toLowerCase().replace(/[^a-z0-9_.-]/g, "").slice(0, 32) || "mcp");
 
 /* ────────────────────────────────────────────────────────────── HTTP */
+
+/**
+ * ONE SENTENCE FOR A REFUSAL, the way an agent needs it.
+ *
+ * A door that says "this machine is not ready" answers 409 with the sentence
+ * and, when one button would fix it, `setup`: the id POST /api/setup
+ * {action:"run", id} takes. The page turns that into an Install dialog; an
+ * agent only gets the words, so the id is appended in words it can act on —
+ * never run: setup_feature downloads gigabytes, so it waits for the person's
+ * yes. `needsModel` (a catalogue row to download) keeps song_to_score's
+ * existing suffix. Everything else the body carries stays on the thrown error
+ * as `.cause.refusal` (and the HTTP status as `.cause.status`).
+ */
+export function refusalText(r) {
+  if (!r || typeof r !== "object") return String(r ?? "");
+  let text = String(r.error || "");
+  if (typeof r.setup === "string" && r.setup && !text.includes(`"${r.setup}"`)) {
+    text += ` Setup id: ${r.setup}. Call setup_feature {"id":"${r.setup}"} once the person agrees.`;
+  }
+  if (r.needsModel) text += ` (needsModel: ${r.needsModel})`;
+  return text;
+}
 
 /**
  * Call the Studio API.
@@ -114,8 +148,15 @@ function api(method, path, body, timeoutMs = 120_000, media = null) {
           const text = Buffer.concat(chunks).toString("utf8");
           let parsed;
           try { parsed = JSON.parse(text); } catch { parsed = { raw: text.slice(0, 400) }; }
+          /* The refusal's own words, plus the setup id or model row that
+           * would fix it (refusalText), and the whole body kept on the error
+           * as its cause ({status, refusal}): a 409's setup/pip/python used to
+           * be dropped here. A safety 422 carries no setup, so its sentence
+           * reaches the agent unchanged (server/safety/doors_test pins this
+           * line's shape). */
           if (res.statusCode >= 400) {
-            reject(new Error(parsed?.error || `HTTP ${res.statusCode}`));
+            reject(new Error(parsed?.error ? refusalText(parsed) : `HTTP ${res.statusCode}`,
+              { cause: { status: res.statusCode, refusal: parsed } }));
             return;
           }
           resolve(parsed);
@@ -204,33 +245,17 @@ async function waitForSong(jobId, timeoutMs) {
 }
 
 /**
- * Wait for the art queue to go quiet.
+ * Wait for ONE art job, the one this call just queued, and judge it by its own
+ * outcome. server/art-wait.js holds the loop and the reasons, and the chat's
+ * picture tool runs the same one: it used to throw `art.lastError`, the
+ * queue's last failure whoever's it was, after waiting for the whole queue.
  *
- * Covers/images/clips share ONE idle-drain queue that yields to music, so there
- * is no per-job id to watch — the honest signal is the queue emptying. Which
- * also means: do not call this while a song is rendering, or it waits for the
- * song too. Said in the tool description rather than worked around.
+ * Music still preempts: a job behind a song just stays queued, so calling this
+ * while a song renders waits for the song too. Said in the tool descriptions
+ * rather than worked around.
  */
-async function waitForArt(timeoutMs, kind) {
-  const deadline = Date.now() + timeoutMs;
-  await sleep(1200);                       // let the request reach the queue
-  for (;;) {
-    const st = await api("GET", "/api/status");
-    const art = st.art || {};
-    const busy = art.queued > 0 || !!art.current;
-    if (!busy) {
-      if (art.lastError) throw new Error(art.lastError);
-      return st;
-    }
-    if (Date.now() > deadline) {
-      throw new Error(
-        `Still working after ${Math.round(timeoutMs / 1000)}s`
-        + (art.current ? ` (${art.current.kind} for ${art.current.title})` : "")
-        + `, ${art.queued} queued. Nothing was cancelled.`,
-      );
-    }
-    await sleep(2000);
-  }
+async function waitForArt(timeoutMs, kind, jobId) {
+  return waitForArtJob({ api, sleep, timeoutMs, kind, jobId });
 }
 
 /* ───────────────────────────────────────────────── the music video */
@@ -412,6 +437,7 @@ export const TOOLS = [
    * recommends a 43 GB video engine to an 8 GB card, politely and with
    * complete confidence. */
   ...modelTools(api),
+  ...cloudTools(api),
   ...collabTools(api, safeName),
   ...workspaceTools(api, safeName),
   ...musicInputTools(api),
@@ -436,7 +462,12 @@ export const TOOLS = [
   ...scoreTools(api),
   ...musicAuditionTools(api),
   ...yueSetupTools(api),
+  ...setupTools(api),
   ...avatarTools(api),
+  ...avatarPlaybackTools(api),
+  ...avatarWeightTransferTools(api),
+  ...avatarWardrobeTools(api),
+  ...avatarFittingTools(api),
   ...vfxTools(api, safeName),
   ...dawTools(api, safeName),
   {
@@ -469,7 +500,32 @@ export const TOOLS = [
           models_installed: st.config?.video?.ready !== false,
           engine: st.config?.video?.engine,
           missing: st.config?.video?.missing || [],
+          /* The step counts make_clip's `quality` maps to on THIS disk, and
+           * the turbo builds behind them (config.js resolves both from what
+           * pick() found): standard is 8 only where both 8-step files are on
+           * disk, else 4, and is the default a render with no quality gets. */
+          h3_quality_steps: st.config?.video?.engines?.h3?.stepDefaults ?? null,
+          /* The number behind "keep my character": the reference build's own
+           * step count (workflow.js referenceSteps), which a render with
+           * references or a persona and no quality runs. */
+          h3_reference_steps: st.config?.video?.engines?.h3?.referenceSteps ?? null,
+          h3_turbo_builds: st.config?.video?.engines?.h3?.turboBuilds ?? null,
+          /* H3's tier for this card (server/h3tier.js), BRIEF: the size and
+           * longest measured clip, whether it is recommended, the RAM and AMD
+           * warnings. The need table and every tier stay in /api/status and
+           * models_for_this_machine: this tool is called often. */
+          h3_card_tier: h3Brief(st.config?.video?.h3),
         },
+        /* What runs when nothing names it, and who chose it: "you" (a saved
+         * choice, which always wins; `kept` when an older Studio saved it on
+         * its own) or "machine" (worked out from what is on this PC, never
+         * saved). `savedValue` when this session runs something else than the
+         * saved choice, `paid` when songs are billed to the person's own key.
+         * The receipts under Make and Settings show the same rows. Change
+         * music with set_music_engine, pictures and covers with set_image_engine. */
+        defaults: (st.config?.defaults || []).map((d) => ({ key: d.key, value: d.value, chosenBy: d.chosenBy, why: d.why,
+          ...(d.kept ? { kept: true } : {}), ...(d.savedValue ? { savedValue: d.savedValue } : {}),
+          ...(d.paid ? { paid: true } : {}), ...(d.canRun === false ? { canRun: false } : {}) })),
       };
     },
   },
@@ -479,7 +535,18 @@ export const TOOLS = [
     description:
       "Every finished track, newest first: file name, title, length, and whether it already "
       + "has cover art, stems, timed lyrics or a video clip. Also returns generation warnings when recorded; "
-      + "an empty warning list does not certify lyric coverage or audio quality. Use the `file` value with the other tools.",
+      + "an empty warning list does not certify lyric coverage or audio quality. Use the `file` value with the other tools. "
+      + "`rights` says whether the song may be sold, worked out from the model catalogue as it is now: "
+      + "{ class (unrestricted | yours-with-conditions | not-for-sale | unknown), sellable, label, short, capability, "
+      + "licence, url, basis (licence | authors-statement | imported), add_ons (catalogue rows the song used that made it "
+      + "stricter), changed? (when the label moved, from what and why) }. YuE2 songs read \"Sellable by individuals (YuE2 "
+      + "authors' statement, 15 Sep 2026) · companies need a commercial licence\"; the licence file still reads CC BY-NC 4.0. "
+      + "A YuE2 song that used a not-for-sale add-on reads not-for-sale instead, and add_ons names it: a Mothersuperior "
+      + "LoRA (the instrumental planner LoRA included), or the real-audio tokenizer (a cover of a recording, a continued "
+      + "or section-replaced recording). An imported file with no engine reads basis \"imported\": Studio did not make it. "
+      + "`tagged`: true once the file's own tags (AI disclosure, attribution) were written, false while that is owed "
+      + "(a FLAC or MP3 is re-tagged by its next cover pass; a native YuE2 WAV is not retried automatically), "
+      + "null for songs from before this was recorded.",
     inputSchema: {
       type: "object",
       properties: { limit: { type: "integer", description: "How many to return (default 30)." } },
@@ -494,6 +561,13 @@ export const TOOLS = [
         has_lyrics: !!t.lrc, clip: t.clip || null,
         warnings: Array.isArray(t.warnings) ? t.warnings : [],
         generation_limits: t.generationLimits ?? null,
+        rights: t.rights && typeof t.rights === "object" ? {
+          class: t.rights.class, sellable: t.rights.sellable ?? null, label: t.rights.label ?? null,
+          short: t.rights.short ?? null, capability: t.rights.capability ?? null, licence: t.rights.licence ?? null,
+          url: t.rights.url ?? null, basis: t.rights.basis ?? null, add_ons: t.rights.addOns || [],
+          ...(t.rights.changed ? { changed: t.rights.changed } : {}),
+        } : null,
+        tagged: t.tagged ?? null,
       }));
     },
   },
@@ -514,7 +588,7 @@ export const TOOLS = [
       + "section tags on their own lines, the format YuE2 is trained on. YuE2 writes an editable score before the audio; length follows the "
       + "lyrics and the score, not max_seconds — max_seconds is a WISH there, which picks the "
       + "memory configuration and, past 360 s, raises the sampler's stop as an attempt.\n"
-      + "YuE2 GGUF: optional native audio.cpp backend, Q4_0 default or optional Q8_0. Install the chosen precision explicitly; never silently substitute. Non-commercial weights. "
+      + "YuE2 GGUF: optional native audio.cpp backend, Q4_0 default or optional Q8_0. Install the chosen precision explicitly; never silently substitute. Selling: the YuE2 authors say individuals may sell what it makes and companies need a commercial licence (15 Sep 2026); the weights' licence file reads CC BY-NC 4.0. "
       + "No duration wish, preview, audio reference, editable-score export or Python FP8 settings. "
       + "8 GB and 6 GB support is not established; test your hardware before relying on it.\n"
       + "Recorded in the provenance ledger as an agent action (actor agent:*) — provenance_read shows it.",
@@ -526,7 +600,7 @@ export const TOOLS = [
         caption: { type: "string", description: "The style description, in the engine's grammar. See above." },
         lyrics: { type: "string", description: "Optional. [Verse] / [Chorus] / [Bridge] section tags on their own lines (every engine). If you write them, write like a person: everyday words, concrete people, places and events, no forced rhymes, a plain repeating chorus, and none of the stock AI images (rooms, doors, floors, ceilings, seams, dreams, skies, neon, echoes, whispers, shadows, embers, souls, fire/desire)." },
         title: { type: "string" },
-        instrumental: { type: "boolean", description: "No vocals at all. On YuE2 this is a phrasing of the style plus empty lyrics — unmeasured whether the model stays quiet — except on yue2-comfy with the instrumental planner LoRA on a loras shelf (Models screen), where the planner is patched to write a sectioned instrumental and the sheet becomes [instrumental] (its card: ended on its own 8 times out of 9)." },
+        instrumental: { type: "boolean", description: "No vocals at all. On YuE2 this is a phrasing of the style plus empty lyrics — unmeasured whether the model stays quiet — except on yue2-comfy with the instrumental planner LoRA on a loras shelf (Models screen), where the planner is patched to write a sectioned instrumental and the sheet becomes [instrumental] (its card: ended on its own 8 times out of 9). That LoRA is Mothersuperior's CC BY-NC weights, so a song made with it is labelled not for sale (list_songs add_ons names it)." },
         seed: { type: "integer", description: "For repeatability, keep the model, precision, settings and all inputs the same; identical output is not guaranteed." },
         max_seconds: { type: "integer", description: "MiniMax: a ceiling, 30-300. YuE2: a wish, 30-600; the model may finish early or run long." },
         cot: { type: "string", enum: ["full", "melody", "off"], description: "YuE2 only. full = plan the whole score then sing (default); melody = plan the tune only; off = no plan. Ignored on MiniMax." },
@@ -549,7 +623,7 @@ export const TOOLS = [
         checkpoint: { type: "string", description: "yue2-comfy only: pin an installed YuE2 checkpoint for this request without changing the Music page selection." },
         lora: { type: "string", description: "yue2-comfy only: a LoRA filename in models/loras (list_loras with for=<the YuE2 checkpoint> says which fit). Omit to use the Music page's saved choice; \"\" for none. A name not on a loras shelf is refused, never silently skipped. Ignored on the other engines." },
         lora_strength: { type: "number", minimum: -4, maximum: 4, description: "yue2-comfy and ace-step15. 1 = as trained. Omit for the Music page's saved strength." },
-        lora_clip: { type: "string", description: "yue2-comfy only: a PLANNER LoRA filename in models/loras — patches the composer (the AR half, ComfyUI's CLIP side) rather than the audio model; the catalogued instrumental planner LoRA (ar_lora_inst_v3abc_comfyui.safetensors) is the one that exists. Omit for the Music page's saved choice; \"\" for none. With `instrumental` and nothing named, the instrumental planner LoRA is used when it is on a shelf." },
+        lora_clip: { type: "string", description: "yue2-comfy only: a PLANNER LoRA filename in models/loras — patches the composer (the AR half, ComfyUI's CLIP side) rather than the audio model; the catalogued instrumental planner LoRA (ar_lora_inst_v3abc_comfyui.safetensors) is the one that exists. Omit for the Music page's saved choice; \"\" for none. With `instrumental` and nothing named, the instrumental planner LoRA is used when it is on a shelf. A catalogued Mothersuperior LoRA (this one included) is CC BY-NC, so the song it makes is labelled not for sale, whatever YuE2's own label says." },
         lora_clip_strength: { type: "number", minimum: -4, maximum: 4, description: "yue2-comfy only. 1 = as trained (its card's setting). Omit for the saved strength." },
         cover_of: { type: "string", description: "COVER A REAL SONG (yue2, the Python kit, with the real-audio tokenizer installed): a library file name whose recording this performs. Send its score in `abc` as well — run song_to_score on the same file — and say the words in `lyrics` or set `instrumental`. The recording is read into YuE2's own tokens (once, kept) and the first seconds of it prime the render; the model then performs the SCORE in `caption`'s style. None of the original audio reaches the result, and the rights in the song it covers stay yours to clear." },
         cover_seconds: { type: "integer", minimum: 1, maximum: 30, description: "How many seconds of the original performance prime the render. Default 8. Longer is worse, not better: the tokenizer's codes are flatter than the model's own, so a long prime walks the sampler off its distribution and re-renders the original's arrangement under a caption asking for a different one." },
@@ -559,6 +633,7 @@ export const TOOLS = [
         ace_cfg: { type: "number", minimum: 0.1, maximum: 20, description: "ace-step15 only: sampler guidance. Omit for the template value (1 on turbo)." },
         planner: { type: "boolean", description: "ace-step15 only: let the language model plan the song first (generate_audio_codes). Default on; off by default with a LoRA (ACE-Step's LoRA card advises the DiT alone) and always off for a cover." },
         cover_song: { type: "string", description: "ace-step15 only: a Library file name (list_songs) to cover — ACE-Step re-performs it in this caption and lyrics (ComfyUI's Set Reference Audio, experimental there)." },
+        confirm_spend: { type: "boolean", description: "PAID SONGS ONLY. With the hosted engine switched on (cloud_status), a MiniMax Music 3 song bills the person's own key and is refused until this is true; the refusal says what it would cost and which key it bills. Pass true ONLY after the person agreed to pay for THIS song in the conversation, never on your own. Ignored for local engines." },
       },
       additionalProperties: false,
     },
@@ -607,6 +682,8 @@ export const TOOLS = [
         aceCfg: Number.isFinite(a.ace_cfg) ? a.ace_cfg : undefined,
         aceCodes: typeof a.planner === "boolean" ? a.planner : undefined,
         aceCover: typeof a.cover_song === "string" && a.cover_song ? { song: safeName(a.cover_song, "song") } : undefined,
+        /* Exactly true or absent: the door reads confirmSpend === true and nothing looser. */
+        confirmSpend: a.confirm_spend === true ? true : undefined,
       });
       /* /api/generate refuses with its own sentence (fp8 on an older card, a preview that does not exist); relay it whole
        * rather than answering "job_id: null" and leaving the agent to guess. */
@@ -1007,16 +1084,16 @@ export const TOOLS = [
       + "recommended for covers; full: chords too). Then make_song with engine yue2 (or yue2-comfy), cot "
       + "melody, `abc` = that score, NEW lyrics if you like, and a NEW style line — 'male lead vocal' "
       + "where the original had a woman — and the melody is kept while everything else is re-rendered. "
-      + "Pass the recording as source {path | library_file | data_url}. Needs the catalogue's "
+      + "Pass the recording as source {path | library_file | data_url}, or just `library_file` for a song in the library. Needs the catalogue's "
       + "'Cover — SheetSage2 song-to-score' row installed (a 1.4 GB file); refused with needsModel "
       + "otherwise. Holds the card for the transcription. For a single hummed voice use hum_to_score, "
       + "which needs no model. The original song's rights are the caller's to check.",
     inputSchema: {
       type: "object",
-      required: ["source"],
       properties: {
         source: { type: "object", additionalProperties: true,
           description: "{ path: absolute local file } | { library_file: a name in the library } | { data_url: base64 audio, name? }" },
+        library_file: { type: "string", description: "A song in the library (list_songs), the same as source {library_file}. Give this or source." },
         mode: { type: "string", enum: ["melody", "full"], description: "melody (default, for covers) or full (melody and chords)." },
         stem: { type: "string", enum: ["mix", "vocals"],
           description: "vocals: transcribe the SEPARATED VOICE instead of the mix (library_file sources only) — the Studio's own demucs separation runs first when it is not on disk, about a minute. On a mix the transcriber can file the tune under the accompaniment; the stem gives it the melody that was sung. Default mix." },
@@ -1024,8 +1101,9 @@ export const TOOLS = [
       additionalProperties: false,
     },
     async run(a) {
-      const r = await api("POST", "/api/song_to_score", { source: a.source, mode: a.mode, stem: a.stem === "vocals" ? "vocals" : undefined });
-      if (r?.error) throw new Error(r.error + (r.needsModel ? ` (needsModel: ${r.needsModel})` : ""));
+      if (a.source === undefined && !a.library_file) throw new Error("Give source {path | library_file | data_url}, or library_file.");
+      const r = await api("POST", "/api/song_to_score", { source: a.source ?? (a.library_file ? { library_file: safeName(a.library_file, "song") } : undefined), mode: a.mode, stem: a.stem === "vocals" ? "vocals" : undefined });
+      if (r?.error) throw new Error(refusalText(r));
       return r;
     },
   },
@@ -1035,26 +1113,27 @@ export const TOOLS = [
     description:
       "Turn a hummed (or whistled, or sung) melody into the two-voice ABC score YuE2 takes verbatim: "
       + "a pitch tracker in the engine's own python, no model, no card. Pass the recording as source "
-      + "{path | library_file | data_url} — the three shapes music_input_prepare takes; an agent cannot "
-      + "record, so name a file. One to sixty seconds, one voice, nothing behind it. Returns `abc` plus "
+      + "{path | library_file | data_url} — the three shapes music_input_prepare takes — or just "
+      + "`library_file` for a song in the library; an agent cannot record, so name a file. One to sixty seconds, one voice, nothing behind it. Returns `abc` plus "
       + "the tempo, key, note and bar counts. Then make_song with engine yue2 (or yue2-comfy), cot "
       + "melody or full, `abc` = that score, and either `abc_open: true` — the planner continues the "
       + "hummed bars into a whole song — or omit it to sing exactly those bars. Tempo and key are "
       + "estimated from the recording and can be overridden.",
     inputSchema: {
       type: "object",
-      required: ["source"],
       properties: {
         source: { type: "object", additionalProperties: true,
           description: "{ path: absolute local file } | { library_file: a name in the library } | { data_url: base64 audio, name? }" },
+        library_file: { type: "string", description: "A song in the library (list_songs), the same as source {library_file}. Give this or source." },
         bpm: { type: "number", minimum: 40, maximum: 240, description: "Quarter-note tempo to quantise to; omit to beat-track the recording (falls back to 100)." },
         key: { type: "string", description: "ABC key such as Em, G, Bb; omit to estimate it." },
       },
       additionalProperties: false,
     },
     async run(a) {
-      const r = await api("POST", "/api/hum", { source: a.source, bpm: a.bpm, key: a.key });
-      if (r?.error) throw new Error(r.error);
+      if (a.source === undefined && !a.library_file) throw new Error("Give source {path | library_file | data_url}, or library_file.");
+      const r = await api("POST", "/api/hum", { source: a.source ?? (a.library_file ? { library_file: safeName(a.library_file, "song") } : undefined), bpm: a.bpm, key: a.key });
+      if (r?.error) throw new Error(refusalText(r));
       return r;
     },
   },
@@ -2205,7 +2284,7 @@ export const TOOLS = [
           description: "The ideas. For music: caption (the style) plus optional title/lyrics/instrumental/"
             + "maxDuration. For image and video: prompt (a template) plus optional engine/checkpoint/"
             + "negative/width/height/steps/cfg/count, and seconds on video. Images also preserve persona, ordered refImages, "
-            + "native model filenames, refSizing/refResolution/transparent and sampler/LoRA choices. Omitted image engine uses Qwen Image 2.1; "
+            + "native model filenames, refSizing/refResolution/transparent, Qwen's Fast draft and sampler/LoRA choices. Omitted image engine uses Qwen Image 2.1; "
             + "each take uses the normal image readiness and reference checks.",
           items: {
             type: "object",
@@ -2222,6 +2301,7 @@ export const TOOLS = [
               refImages: { type: "array", maxItems: 10, items: { type: "string" }, description: "Ordered image filenames, plus any saved persona references (10 combined maximum)." },
               refSizing: { type: "string", enum: ["reference", "custom"] },
               refResolution: { type: "integer", minimum: 0, maximum: 4096 }, transparent: { type: "boolean" },
+              draft: { type: "boolean", description: "Qwen Image 2.1 only: Fast draft (make_image's draft) for every take of this idea." },
               sampler: { type: "string" }, scheduler: { type: "string" }, clipSkip: { type: "integer" },
               loras: { type: "array", maxItems: 8, items: { type: "object", required: ["name"], properties: {
                 name: { type: "string" }, strength: { type: "number" }, clipStrength: { type: "number" },
@@ -2238,6 +2318,7 @@ export const TOOLS = [
           },
           additionalProperties: false,
         },
+        confirm_spend: { type: "boolean", description: "MUSIC with the paid hosted engine switched on only: every song of the night bills the person's own key, and the run is refused with the night's estimate until this is true. Pass true ONLY after the person agreed to that estimate." },
       },
       additionalProperties: false,
     },
@@ -2251,6 +2332,7 @@ export const TOOLS = [
         action: "start",
         kind: a.kind, name: a.name, takes: a.takes, cap: a.cap,
         items: a.items, stages: a.stages,
+        confirmSpend: a.confirm_spend === true ? true : undefined,
       });
       if (r.error) throw new Error(r.error);
       return r;
@@ -2353,8 +2435,9 @@ export const TOOLS = [
     name: "list_personas",
     description:
       "Saved characters: name, description and the reference pictures that show what they look like. "
-      + "Pass `for` (an engine) and each says whether it can be used — references are FLUX.2-only, so a "
-      + "persona on any other engine is refused rather than silently ignored. Not a LoRA and not training: "
+      + "Pass `for` (an engine) and each says whether it can be used — usable on Qwen Image 2.1 and FLUX.2 "
+      + "pictures and on MiniMax H3 clips (make_clip `persona`), so a persona on any other engine is refused "
+      + "rather than silently ignored. Not a LoRA and not training: "
       + "this is the reference-image path remembered, so identity holds well but can drift over a long series.",
     inputSchema: {
       type: "object",
@@ -2372,7 +2455,8 @@ export const TOOLS = [
     description:
       "Create or update a character. Saving the same NAME twice edits one character rather than making two. "
       + "Give it reference pictures (names from list_images), a description, or both — the pictures carry the "
-      + "face, the words carry what a picture cannot show. Use make_image with `persona` to put them in a scene.",
+      + "face, the words carry what a picture cannot show. Use make_image with `persona` to put them in a scene. "
+      + "For clips, 1–3 tight pictures of one person on a plain dark background keep them best; make_clip takes the first 3.",
     inputSchema: {
       type: "object", required: ["name"],
       properties: {
@@ -2528,14 +2612,16 @@ export const TOOLS = [
   {
     name: "make_image",
     description:
-      "Draw a picture, defaulting to Qwen Image 2.1. Runtime and weights must be ready; check qwen_image_status. It runs only while "
+      "Draw a picture. With no `engine` it uses the saved picture engine, or when nobody chose one the recommended picture model on this PC (studio_status `defaults`, key image.engine, says which and why; set_image_engine with use_for \"pictures\" saves one). Qwen Image 2.1's runtime and weights must be ready; check qwen_image_status. It runs only while "
       + "nothing else is generating — music always takes priority. Blocks until it is done.\n\n"
       + "Pass `ref_images` for Qwen Image 2.1 or FLUX.2 editing: the prompt refers to them as "
       + "\"image 1\", \"image 2\" in order — \"put the character from image 1 into the scene "
       + "from image 2\", \"same figure as image 1 but seen from behind\". This is how you "
       + "iterate a character toward a target or keep one consistent across pictures. Recorded in the provenance ledger as an agent action (actor agent:*) — provenance_read shows it.\n\n"
       + "Qwen Image defaults to 25 steps, CFG 1, Euler/simple. A negative needs CFG greater than 1. "
-      + "Qwen Image uses a noncommercial research license and has no measured speed promise here. "
+      + "Qwen Image uses a noncommercial research license. `draft: true` is its Fast draft: about 3x quicker "
+      + "(measured 3.1 s against 11.2 s at 1024 warm), for storyboards, thumbnails and ideas; it may garble small text "
+      + "and add extra faces or fingers, so leave it off for lettering, crowds, close hands, two-reference style edits and finals. "
       + "zimage-base and checkpoint also support negatives; reference images require Qwen Image 2.1 or FLUX.2.",
     inputSchema: {
       type: "object",
@@ -2543,6 +2629,18 @@ export const TOOLS = [
       properties: {
         prompt: { type: "string",
           description: "Supports DYNAMIC PROMPTS: `{a|b|c}` picks one option per render and an empty option is legal, so `{, at night|}` adds a detail half the time. Groups nest. The reply carries the expansion it chose plus `prompt_choices`, and passing those back reproduces that exact prompt — which is what makes one picture out of an overnight run findable again." },
+        private: { type: "boolean",
+          description:
+            "PRIVATE: render this without recording what was typed. The prompt, the negative, every "
+            + "text node, the prompt HASH and the label are left out of the ledger; no graph is filed "
+            + "in the never-pruned graph store; the engine's metadata chunk is stripped from the PNG; "
+            + "and the gallery row keeps its seed, model and date but no prompt.\n\n"
+            + "\u26a0 THE RENDER IS STILL RECORDED. The ledger event is still written, with the same "
+            + "actor and the same chain \u2014 a hash-chained ledger cannot skip a line without breaking "
+            + "verification of every line after it \u2014 and it names what it dropped in `redacted`. The "
+            + "picture keeps its IPTC AI-generated disclosure. This hides the WORDS, never the fact "
+            + "that a machine made the picture.\n\n"
+            + "Not retroactive, and it cannot be added afterwards: the words are simply never written." },
         prompt_choices: { type: "array", items: { type: "integer" },
           description: "Replay a previous expansion exactly, from a earlier reply's prompt_choices." },
         dedupe: { type: "string", enum: ["reroll", "refuse", "off"],
@@ -2552,12 +2650,24 @@ export const TOOLS = [
           description: "Up to 10 existing image names (including persona refs), called image 1, image 2 in this order. Qwen reference cost is unmeasured; FLUX.2 measured about 4 s per reference past the second. Missing or excess Qwen references are refused." },
         ref_sizing: { type: "string", enum: ["reference", "custom"], description: "Qwen only: reference (default) matches the resized first reference geometry; custom uses width/height and may shift an edit." },
         ref_resolution: { type: "integer", minimum: 0, maximum: 4096, description: "Qwen only: reference resize area target, default 1024; rounded up to 32. Zero keeps the source size, rounded to 32, and can need substantial memory." },
-        transparent: { type: "boolean", description: "Qwen only: request native RGBA transparency and preserve alpha in PNG output." },
+        transparent: { type: "boolean", description: "Qwen only: request native RGBA transparency and preserve alpha in PNG output. Without it, references with transparency are flattened onto white." },
+        draft: { type: "boolean",
+          description: "Qwen Image 2.1 only: FAST DRAFT. Viggle's turbo LoRA at 1.0, 5 steps on its own schedule, euler, CFG 1, "
+            + "no negative. Measured about 3x quicker warm (3.1 s against 11.2 s at 1024; batch of 4 3.8x); a new prompt still "
+            + "pays the text encode (about 2x), and switching between a draft and a full render costs a model re-patch "
+            + "(+8.8 s into a draft, +2.5 s back), so group drafts. For storyboards, board thumbnails and ideas: it may garble "
+            + "small text and, in crowds or close hands, add extra faces or fingers; not for finals, lettering or two-reference "
+            + "style edits (a two-reference edit measured only 2.3x and judges preferred the full render). "
+            + "Refused (with the reason) on any other engine, and with transparent, more than 3 references (a persona's "
+            + "count), cfg above 1, a negative, steps other than 5, or a canvas above about 2 MP (measured up to 1920x1088; "
+            + "8192 latent tokens, so ref_resolution up to 1440). Needs the Fast draft LoRA (0.68 GB, Models row "
+            + "imageQwenFastDraft); qwen_image_status reports `draft.ready`." },
+        ref_alpha: { type: "string", enum: ["white", "keep"], description: "Qwen only: white flattens a reference with transparency onto white, keep sends its alpha. Default follows transparent. keep on an opaque request can return a transparent picture." },
         width: { type: "integer" },
         height: { type: "integer" },
         seed: { type: "integer" },
         engine: { type: "string", enum: ["qwen-image-2.1", "flux2", "zimage", "zimage-base", "anima", "ideogram4", "krea2", "checkpoint"],
-          description: "qwen-image-2.1 (default): native INT8 Qwen Image 2.1, generation/editing, up to 10 refs, 25 steps at CFG 1, noncommercial research license. "
+          description: "qwen-image-2.1: native INT8 Qwen Image 2.1, generation/editing, up to 10 refs, 25 steps at CFG 1, noncommercial research license. "
             + "flux2: FLUX.2 klein 4B, Apache-2.0, 4 steps, also takes ref_images. "
             + "zimage: Z-Image Turbo, Apache-2.0, 8 steps — photographic realism, faces, English and Chinese "
             + "prompts, and the cleanest commercial answer in the app; NO negative (distilled at cfg 1.0, so "
@@ -2616,9 +2726,19 @@ export const TOOLS = [
       const before = new Set(((await api("GET", "/api/images")).images || []).map((i) => i.name));
       const r = await api("POST", "/api/image", {
         action: "create", prompt: a.prompt,
-        engine: a.engine || "qwen-image-2.1", quality: a.quality, checkpoint: a.checkpoint,
+        // Declared AND forwarded: a schema that names a field its run() drops is
+        // a feature that answers ok and does nothing.
+        private: a.private === true,
+        /* No engine named: none is sent, and /api/image uses the saved picture
+         * engine or the machine's pick from the disk (studio_status defaults,
+         * image.engine). Posting Qwen here aimed a FLUX-only install at files
+         * it never downloaded. */
+        ...(a.engine ? { engine: a.engine } : {}), quality: a.quality, checkpoint: a.checkpoint,
         negative: a.negative, cfg: a.cfg,
-        refSizing: a.ref_sizing, refResolution: a.ref_resolution, transparent: a.transparent,
+        refSizing: a.ref_sizing, refResolution: a.ref_resolution, transparent: a.transparent, refAlpha: a.ref_alpha,
+        /* Fast draft. Sent only when given, so the route's own default (off)
+         * decides otherwise; the route refuses it off Qwen with a sentence. */
+        draft: typeof a.draft === "boolean" ? a.draft : undefined,
         count: a.count, width: a.width, height: a.height,
         promptChoices: Array.isArray(a.prompt_choices) ? a.prompt_choices : undefined,
         clipSkip: Number.isFinite(a.clip_skip) ? a.clip_skip : undefined,
@@ -2644,7 +2764,7 @@ export const TOOLS = [
         seed: Number.isFinite(a.seed) ? a.seed : undefined,
       });
       if (r.error) throw new Error(r.error);
-      await waitForArt((Number(a.timeout_seconds) || 600) * 1000, "image");
+      const settled = await waitForArt((Number(a.timeout_seconds) || 600) * 1000, "image", r.job?.id);
       const after = (await api("GET", "/api/images")).images || [];
       const made = after.filter((i) => !before.has(i.name)).map((i) => i.name);
       /* THE CHECK, FOLDED INTO THE RENDER. An expectation is attached to every
@@ -2679,8 +2799,11 @@ export const TOOLS = [
          * there, so this picture can be made again. */
         ...(r.prompt ? { prompt: r.prompt, prompt_choices: r.promptChoices, combinations: r.combinations } : {}),
         seed: r.seed,
+        ...(r.draft ? { draft: true } : {}),
         ...(r.note ? { note: r.note } : {}),
-        ...(made.length ? {} : { note: "Nothing new appeared — check studio_status for the last error." }),
+        /* Reached with its OWN failure already thrown by the wait, so never "the
+         * last error": that is the queue's, a stranger's. art-wait.js says why. */
+        ...(made.length ? {} : { note: emptyResultNote(settled, r.job?.id, "list_images") }),
       };
     },
   },
@@ -2734,7 +2857,8 @@ export const TOOLS = [
     inputSchema: {
       type: "object",
       required: ["engine"],
-      properties: { engine: { type: "string", enum: ["h3", "ltx"] } },
+      properties: { engine: { type: "string", enum: ["h3", "ltx", "fasth3"],
+        description: "fasth3 = FastVideo's 8-step distillation of H3: fixed 8 steps, no references, same territory clause as H3." } },
       additionalProperties: false,
     },
     async run(a) {
@@ -2745,11 +2869,52 @@ export const TOOLS = [
   },
 
   {
+    /* THE THIRD ENGINE SETTER (UI_PLAN A1). set_image_engine and
+     * set_video_engine existed; the music model was reachable only through
+     * studio_api_request. Posts the Music page's own door, so the refusals and
+     * the unload are the page's. Withheld from the in-app chat by sentence. */
+    name: "set_music_engine",
+    description:
+      "Choose the music model persistently: the same choice as the Music page's model picker and the Models "
+      + "screen's Music model. With no saved choice Studio uses what is installed and ready on this PC "
+      + "(studio_status `defaults` says which and why); this saves yours, and a saved choice always wins.\n\n"
+      + "  • engine — pick an engine and let Studio pick its build: yue2-comfy (YuE2 through ComfyUI), "
+      + "yue2-gguf (native YuE2 GGUF), yue2 (the YuE2 Python kit), minimax-music3, ace-step15. "
+      + "\"auto\" forgets your choice so Studio picks from the disk again.\n"
+      + "  • model — pick one exact build by its `value` from `choices` (call with no arguments to list them).\n\n"
+      + "Refused when that model is not downloaded (models_for_this_machine says; download_model fetches). "
+      + "A MiniMax \"api\" choice switches paid API mode on, billed per song to your own key. Choosing a "
+      + "different model unloads the previous one when nothing is rendering.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        engine: { type: "string", enum: ["auto", "yue2-comfy", "yue2-gguf", "yue2", "minimax-music3", "ace-step15"] },
+        model: { type: "string", description: "An exact build: a `value` from `choices`, e.g. \"yue2-comfy:yue2_3b_int8_convrot.safetensors\" or \"yue2-gguf:q4_0\"." },
+      },
+      additionalProperties: false,
+    },
+    async run(a) {
+      if (a.engine && a.model) throw new Error("Pass engine or model, not both.");
+      if (a.model) await api("POST", "/api/music", { action: "model", value: String(a.model).slice(0, 300) });
+      else if (a.engine) await api("POST", "/api/music", { action: "engine", value: a.engine });
+      const st = await api("GET", "/api/status");
+      const d = (st.config?.defaults || []).find((x) => x.key === "music.engine") || null;
+      return {
+        engine: st.config?.musicEngine ?? null,
+        chosenBy: d?.chosenBy ?? null, why: d?.why ?? null,
+        choices: (st.config?.musicModels || []).map((c) => ({ value: c.value, label: c.label, ready: !!c.available, note: c.note ?? null,
+          ...(c.api ? { paid: true } : {}) })),
+      };
+    },
+  },
+
+  {
     name: "set_image_engine",
     description:
-      "Choose the automatic cover-art engine persistently. Standalone make_image defaults to Qwen Image 2.1; pass engine there to choose another. "
+      "Choose a picture engine persistently: for covers (the default), for pictures (the Pictures screen's engine, and make_image or a music video's stills with no engine named), or both, with `use_for`. "
+      + "\"auto\" forgets the choice, so Studio picks from what is on this PC again. make_image still takes its own `engine` per picture. "
       + "qwen-image-2.1 supports references, 25 steps at CFG 1, and requires a compatible runtime and native files. "
-      + "Fresh installs default to Qwen Image 2.1 for covers too; saved cover preferences remain unchanged. flux2: FLUX.2 klein, Apache-2.0, also takes references. "
+      + "With no saved choice, covers use the recommended picture model on this PC, and none are queued while no picture model is there (studio_status `defaults`, key art.engine); a saved choice always wins. flux2: FLUX.2 klein, Apache-2.0, also takes references. "
       + "zimage / zimage-base: Z-Image, Apache-2.0, photographic; base honours a negative prompt. "
       + "anima: anime and illustration. "
       + "ideogram4: typography and layouts; ⚠ NON-COMMERCIAL licence. "
@@ -2760,15 +2925,25 @@ export const TOOLS = [
       type: "object",
       required: ["engine"],
       properties: {
-        engine: { type: "string", enum: ["qwen-image-2.1", "flux2", "zimage", "zimage-base", "anima", "ideogram4", "krea2", "checkpoint"] },
-        checkpoint: { type: "string", description: "With engine \"checkpoint\": the file name to paint with." },
+        engine: { type: "string", enum: ["auto", "qwen-image-2.1", "flux2", "zimage", "zimage-base", "anima", "ideogram4", "krea2", "checkpoint"] },
+        checkpoint: { type: "string", description: "With engine \"checkpoint\": the file name to paint with (covers only; a picture's own file is picked per picture)." },
+        use_for: { type: "string", enum: ["covers", "pictures", "both"],
+          description: "covers (default): the engine that paints song covers. pictures: the Pictures screen's engine, used by make_image and music-video stills when they name none; kept even when its files are missing (make_image then says what to download). both." },
       },
       additionalProperties: false,
     },
     async run(a) {
-      const r = await api("POST", "/api/artconfig", { engine: a.engine, ...(a.checkpoint ? { checkpoint: safeName(a.checkpoint, "checkpoint") } : {}) });
+      const use = a.use_for || "covers";
+      if (a.engine === "checkpoint" && use !== "covers") throw new Error("Your own model file paints covers only; make_image picks a file per picture (engine checkpoint + checkpoint).");
+      const body = {
+        ...(use !== "pictures" ? { engine: a.engine, ...(a.engine === "auto" ? {} : { choose: true }) } : {}),
+        ...(use !== "covers" ? { imageEngine: a.engine } : {}),
+        ...(a.checkpoint && use !== "pictures" ? { checkpoint: safeName(a.checkpoint, "checkpoint") } : {}),
+      };
+      const r = await api("POST", "/api/artconfig", body);
       if (r.error) throw new Error(r.error);
-      return { engine: r.engine ?? r.art?.engine ?? a.engine, checkpoint: r.checkpoint ?? r.art?.checkpoint ?? null };
+      return { engine: r.engine ?? r.art?.engine ?? a.engine, checkpoint: r.checkpoint ?? r.art?.checkpoint ?? null,
+        image_engine: r.imageEngine ?? null, chosen: r.chosen ?? null };
     },
   },
 
@@ -2781,24 +2956,41 @@ export const TOOLS = [
       + "studio_status and change it with set_video_engine.\n"
       + "  • LTX 2.5 — fast. Takes EXACT frames: `first_frame`, `last_frame`, `mid_frames` "
       + "(pictures the clip passes through), `loop`. Also takes `soundtrack_song`: the "
-      + "finished clip PLAYS that stretch of the song and the picture is invented to fit it, "
-      + "which is the tool for a performance shot.\n"
+      + "finished clip plays that stretch; mouths were measured not to follow it on LTX "
+      + "(r +0.034, n=18, docs/ENGINE_TRAPS.md).\n"
       + "  • MiniMax H3 — slower, and the only engine that takes NAMED REFERENCES. Pass "
-      + "`ref_images` / `ref_song`, then call them in the prompt: \"the figure from "
-      + "<Picture 1> performs the song from <Audio 1> on a rooftop\". A reference is not "
+      + "`ref_images` (or `persona`), then name them in the prompt: \"<Picture 1> is Mira. "
+      + "Mira sings on a rooftop at dusk\", with `soundtrack_song` for the song. A reference is not "
       + "pinned to a frame — the model recasts the subject wherever the words put it, which "
       + "is how you keep one character across many shots. ⚠ H3's licence grants NO rights "
-      + "in " + H3_EXCLUDED + " — where that applies, stay on LTX.\n\n"
+      + "in " + H3_EXCLUDED + " — where that applies, stay on LTX.\n"
+      + "  • FastH3 — H3 distilled to 8 fixed steps (quality and steps do not apply), in the Video screen's "
+      + `engine list as "${H3_MORE_MOTION.label}": ${H3_MORE_MOTION.note} ${H3_MORE_MOTION.framesUntried} `
+      + "first_frame/last_frame are accepted (the reply warns), references are refused; `attention` picks "
+      + "the dense attention under its sparse attention. Same licence and territory clause as H3.\n\n"
+      + "KEEPING A CHARACTER (measured 2026-09-24, same seeds, two blind judges): on MiniMax H3 a person who "
+      + "must look the same as in other clips needs 1–3 tight pictures of them, one person on a plain dark "
+      + "background (`persona`, or `ref_images` with '<Picture 1> is Name.' written in the prompt), their "
+      + "name where they act, and the reference build's own step count (leave quality and steps unset: 8 "
+      + "where the 8-step reference file is on disk). If they sing, add `soundtrack_song` and "
+      + "`soundtrack_start` (where the sung line starts): the song sits under the clip and the mouth follows "
+      + "the words. `ref_song` (<Audio 1>) is a different input: the clip re-sings it in its own time. "
+      + "From words alone the person changes between clips (hair, mask, costume); that is fine for shots "
+      + "with no one in them. The reply's `character` says what this render keeps.\n\n"
       + "Passing an engine-specific input while the other engine is selected is REFUSED "
-      + "rather than silently ignored; pass `engine` to switch first. Recorded in the provenance ledger as an agent action (actor agent:*) — provenance_read shows it.",
+      + "rather than silently ignored; pass `engine` to switch first. The reply's `warnings` say "
+      + "everything the render changed from the request (the card's size when none was named, the "
+      + "reference build's step count, a <Picture n> nothing answers taken out of the words) and the "
+      + "RAM warning. `check_only` returns that plan, and what the size needs on this card, without "
+      + "rendering. Recorded in the provenance ledger as an agent action (actor agent:*) — provenance_read shows it.",
     inputSchema: {
       type: "object",
       required: ["prompt"],
       properties: {
         prompt: { type: "string", description: "What happens in the shot. Describe motion, not just a subject. May contain <Picture n> / <Audio n> tags when ref_images / ref_song are given." },
-        engine: { type: "string", enum: ["h3", "ltx"], description: "Switch the engine before rendering. Persists, like the GUI dropdown. Omit to use whatever is selected." },
+        engine: { type: "string", enum: ["h3", "ltx", "fasth3"], description: "Switch the engine before rendering. Persists, like the GUI dropdown. Omit to use whatever is selected. fasth3 always runs its trained 8 steps (quality and steps do not apply) and takes no references." },
         quality: { type: "string", enum: ["fast", "best"],
-          description: "fast = the distilled path: 3 steps on the TaoMate build when it is installed (studio_status says turbo3Ready), else 8 — measured as coherent and as sharp as 8 at 25–40% less wall time. best = the full model on its native schedule, measurably smoother but several times slower. Default: the engine's own default (currently 'best' on H3). Prefer this over `steps`." },
+          description: "fast = the quickest matched turbo build on this disk: 3 steps on the TaoMate build where it is installed, else the 4-step build. The TaoMate 3-step was measured as coherent and as sharp as the 8-step build at 25–40% less wall time; with sparse attention on (`sparse`, sol-attn by default) fast is " + H3_SOL_ATTN.gain + ", so no longer quite as sharp. best = the bare model at 20 steps on its native schedule, over twice as long; the one A/B of it against the 8-step turbo (docs/H3_REFERENCE_BLEED.md, arm H vs C: one shot, reference path) saw no visible gain. Default: the engine's own default, the Video screen's Standard. With references or a persona and no quality, the reference build's own count runs (studio_status video.h3_reference_steps). All three follow which turbo files are on disk, so studio_status shows them (video.h3_quality_steps, with the builds behind them in video.h3_turbo_builds). Prefer this over `steps`." },
         steps: { type: "integer", description: "Advanced override of the step count; wins over `quality`. On H3 a value at or below turboMaxSteps (12) selects the turbo LoRA and above it runs the bare model. LTX ignores it — its schedule is fixed." },
         seconds: { type: "integer", description: "Clip length. 5 is the default and what the cost model is anchored on." },
         width: { type: "integer", description: "Frame width. Use a size the engine is trained on — see studio_status / the Video page list. H3 native is 1344x768." },
@@ -2818,9 +3010,10 @@ export const TOOLS = [
         loop: { type: "boolean", description: "Seamless loop: reuses the opening picture as the closing one so the clip cuts to its own start." },
         ref_images: { type: "array", items: { type: "string" }, maxItems: 9,
           description: "Image names (from list_images or covers) the prompt refers to as <Picture 1>… in this order. H3 only." },
-        ref_song: { type: "string", description: "A library song file (from list_songs) the prompt refers to as <Audio 1>. H3 only." },
+        persona: { type: "string", description: "A saved character by name (list_personas). Up to 3 of its pictures ride as references after any ref_images, each bound in the prompt as '<Picture N> is <name>.', and its description joins the prompt. H3 only (refused on LTX and FastH3). Write the name where they act." },
+        ref_song: { type: "string", description: "A library song file (from list_songs) the prompt refers to as <Audio 1>. H3 only. Re-sung in the clip's own time; not lip-sync (use soundtrack_song)." },
         ref_song_start: { type: "integer", description: "Where the 10-second reference window starts, in seconds. Default 0." },
-        soundtrack_song: { type: "string", description: "A library song file the clip is generated ON — the finished clip PLAYS this exact segment (frozen audio latent). Works on both engines; on H3 it also anchors the audio so the model reads the vocal while inventing the picture, which is the tool for lip-synced performance shots WITH character references." },
+        soundtrack_song: { type: "string", description: "A library song file the clip is generated ON — the finished clip PLAYS this exact segment (frozen audio latent). Works on both engines; on H3 it also anchors the audio so the model reads the vocal while inventing the picture, which is the tool for lip-synced performance shots WITH character references: the mouth follows the song (measured with pictures of the singer; untested from words alone; on LTX mouths do not follow it); start it where the sung line starts. check_only says it for this engine (soundtrack)." },
         soundtrack_start: { type: "integer", description: "Where the soundtrack segment starts, in seconds. Default 0." },
         negative: { type: "string", description: "What to avoid. LTX only — H3 has no negative prompt." },
         guidance: { type: "number", description: "How literally to follow the prompt (1-8). LTX only." },
@@ -2829,6 +3022,9 @@ export const TOOLS = [
         bridge_alpha: { type: "number", minimum: 0, maximum: 1, description: "H3 only: the bridge's blend strength for this render. Publishers recommend 0.10–0.15; 0 bypasses." },
         loras: { type: "array", maxItems: 8, description: "Custom video LoRAs in order, from list_loras. Known wrong architectures and missing files are refused. Engine speed adapters load automatically and must not be listed again. Unrecognized bases remain unverified.", items: { type: "object", required: ["name"], properties: { name: { type: "string" }, strength: { type: "number", minimum: -4, maximum: 4, default: 1 } }, additionalProperties: false } },
         seed: { type: "integer", description: "Reproducible when set. A rolled seed is recorded in the clip's metadata either way." },
+        attention: { type: "string", enum: ["pytorch", "kitchen"], description: "FastH3 only: the dense attention under its sparse attention; kitchen = Comfy Kitchen int8 where the engine offers it (PyTorch where it does not). H3 decides its own; LTX has none. Default: kitchen, the one the H3 lab timed FastH3 with." },
+        sparse: { type: "string", enum: ["sol-attn", "off"], description: "H3 only: sparse attention on the fast setting (the 3-step build, no references), the Video screen's Advanced \"Sparse attention\" switch. " + H3_SOL_ATTN.note + " Default: the saved setting (video_settings sparse_attention), sol-attn unless changed; name it only to differ for this render." },
+        check_only: { type: "boolean", description: "Render nothing: return what this call WOULD render on this card (engine, size, seconds, steps, sparse attention), what the size needs (\"needs about X GB free; you have Y\"), every warning, or the refusal. The Video screen's Advanced line reads the same answer." },
         timeout_seconds: { type: "integer", description: "Default 900. Raise it for a full-quality H3 render at native size." },
       },
       additionalProperties: false,
@@ -2836,7 +3032,8 @@ export const TOOLS = [
     async run(a) {
       const loras = videoLoraInput(a.loras);
       let st = await api("GET", "/api/status");
-      if (!st.config?.video?.enabled) {
+      // A check renders nothing, so it answers with video switched off too.
+      if (!st.config?.video?.enabled && a.check_only !== true) {
         throw new Error("Video is switched off. Call set_video_enabled with enabled:true to enable it before rendering.");
       }
       /* ENGINE FIRST, because the engine decides which of the inputs below are
@@ -2845,6 +3042,11 @@ export const TOOLS = [
        * engine selected throws HERE with the fix in the message — the route
        * would refuse it anyway, and an agent that cannot see why is stuck. */
       if (a.engine && a.engine !== st.config?.video?.engine) {
+        /* A check changes nothing, the saved engine included. */
+        if (a.check_only === true) {
+          throw new Error(`check_only reads the selected engine (${st.config?.video?.engine}) and switches nothing; `
+            + `call set_video_engine with "${a.engine}" first, or leave engine out.`);
+        }
         const sw = await api("POST", "/api/video", { action: "engine", value: a.engine });
         if (sw.error) throw new Error(sw.error);
         st = await api("GET", "/api/status");
@@ -2853,30 +3055,47 @@ export const TOOLS = [
         throw new Error(`Video models are not installed: ${(st.config.video.missing || []).join(", ")}`);
       }
       const engine = st.config?.video?.engine;
-      const wantsRefs = (Array.isArray(a.ref_images) && a.ref_images.length) || !!a.ref_song;
-      if (wantsRefs && engine !== "h3") {
-        throw new Error("Named references (<Picture n> / <Audio n>) need MiniMax H3, but LTX is selected. Pass engine:\"h3\", or use first_frame/last_frame/mid_frames, which is how LTX takes pictures.");
+      const wantsRefs = (Array.isArray(a.ref_images) && a.ref_images.length) || !!a.ref_song || !!a.persona;
+      /* The refusals name the engine that IS selected: with three engines,
+       * "but LTX is selected" was false on FastH3. The reference sentence is
+       * the server's (server/video-plain.js refsIgnored, sent per engine on
+       * /api/status), the one the Video screen's reference slots show, with
+       * this tool's own way out after it. */
+      const engLabel = st.config?.video?.engines?.[engine]?.label || engine || "another engine";
+      const said = st.config?.video?.engines?.[engine]?.refsIgnored;
+      if (wantsRefs && engine !== "h3" && said) {
+        throw new Error(`${said} ${engLabel} is selected: pass engine:"h3"`
+          + (engine === "ltx" ? ", or use first_frame/last_frame/mid_frames, which is how LTX takes pictures."
+            : "."));
       }
+      /* A Studio whose status carries no sentence refuses at the door, in its own words. */
       // Soundtrack works on BOTH engines: LTX freezes the audio latent, H3
       // freezes AND anchors it (the lip-sync pair). No guard on this axis.
       if (Array.isArray(a.mid_frames) && a.mid_frames.length && engine !== "ltx") {
-        throw new Error("mid_frames (pass-through pictures) are an LTX feature. Pass engine:\"ltx\", or on H3 use ref_images.");
+        throw new Error(`mid_frames (pass-through pictures) are an LTX feature, and ${engLabel} is selected. Pass engine:"ltx"`
+          + (engine === "h3" ? ", or on H3 use ref_images." : "."));
       }
-      const before = new Set(((await api("GET", "/api/clips")).clips || []).map((c) => c.name));
+      const before = a.check_only === true ? new Set()
+        : new Set(((await api("GET", "/api/clips")).clips || []).map((c) => c.name));
       /* `quality` is the semantic dial; `steps` is the escape hatch and wins.
-       * The mapping lives here rather than in the caller's head because the
-       * turbo threshold is a measured implementation detail that has already
-       * moved once. 8 is the distilled fast point, 20 the measured good one. */
+       * The mapping lives in the server rather than in the caller's head, or
+       * here, because which step counts are MATCHED depends on the disk:
+       * config.js resolves stepDefaults from the turbo files pick() found and
+       * /api/status sends them. No quality leaves `steps` unset, so the
+       * engine's own default (the same `standard`) applies; 20 is the bare
+       * model. A literal 8 here ran a 4-step LoRA at 8 steps on an install
+       * set up from the Models screen, which fetches no 8-step file. */
       /* MEASURED 2026-09-17 (three prompts, one seed each): the TaoMate 3-step
        * build renders two seconds at native size in 92–157 s against the
        * 8-step build's 148–197 s, and the frames are as coherent and as sharp
-       * — so "fast" is 3 steps wherever that file is installed (the status
-       * says), and 8 where it is not (a 4-step LoRA sampled at 3 is the wrong
-       * model). References always keep their own builds; the graph decides. */
-      const turbo3 = engine === "h3" && st.config?.video?.engines?.h3?.turbo3Ready === true;
+       * — so "fast" is 3 steps wherever that file is installed, and the 4-step
+       * build where it is not (a 4-step LoRA sampled at 3 is the wrong model).
+       * References always keep their own builds; the graph decides. LTX has
+       * no stepDefaults and ignores steps; the fallbacks are for it. */
+      const qs = engine === "h3" ? st.config?.video?.engines?.h3?.stepDefaults : null;
       const steps = Number.isFinite(a.steps) ? a.steps
-        : a.quality === "fast" ? (turbo3 ? 3 : 8)
-        : a.quality === "best" ? 20
+        : a.quality === "fast" ? (qs?.fast ?? 4)
+        : a.quality === "best" ? (qs?.best ?? 20)
         : undefined;
       const body = {
         action: "create", prompt: a.prompt,
@@ -2891,6 +3110,10 @@ export const TOOLS = [
         seed: Number.isFinite(a.seed) ? a.seed : undefined,
         bridge: typeof a.bridge === "string" && a.bridge ? a.bridge : undefined,
         bridgeAlpha: Number.isFinite(a.bridge_alpha) ? a.bridge_alpha : undefined,
+        // FastH3's per-render pick; the route keeps only "pytorch" | "kitchen".
+        attention: a.attention === "kitchen" || a.attention === "pytorch" ? a.attention : undefined,
+        // H3's sparse attention on the fast setting; the route keeps only these two.
+        sparse: a.sparse === "sol-attn" || a.sparse === "off" ? a.sparse : undefined,
         loras,
       };
       /* ⚠ `fromCover`, not `firstFrame` — the route's field is fromCover (it
@@ -2917,6 +3140,9 @@ export const TOOLS = [
       if (Array.isArray(a.ref_images) && a.ref_images.length) {
         body.refImages = a.ref_images.slice(0, 9).map((n) => safeName(n, "image"));
       }
+      /* A saved character: the server resolves it, binds its pictures after
+       * ref_images and checks the words and pictures before staging. */
+      if (typeof a.persona === "string" && a.persona.trim()) body.persona = String(a.persona);
       if (a.ref_song) {
         body.refAudios = [{ name: safeName(a.ref_song, "song"),
                             start: Number.isFinite(a.ref_song_start) ? a.ref_song_start : 0 }];
@@ -2925,12 +3151,42 @@ export const TOOLS = [
         body.audioTrack = { name: safeName(a.soundtrack_song, "song"),
                             start: Number.isFinite(a.soundtrack_start) ? a.soundtrack_start : 0 };
       }
+      /* THE PLAN, NOT THE RENDER: the same answer the Video screen's Advanced
+       * line shows (server/video-plain.js videoPlan, POST /api/video check). */
+      if (a.check_only === true) {
+        const c = await api("POST", "/api/video", { ...body, action: "check" });
+        if (c.error) throw new Error(c.error);
+        return {
+          would_render: !c.refusal, engine: c.engine ?? null,
+          refusal: c.refusal ? (c.refusal.error || c.refusal) : null,
+          width: c.width ?? null, height: c.height ?? null, seconds: c.seconds ?? null, steps: c.steps ?? null,
+          sparse: c.sparse ?? null,
+          vram: c.fit ? { needs_about_gb: c.fit.needGb, card_gb: c.fit.haveGb, fits: !c.fit.over, says: c.fit.sentence, measured: c.fit.scope } : null,
+          warnings: (c.warnings || []).map((w) => w.text),
+          /* Caveats that change nothing (sparse attention at a size the lab never tried it at). */
+          notes: (c.notes || []).map((w) => w.text),
+          /* What this render keeps of a person (video-plain.js character). */
+          keeps_character: c.character?.keeps ?? null,
+          character: c.character?.receipt ?? null,
+          character_hint: c.character?.hint ?? null,
+          sampler: c.sampler ?? null,
+          /* What the song under the clip does on this engine (video-plain.js
+           * songUnderSay): lip-sync on H3 with pictures, not on LTX. */
+          soundtrack: c.songLine?.hint ?? null,
+        };
+      }
       const r = await api("POST", "/api/video", body);
       if (r.error) throw new Error(r.error);
-      await waitForArt((Number(a.timeout_seconds) || 900) * 1000, "video");
+      const settled = await waitForArt((Number(a.timeout_seconds) || 900) * 1000, "video", r.job?.id);
       const after = (await api("GET", "/api/clips")).clips || [];
       const made = after.filter((c) => !before.has(c.name)).map((c) => c.name);
-      return { clips: made, note: made.length ? undefined : "Nothing new appeared — check studio_status for the last error." };
+      /* What the render changed from the request, and the RAM warning: the
+       * door's own sentences (video-plain.js), the ones the page shows. */
+      const warnings = (r.warnings || []).map((w) => w.text).filter(Boolean);
+      // Its own failure has already thrown; see emptyResultNote in art-wait.js.
+      return { clips: made, note: made.length ? undefined : emptyResultNote(settled, r.job?.id, "list_clips"),
+        ...(warnings.length ? { warnings } : {}),
+        ...(r.character ? { character: r.character.receipt, character_hint: r.character.hint ?? undefined } : {}) };
     },
   },
 
@@ -2998,7 +3254,7 @@ export const TOOLS = [
         seed: Number.isFinite(a.seed) ? a.seed : undefined,
       });
       if (r.error) throw new Error(r.error);
-      await waitForArt((Number(a.timeout_seconds) || 1800) * 1000, "restyle");
+      const settled = await waitForArt((Number(a.timeout_seconds) || 1800) * 1000, "restyle", r.job?.id);
       const after = (await api("GET", "/api/clips")).clips || [];
       const made = after.filter((c) => !before.has(c.name)).map((c) => c.name);
       return {
@@ -3007,7 +3263,8 @@ export const TOOLS = [
         bpm: r.bpm ?? null,
         // Shown so the caller can see the audio actually reached the render.
         guide_strengths: r.strengths ? r.strengths.map((x) => Number(x.toFixed(3))) : null,
-        note: made.length ? undefined : "Nothing new appeared — check studio_status for the last error.",
+        // Its own failure has already thrown; see emptyResultNote in art-wait.js.
+        note: made.length ? undefined : emptyResultNote(settled, r.job?.id, "list_clips"),
       };
     },
   },
@@ -3052,7 +3309,7 @@ export const TOOLS = [
         seed: Number.isFinite(a.seed) ? a.seed : undefined,
       });
       if (r.error) throw new Error(r.error);
-      await waitForArt((Number(a.timeout_seconds) || 900) * 1000, "video");
+      const settled = await waitForArt((Number(a.timeout_seconds) || 900) * 1000, "video", r.job?.id);
       const after = (await api("GET", "/api/clips")).clips || [];
       const made = after.filter((c) => !before.has(c.name) && !/_new\.mp4$/i.test(c.name));
       const mine = made.find((c) => c.name === `${r.id}.mp4`) || made[0] || null;
@@ -3064,7 +3321,8 @@ export const TOOLS = [
         overlap_frames: r.overlapFrames, extension_frames: r.extensionFrames,
         extension_seconds: r.extensionSeconds,
         note: mine ? (mine.meta?.continuation?.joined === false ? `Not joined: ${mine.meta.continuation.error}` : undefined)
-          : "Nothing new appeared — check studio_status for the last error.",
+          // Its own failure has already thrown; see emptyResultNote in art-wait.js.
+          : emptyResultNote(settled, r.job?.id, "list_clips"),
       };
     },
   },
@@ -3334,7 +3592,7 @@ export const TOOLS = [
 
   {
     name: "enhance_model",
-    description: "Which language model the Enhance tools (enhance_style, enhance_lyrics, enhance_description) use, and the choices. With `model`, choose one: a value from `models[].file`, e.g. \"api:anthropic\" for a connected API or a local model file. With none chosen, Enhance uses Simple mode's model, then Chat's.",
+    description: "Which language model the Enhance tools (enhance_style, enhance_lyrics, enhance_description) use, and the choices. With `model`, choose one: a value from `models[].file`, e.g. \"api:anthropic\" for a connected API or a local model file. With none chosen, Enhance uses Simple mode's model, then Chat's. `models` lists the ones that can write, by name (the same list every writer picker on the page shows); files that cannot (a base model, ACE-Step's planners, LTX's encoder, an fp4 build off an RTX 50-series card) are in `not_writers` with the reason.",
     inputSchema: {
       type: "object",
       properties: { model: { type: "string", description: "Optional: the model to use from now on." } },
@@ -3343,7 +3601,187 @@ export const TOOLS = [
     async run(a) {
       const r = a.model ? await api("POST", "/api/enhance", { action: "model", model: a.model }) : await api("GET", "/api/enhance");
       if (r?.error) throw new Error(r.error);
-      return { current: r.current, models: (r.models || []).map((m) => ({ file: m.file, label: m.label || m.file, api: !!m.api })), offline: !!r.offline };
+      return { current: r.current, models: (r.models || []).map((m) => ({ file: m.file, label: m.label || m.file, api: !!m.api })), offline: !!r.offline,
+        not_writers: (r.every || []).filter((m) => m.why).map((m) => ({ file: m.file, why: m.why })) };
+    },
+  },
+
+  {
+    name: "timed_lyrics_python",
+    description: "Which Python timed lyrics run in, and whether they can: whisper needs faster-whisper AND stable-ts in THAT interpreter, not the python on PATH. With no `python`, reports the interpreter, where it came from (the default venv, Settings, or AIPLAY_WHISPER_PYTHON), whether both import, and the install lines when they do not. With `python` (the full path to an existing python.exe or bin/python), makes it the one timed lyrics use, at once and across restarts: the same field as Settings > Songs > timed lyrics python. \"\" goes back to the default venv. AIPLAY_WHISPER_PYTHON, when set, still wins, and the answer says so.",
+    inputSchema: {
+      type: "object",
+      properties: { python: { type: "string", maxLength: 1024, description: "Optional: the full path of the python to use from now on; \"\" for the default." } },
+      additionalProperties: false,
+    },
+    async run(a) {
+      const r = await api("POST", "/api/lyrics", a.python === undefined ? { action: "python" } : { action: "python", value: a.python });
+      if (r?.error) throw new Error(r.error);
+      return r.lyrics;
+    },
+  },
+
+  /* ── Whisper as a tool (server/whisper.js, POST /api/whisper) ──────────
+   * The timed-lyrics python and model pointed at any file. It is queued on
+   * the art queue (kind "whisper"), so it waits for music and never shares
+   * the card with a render; the wait below follows its own job id. */
+  {
+    name: "whisper_transcribe",
+    description: "Transcribe speech or singing, or time lyrics, with Whisper: a library song (`file`), a clip or an "
+      + "imported file (`clip`, as import_local_media or list_clips names it), or a `path` inside Studio's output "
+      + "folder (a stem, say). Returns the language, the full text and segments with start and end seconds; `words` "
+      + "adds word timing. With `lyrics` (known words, [Verse] markers are fine) it keeps YOUR text and takes "
+      + "Whisper's timing: `aligned.lines` with a start per line, and `confidence`, the share measured rather than "
+      + "interpolated. For a song whose words you do not know, leave `lyrics` out and read `text`. `write_lrc` also "
+      + "writes <name>.whisper.lrc and .word.lrc (served at /api/lrc/<name>); a song's own timed lyrics are never "
+      + "overwritten. A library song's separated vocal is used when it has one. Runs in the timed lyrics python "
+      + "(whisper_status says whether it is ready), queued behind music like the other art jobs: on a GPU without "
+      + "CUDA it runs on the processor and takes minutes. Waits for the result by default; if the wait ends first, "
+      + "call again with `job_id`. stop_generation stops it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        file: { type: "string", description: "A library song's file name (from list_songs)." },
+        clip: { type: "string", description: "A clip or imported file's name in the clips folder (import_local_media returns it)." },
+        path: { type: "string", maxLength: 1024, description: "The full path of an audio or video file inside Studio's output folder." },
+        lyrics: { type: "string", maxLength: 20000, description: "Optional known lyrics to time; the result keeps these words." },
+        language: { type: "string", maxLength: 8, description: "Optional language code (en, de, ja ...); default: detected." },
+        words: { type: "boolean", description: "Include word timing (segments[].words, aligned.lines[].words). Default false." },
+        write_lrc: { type: "boolean", description: "Also write a line LRC and a word LRC. Default false." },
+        vocals: { type: "boolean", description: "Library songs: use the separated vocal when there is one. Default: the timed lyrics setting (on)." },
+        wait: { type: "boolean", description: "Wait for the result (default true). false returns the job id at once." },
+        timeout_seconds: { type: "integer", minimum: 10, maximum: 7200, description: "How long to wait; default 1200." },
+        job_id: { type: "string", description: "Read (or keep waiting for) a job queued earlier instead of queueing one." },
+      },
+      additionalProperties: false,
+    },
+    async run(a) {
+      let id = a.job_id ? String(a.job_id) : null;
+      let queued = null;
+      if (!id) {
+        const body = { action: "transcribe" };
+        if (a.file) body.file = safeName(a.file, "song");
+        if (a.clip) body.clip = safeName(a.clip, "clip");
+        if (a.path) body.path = String(a.path);
+        if (a.lyrics) body.lyrics = String(a.lyrics);
+        if (a.language) body.language = String(a.language);
+        body.words = a.words === true;
+        body.writeLrc = a.write_lrc === true;
+        if (typeof a.vocals === "boolean") body.vocals = a.vocals;
+        queued = await api("POST", "/api/whisper", body);
+        if (queued?.error) throw new Error(refusalText(queued));
+        id = queued.jobId;
+        if (a.wait === false) {
+          return { job_id: id, state: "queued", input: queued.input, model: queued.model, lrc: queued.lrc || null,
+            note: "Queued behind any music. Call whisper_transcribe with this job_id to read the result." };
+        }
+      }
+      try {
+        await waitForArt((Number(a.timeout_seconds) || 1200) * 1000, "whisper", id);
+      } catch (e) {
+        if (!e?.stillWorking) throw e;
+        return { job_id: id, state: "working", note: `${e.message} Call whisper_transcribe with this job_id to keep waiting.` };
+      }
+      const r = await api("GET", `/api/whisper?job=${encodeURIComponent(id)}`);
+      const job = r?.job || {};
+      if (job.state !== "done") {
+        if (job.error) throw new Error(job.error);
+        return { job_id: id, state: job.state || "unknown" };
+      }
+      const out = job.result || {};
+      return {
+        job_id: id, state: "done", ...out,
+        ...(out.lrc ? { lrc_url: `/api/lrc/${encodeURIComponent(out.lrc)}`, word_lrc_url: `/api/lrc/${encodeURIComponent(out.wordLrc)}` } : {}),
+      };
+    },
+  },
+
+  {
+    name: "whisper_status",
+    description: "Whether Whisper (transcription and timed lyrics) can run here, and which model it uses: the python "
+      + "it runs in, whether faster-whisper and stable-ts import there, the install lines and setup id \"lyrics\" when "
+      + "they do not, the device setting (auto uses CUDA when it really works, else the processor), the model and "
+      + "the models on offer, and any whisper jobs running or queued. With `model`, choose the model for every later "
+      + "transcription and timed lyrics, saved across restarts; the first use of a model downloads it. To choose "
+      + "the python itself, use timed_lyrics_python.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        model: { type: "string", enum: WHISPER_MODELS, description: "Optional: the whisper model to use from now on. large-v3 is the most accurate on singing; smaller ones are faster." },
+      },
+      additionalProperties: false,
+    },
+    async run(a) {
+      const r = a.model === undefined ? await api("GET", "/api/whisper") : await api("POST", "/api/whisper", { action: "model", value: a.model });
+      if (r?.error) throw new Error(refusalText(r));
+      return r.whisper;
+    },
+  },
+
+  {
+    name: "separate_stems",
+    description: "Split a library song into its four stems — vocals, drums, bass, other — with demucs (htdemucs_ft), "
+      + "the Studio's own separation: the Separate stems button on a song. It is queued behind music like cover art "
+      + "and returns at once with a job id; list_songs shows has_stems when it lands. htdemucs_ft runs four models in "
+      + "turn: measured here at about 12 s for a 30 s track on the graphics card; on a processor it is slower, by an "
+      + "amount not measured. The first run also fetches 336 MB of separation weights. A "
+      + "song that is already being separated is joined rather than queued twice. When the stem separation python "
+      + "lacks demucs or PyTorch it is refused at once by sentence, with setup id \"stems\": call setup_feature "
+      + "{\"id\":\"stems\"} once the person agrees, or name their own python with stems_python. stop_generation stops it.",
+    inputSchema: {
+      type: "object",
+      required: ["file"],
+      properties: { file: { type: "string", description: "The library file name (from list_songs)." } },
+      additionalProperties: false,
+    },
+    async run(a) {
+      const r = await api("POST", "/api/stems", { action: "run", file: safeName(a.file, "song") });
+      if (r?.error) throw new Error(refusalText(r));
+      return {
+        job_id: r.jobId ?? null, joined: !!r.joined,
+        note: r.joined ? "This song was already being separated; that job is the one to wait for."
+          : "Queued. It starts when the music queue is empty; list_songs shows has_stems when it lands.",
+      };
+    },
+  },
+
+  {
+    name: "stop_generation",
+    description: "Stop what is generating for this person — the Stop button: the song rendering now and the songs "
+      + "queued behind it, the pictures, stems and timed lyrics queued behind those, and the one running among them. "
+      + "Other work on the engine (a chat turn, a friend's render, a gate run) keeps its place. Returns the song "
+      + "queue as it stands and art_stopped: how many queued jobs were dropped, what was running, and whether it is "
+      + "still stopping (a separation's process can take a moment to end; the Jobs page says \"stopping\" until it has).",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    async run() {
+      const r = await api("POST", "/api/cancel", {});
+      if (r?.error) throw new Error(refusalText(r));
+      return {
+        art_stopped: r.artStopped ?? null,
+        current: r.current ? { id: r.current.id, title: r.current.title, state: r.current.state } : null,
+        queued: Array.isArray(r.queue) ? r.queue.length : 0,
+      };
+    },
+  },
+
+  {
+    name: "stems_python",
+    description: "Which Python stem separation (and the audio-reference encoder) run in, and whether it can: demucs "
+      + "needs demucs AND PyTorch in THAT interpreter, not the python on PATH. With no `python`, reports the "
+      + "interpreter, where it came from (the default, Settings, or AIPLAY_SYS_PYTHON), and whether both import. With "
+      + "`python` (the full path to an existing python.exe or bin/python), makes it the one stem separation uses, at "
+      + "once and across restarts: the same field as Settings > Songs > stem separation python. \"\" goes back to the "
+      + "default. AIPLAY_SYS_PYTHON, when set, still wins, and the answer says so. setup_feature {\"id\":\"stems\"} "
+      + "builds one instead.",
+    inputSchema: {
+      type: "object",
+      properties: { python: { type: "string", maxLength: 1024, description: "Optional: the full path of the python to use from now on; \"\" for the default." } },
+      additionalProperties: false,
+    },
+    async run(a) {
+      const r = await api("POST", "/api/stems", a.python === undefined ? { action: "python" } : { action: "python", value: a.python });
+      if (r?.error) throw new Error(refusalText(r));
+      return r.stems;
     },
   },
 
@@ -3476,8 +3914,18 @@ async function handle(msg) {
  *
  * `/api/mcp` imports it for the tool list, and a module that starts reading
  * stdin on import would quietly steal the server's own input stream. */
-const RUN_DIRECTLY = !!process.argv[1]
-  && import.meta.url.endsWith(process.argv[1].split(path.sep).join("/"));
+/* Compared as PATHS, never as URL text. import.meta.url is percent-encoded
+ * ("AIPLAY%20Studio", "Zo%C3%AB") and argv[1] is not, so the old test (does
+ * the URL string end with argv[1]?) was false in the installer's default folder
+ * and in any folder with a space or an accent: an MCP client launched the
+ * server and it never read its stdin. lrc_test.js runs this exact line from
+ * such a folder. Both sides are REAL paths: Node realpaths the main module
+ * it loads, so import.meta.url names the target of a junction or symlink while
+ * argv[1] still names the link, and a Studio reached through one never read
+ * its stdin either. A path that does not resolve is not a main module. */
+const RUN_DIRECTLY = !!process.argv[1] && (() => {
+  try { return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(path.resolve(process.argv[1])); } catch { return false; }
+})();
 
 let buf = "";
 /* How many calls are still running.

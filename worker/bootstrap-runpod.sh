@@ -9,7 +9,7 @@ ROOT="${AIPLAY_WORKER_SOURCE:-/workspace/aiplay-worker-src}"
 STATE="${AIPLAY_WORKER_STATE:-/workspace/aiplay-worker}"
 RUNTIME="${AIPLAY_RUNTIME:-/workspace/aiplay-runtime}"
 REPO="${AIPLAY_REPOSITORY:-https://github.com/nemesisone-dev/AIPLAY-Studio.git}"
-BRANCH="${AIPLAY_BRANCH:-feature/runpod-rendering}"
+BRANCH="${AIPLAY_BRANCH:-main}"
 
 if [[ -d /workspace/runpod-slim/ComfyUI ]]; then
   COMFY="/workspace/runpod-slim/ComfyUI"

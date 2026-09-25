@@ -22,14 +22,23 @@ import http from "node:http";
 import { spawn, execFile, execFileSync } from "node:child_process";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, totalmem } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { scanBases, extraBases, uniqueDirs, countByFolder, pickFolderDialog, MODELS_PROMPT } from "../server/localmodels.js";
 import { appVersion, versionLine } from "../server/version.js";
 import { checkUpdates, lastCheck, updateSentence } from "../server/updates.js";
 import { selfUpdate, updateSource } from "../server/selfupdate.js";
+import { musicCards } from "./musiccard.mjs";
 import { availableOptions, cleanValues, buildLaunchArgs, effectiveValues, hasAmdMusicFix, OPTIONS_REV, FIX_MODES, fixMode, fixApplies, vendorOf, autoVramFlags } from "../server/comfyargs.js";
+import { ffmpegPath, ffprobePath } from "../server/clipjoin.js";
+/* What the system check SAYS (RAM, ffmpeg, a weak card, Music only, Studio's
+ * packages): pure, so server/installer_test.js can call it. */
+import { ramItem, ffmpegItem, cardAdvice, musicOnlyNote, studioPackagesItem, yue2ComfyVerdict } from "./checks.mjs";
+/* "Try again" beside Studio's own packages: the engine installer's --studio-packages, the same run MCP's setup_feature makes. */
+import { runStudioPackages } from "../server/setup/engine-packages.js";
+/* Their names, from the one list the installer and the check use. */
+import { STUDIO_MODULES, moduleWords } from "../server/setup/studio-packages.js";
 
 /* The VRAM tiers' flags, for the Advanced settings preview. Static in
  * server/config.js; copied by name here rather than importing config.js, which
@@ -115,13 +124,42 @@ function runNode(args, timeoutMs = 240_000) {
 
 /* ── installing an engine (a machine with no ComfyUI) ──────────────────────
  * The launcher asks "What should Studio run on?" and runs
- * scripts/install-engine.mjs for the answer. The script cleans up after itself
- * on failure and prints the exact error; this keeps its state for the page. */
+ * scripts/install-engine.mjs for the answer. On failure the script removes the
+ * half-built engine folder, keeps what it downloaded (so the next try is
+ * quicker) and prints the exact error; this keeps its state for the page. */
 /* The Update button (server/selfupdate.js): one at a time, never while Studio
  * or an engine install runs, its sentences in the window's log. */
 const updating = { state: "idle", step: "", line: "", restart: false };
-const install = { state: "idle", backend: null, step: null, n: 0, of: 9, error: null, errorStep: null };
+const install = { state: "idle", backend: null, step: null, n: 0, of: 10, error: null, errorStep: null, warning: null };
 let installChild = null;
+/* Studio's own packages again, into the engine Studio installed (the row's
+ * "Try again" / "Install"). Its own state: it is not an engine install, and
+ * the "What should Studio run on?" card must not reappear for it. */
+const pkgRetry = { state: "idle", message: null };
+let pkgChild = null;
+const busyInstalling = () => !!installChild || install.state === "running" || !!pkgChild || pkgRetry.state === "running";
+
+async function startStudioPackages() {
+  if (updating.state === "running") throw new Error("Wait for the Studio update to finish.");
+  if (busyInstalling()) throw new Error("An install is already running.");
+  if (child || studio.state === "starting") throw new Error("Stop Studio first: its engine is using that python.");
+  const settings = (await readJson(SETTINGS)) || {};
+  if (!settings.engineInstall || !settings.rig) throw new Error("Studio adds its packages only to an engine it installed itself.");
+  Object.assign(pkgRetry, { state: "running", message: null });
+  emit("pkgretry", pkgRetry);
+  addLog(`Installing Studio's own packages (${moduleWords(STUDIO_MODULES)}: only the ones that do not import) into its engine.`, "sys");
+  runStudioPackages({ rig: settings.rig, appData: APPDATA, script: path.join(ROOT, "scripts", "install-engine.mjs"),
+    onLine: (l) => addLog(l, "out"), onChild: (c) => { pkgChild = c; } })
+    .then((out) => {
+      pkgChild = null;
+      checkCache = null;
+      const message = out.ok ? `Studio's own packages are installed: ${moduleWords(STUDIO_MODULES)} import in the engine.`
+        : out.studio?.warning || out.error || "The packages did not install.";
+      addLog(message, out.ok ? "sys" : "err");
+      Object.assign(pkgRetry, { state: out.ok ? "done" : "failed", message });
+      emit("pkgretry", pkgRetry);
+    });
+}
 
 function setInstall(patch) {
   Object.assign(install, patch);
@@ -130,19 +168,21 @@ function setInstall(patch) {
 
 async function startInstall(backend) {
   if (updating.state === "running") throw new Error("Wait for the Studio update to finish.");
-  if (installChild || install.state === "running") throw new Error("An install is already running.");
+  if (busyInstalling()) throw new Error("An install is already running.");
   if (child || studio.state === "starting") throw new Error("Stop Studio first.");
   if (!["nvidia", "amd", "intel", "cpu"].includes(backend)) throw new Error("Choose NVIDIA, AMD, Intel or CPU.");
-  setInstall({ state: "running", backend, step: "Starting", n: 0, error: null, errorStep: null });
+  setInstall({ state: "running", backend, step: "Starting", n: 0, error: null, errorStep: null, warning: null });
   const settings = (await readJson(SETTINGS)) || {};
   const gpuName = settings.gpu?.vendor === backend ? settings.gpu.name : "";
   addLog(`Installing Studio's own ComfyUI for ${backend.toUpperCase()}. This downloads several GB and can take a while.`, "sys");
   const args = [path.join(ROOT, "scripts", "install-engine.mjs"), "--backend", backend, ...(gpuName ? ["--gpu-name", gpuName] : [])];
   installChild = spawn(process.execPath, args, { cwd: ROOT, windowsHide: true, env: process.env });
-  let buf = "", errorMsg = null, errorStep = null, done = false;
+  let buf = "", errorMsg = null, errorStep = null, done = false, warning = null;
   const onLine = (line) => {
     if (line.startsWith("@@step ")) { try { const st = JSON.parse(line.slice(7)); setInstall({ step: st.label, n: st.n, of: st.of }); } catch {} return; }
-    if (line.startsWith("@@done ")) { done = true; return; }
+    /* The engine works either way; Studio's own packages (OpenCV, librosa,
+     * soundfile, SciPy) not all installing is said, not hidden (install-engine.mjs). */
+    if (line.startsWith("@@done ")) { done = true; try { warning = JSON.parse(line.slice(7)).studio?.warning || null; } catch {} return; }
     if (line.startsWith("@@error ")) { try { const e = JSON.parse(line.slice(8)); errorMsg = e.message; errorStep = e.step; } catch {} return; }
     addLog(line, "out");
   };
@@ -160,7 +200,8 @@ async function startInstall(backend) {
     checkCache = null;
     if (code === 0 && done) {
       addLog("The engine is installed. Launch Full Studio when you are ready.", "sys");
-      setInstall({ state: "done", step: "Done" });
+      if (warning) addLog(warning, "err");
+      setInstall({ state: "done", step: "Done", warning });
     } else {
       const msg = errorMsg || `The installer stopped unexpectedly (exit code ${code}).`;
       addLog(`Install failed: ${msg}`, "err");
@@ -185,6 +226,8 @@ async function probeStudio() {
       engineReady: !!s.engine?.ready,
       engineExpected: s.config?.engineExpected ?? !s.config?.musicOnly,
       musicOnly: !!s.config?.musicOnly,
+      cloudOnly: !!s.config?.cloudOnly,
+      remoteOnly: !!s.config?.remoteOnly,
       torch: s.engine?.torch || null,
       device: s.engine?.device || null,
     };
@@ -203,13 +246,6 @@ function openInBrowser(url) {
 }
 
 /* ── the system check ──────────────────────────────────────────────────── */
-
-const ENGINE_LABEL = {
-  "minimax-music3": "MiniMax Music 3",
-  "yue2-comfy": "YuE2 3B (ComfyUI)",
-  "yue2": "YuE2 3B (Python kit)",
-  "yue2-gguf": "YuE2 GGUF (native)",
-};
 
 let checkCache = null;
 let checkInFlight = null;
@@ -257,13 +293,16 @@ async function systemCheck({ redetect = false } = {}) {
   const GGUF_RUNS_ON = { cuda: "NVIDIA CUDA", vulkan: "Vulkan", cpu: "the CPU" };
   // Only a CUDA build on a card that is not NVIDIA is a problem (it would fall back to the CPU).
   const ggufMismatch = ggufInstalled && ggufKind === "cuda" && vendor && vendor !== "nvidia";
-  const ffprobe = await which("ffprobe");
+  /* Both programs, found the way Studio finds them (server/clipjoin.js):
+   * AIPLAY_FFMPEG / AIPLAY_FFPROBE first, then PATH. */
+  const findTool = async (p) => (path.isAbsolute(p) ? (existsSync(p) ? p : null) : which(p));
+  const [ffmpeg, ffprobe] = await Promise.all([findTool(ffmpegPath()), findTool(ffprobePath())]);
   const nodeMajor = Number(process.versions.node.split(".")[0]);
   const comfyOk = !!(rig && python);
-  const cpuChosen = (settings.engineInstall || report?.engineInstall)?.backend === "cpu";
+  const engineInstall = settings.engineInstall || report?.engineInstall || null;
+  const cpuChosen = engineInstall?.backend === "cpu";
   const running = await probeStudio();
 
-  const savedEngine = settings.prefs?.music?.engine || "minimax-music3";
   /* MiniMax on AMD renders when ComfyUI starts with PyTorch attention and CUDA
    * graphs off (Studio's default); warn only when this launch lacks them. */
   const cliText = rig ? await readFile(path.join(rig, "ComfyUI", "comfy", "cli_args.py"), "utf-8").catch(() => null) : null;
@@ -282,6 +321,7 @@ async function systemCheck({ redetect = false } = {}) {
       value: gpu ? `${gpu.name}${gpu.totalMb ? ` · ${(gpu.totalMb / 1024).toFixed(1)} GB` : ""}`
         : torchBackend ? `not read · ComfyUI runs ${torchBackend.toUpperCase()}` : "not detected",
       detail: gpu ? `read from ${gpu.source}` : torchBackend ? "" : "Choose what Studio should run on below." },
+    ramItem(totalmem()),
     { id: "torch", label: "PyTorch in ComfyUI",
       status: !torchBackend ? "bad" : report?.mismatch ? "bad" : torchBackend === "cpu" ? (cpuChosen ? "warn" : "bad") : "ok",
       value: torchBackend ? `${torchVersion} · ${torchBackend.toUpperCase()}` : "not read",
@@ -309,41 +349,69 @@ async function systemCheck({ redetect = false } = {}) {
       detail: ggufMismatch ? "This is the NVIDIA build on a non-NVIDIA card. Reinstall it from Models to get the Vulkan build."
         : ggufInstalled ? "no ComfyUI needed"
         : "Any card (CUDA on NVIDIA, Vulkan on AMD and Intel, or the CPU) · install from Models · no ComfyUI needed" },
-    { id: "ffprobe", label: "ffprobe", status: ffprobe ? "ok" : "off", value: ffprobe ? "found" : "not on PATH",
-      detail: "only needed for video control clips" },
-  ];
+    ffmpegItem({ ffmpeg, ffprobe }),
+    /* Only for an engine Studio installed: whether OpenCV, librosa,
+     * soundfile and SciPy went in, with Try again when they did not. */
+    studioPackagesItem(engineInstall),
+  ].filter(Boolean);
 
-  // Music-only follows the saved choice when native GGUF is picked and installed (the server then starts no ComfyUI).
+  /* The music model each card names: Studio's own answer (launcher/musiccard.mjs
+   * asks server/music-default.js), so a fresh install that saved nothing is
+   * told what Studio will actually run, and the MiniMax-on-AMD warning appears
+   * only for somebody who saved MiniMax. */
   const ggufOk = ggufInstalled && !ggufMismatch;
-  const musicVia = savedEngine === "yue2-gguf" && ggufOk ? "yue2-gguf"
-    : comfyOk && yue2.length ? "yue2-comfy" : ggufOk ? "yue2-gguf" : null;
+  /* Card and RAM, judged by the function Studio asks (server/music-default.js
+   * yue2ComfyFit); a card whose memory was not read is no reading, as there. */
+  const comfyVerdict = yue2ComfyVerdict(gpu, totalmem());
+  const cards = musicCards({
+    prefs: settings.prefs || {}, api: settings.api || null, yue2, comfyOk, ggufOk,
+    ggufPrecisions: ["q4_0", "q8_0"].filter((p) => existsSync(path.join(ggufModels, `yue2-3b-${p}.gguf`))),
+    minimaxReady, vendor, cardRead: !!gpu?.totalMb, amdMusicFixed, comfyFits: comfyVerdict.fits, comfyShort: comfyVerdict.short,
+  });
+  const musicVia = cards.music.via;
   const modes = {
     full: {
       available: comfyOk && nodeMajor >= 20,
-      engine: ENGINE_LABEL[savedEngine] || savedEngine,
-      warn: savedEngine === "minimax-music3" && vendor === "amd" && !amdMusicFixed
-        ? "Your selected music model is MiniMax, which renders broken audio on AMD unless ComfyUI starts with PyTorch attention and CUDA graphs off. Set the AMD/Intel engine fix to On under Advanced, or pick YuE2."
-        : savedEngine === "yue2-gguf" && !ggufOk
-          ? (yue2.length
-            ? "Native YuE2 GGUF is selected but not installed; Studio switches to YuE2 through ComfyUI at start."
-            : "Native YuE2 GGUF is selected but not installed. Install it from the Models screen after launch.")
-          : null,
+      engine: cards.full.engine,
+      why: cards.full.why,
+      warn: cards.full.warn,
       note: comfyOk ? "Every screen: music, images, video, the DAW and the rest. Starts ComfyUI." : "Needs a ComfyUI install.",
     },
     music: {
       available: nodeMajor >= 20,
-      engine: musicVia === "yue2-comfy" ? `YuE2 3B through ComfyUI (${bare(yue2.find((n) => /bf16/i.test(n)) || yue2[0])})`
-        : musicVia === "yue2-gguf" ? "YuE2 GGUF (native)" : "setup needed",
+      engine: cards.music.engine,
       warn: !musicVia
         ? (ggufMismatch ? "The installed GGUF runtime is the NVIDIA build. Reinstall it from the Models screen after launch."
           : "Install YuE2 GGUF from the Models screen after launch (any card), or put a YuE2 checkpoint in ComfyUI's models/checkpoints.")
         : null,
-      note: musicVia === "yue2-comfy" ? "Music screens only. Starts ComfyUI for YuE2." : "Music screens only. No ComfyUI.",
+      note: musicOnlyNote(musicVia === "yue2-comfy"),
+    },
+    /* Hosted models through Comfy Router on the user's own Comfy key. Needs
+     * nothing local but Node: no ComfyUI, no card, no model files. */
+    cloud: {
+      available: nodeMajor >= 20,
+      engine: "Comfy Router (cloud)",
+      warn: null,
+      note: "Hosted image, video, audio, 3D and text models on your own Comfy API key, paid per run in Comfy credits. No ComfyUI needed.",
+    },
+    /* Images and Video on the person's own RunPod Pod through the AIPLAY worker
+     * (server/engine/remote-*.js). Needs nothing local but Node; the Pod bills
+     * by the hour while it runs. */
+    runpod: {
+      available: nodeMajor >= 20,
+      engine: "Your RunPod Pod",
+      warn: null,
+      note: "Images and video render on your own RunPod GPU and come back to this PC. Billed by RunPod per hour while the Pod runs. No ComfyUI needed here.",
     },
   };
 
   return {
     at: Date.now(), items, modes, gpuVendor: vendor, gpuName: gpu?.name || null,
+    /* A weak or missing card: a friend's card first (Collab), Comfy API second.
+     * The floor is the catalogue's H3 row, the Models screen's own number. */
+    cardAdvice: cardAdvice({ gpu, torchOnCard: !!torchBackend && torchBackend !== "cpu",
+      fullAvailable: comfyOk && nodeMajor >= 20, needsEngine: !comfyOk && !report?.hits?.length }),
+    pkgRetry,
     /* No ComfyUI at all: the page asks what to run on and offers to install. */
     needsEngine: !comfyOk && !report?.hits?.length,
     install,
@@ -369,13 +437,13 @@ async function launch(mode) {
   if (existsSync(path.join(ROOT, ".aiplay-update-npm-pending"))) throw new Error("Press Update again to finish installing Studio's dependencies before starting.");
   if (studio.state === "starting") throw new Error("Studio is already starting.");
   if (child) throw new Error("Studio is already running from this launcher.");
-  if (installChild || install.state === "running") throw new Error("Wait for the engine install to finish.");
-  if (!["full", "music"].includes(mode)) throw new Error("Unknown mode.");
+  if (busyInstalling()) throw new Error("Wait for the engine install to finish.");
+  if (!["full", "music", "cloud", "runpod"].includes(mode)) throw new Error("Unknown mode.");
 
   setState({ mode, state: "starting", stage: "setup", startedAt: Date.now(), readyAt: null, error: null, pid: null, engineExpected: null });
   const running = await probeStudio();
   if (running) {
-    setState({ mode: running.musicOnly ? "music" : "full", state: "external", stage: null, error: null });
+    setState({ mode: running.cloudOnly ? "cloud" : running.remoteOnly ? "runpod" : running.musicOnly ? "music" : "full", state: "external", stage: null, error: null });
     addLog(`Studio is already running at ${STUDIO_URL} (started outside this launcher). Opening it.`, "sys");
     openInBrowser(STUDIO_URL);
     return;
@@ -392,10 +460,13 @@ async function launch(mode) {
     }
   }
 
-  const script = mode === "music" ? path.join("scripts", "start-music.mjs") : path.join("server", "index.js");
-  const env = { ...process.env, AIPLAY_MUSIC_ONLY: mode === "music" ? "1" : "0" };
+  const script = mode === "music" ? path.join("scripts", "start-music.mjs")
+    : mode === "cloud" ? path.join("scripts", "start-cloud.mjs")
+    : mode === "runpod" ? path.join("scripts", "start-remote.mjs") : path.join("server", "index.js");
+  const env = { ...process.env, AIPLAY_MUSIC_ONLY: mode === "music" ? "1" : "0", AIPLAY_CLOUD_ONLY: mode === "cloud" ? "1" : "0",
+    AIPLAY_REMOTE_ONLY: mode === "runpod" ? "1" : "0" };
   delete env.AIPLAY_OPEN;   // the launcher opens Studio itself, once the engine is ready
-  addLog(`Starting ${mode === "music" ? "music-only" : "full"} Studio…`, "sys");
+  addLog(`Starting ${mode === "music" ? "music-only" : mode === "cloud" ? "Comfy API" : mode === "runpod" ? "RunPod GPU" : "full"} Studio…`, "sys");
   child = spawn(process.execPath, [script], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   const me = child;
   setState({ stage: "server", pid: child.pid });
@@ -672,7 +743,7 @@ function makeServer(portRef) {
           if (child) return send(res, 200, { ...updating, error: "Stop Studio first: its files are about to be replaced." });
           if (await probeStudio()) return send(res, 200, { ...updating, error: "Stop the Studio running outside this launcher before updating." });
           if (child || studio.state === "starting") return send(res, 200, { ...updating, error: "Wait for Studio to finish starting, then stop it before updating." });
-          if (install.state === "running") return send(res, 200, { ...updating, error: "Wait for the engine install to finish." });
+          if (busyInstalling()) return send(res, 200, { ...updating, error: "Wait for the engine install to finish." });
           if (updating.state === "running") return send(res, 200, updating);
           Object.assign(updating, { state: "running", step: "Starting…", line: "", restart: false });
           selfUpdate({ root: ROOT, say: (t) => { updating.step = t; addLog(`update: ${t}`); } })
@@ -684,8 +755,8 @@ function makeServer(portRef) {
       }
       if (url.pathname === "/api/state") {
         const saved = (await readJson(SETTINGS)) || {};
-        return send(res, 200, { studio, install, log: logLines.slice(-400), host: HOST,
-          prefs: { closeStopsStudio: saved.launcherCloseStopsStudio === true } });
+        return send(res, 200, { studio, install, pkgRetry, log: logLines.slice(-400), host: HOST,
+          prefs: launcherPrefs(saved) });
       }
       /* Launcher preferences. One so far: whether the window's X also stops
        * Studio. Off by default — closing a window should not end a render
@@ -693,8 +764,14 @@ function makeServer(portRef) {
       if (req.method === "POST" && url.pathname === "/api/prefs") {
         const b = await readBody(req);
         if (typeof b.closeStopsStudio === "boolean") await saveSettings({ launcherCloseStopsStudio: b.closeStopsStudio });
+        /* The favourite (the star on a card): one mode, or null to clear it. */
+        if (b.autoLaunch === null) await saveSettings({}, ["launcherAutoLaunch"]);
+        else if (b.autoLaunch !== undefined) {
+          if (!LAUNCH_MODES.includes(b.autoLaunch)) return send(res, 400, { error: "Unknown mode." });
+          await saveSettings({ launcherAutoLaunch: b.autoLaunch });
+        }
         const saved = (await readJson(SETTINGS)) || {};
-        return send(res, 200, { ok: true, prefs: { closeStopsStudio: saved.launcherCloseStopsStudio === true } });
+        return send(res, 200, { ok: true, prefs: launcherPrefs(saved) });
       }
       if (url.pathname === "/api/advanced") {
         if (req.method === "POST") return send(res, 200, await saveAdvanced(await readBody(req)));
@@ -707,8 +784,12 @@ function makeServer(portRef) {
       }
       if (url.pathname === "/api/install") {
         if (req.method === "POST") {
-          try { await startInstall(String((await readBody(req)).backend || "")); }
-          catch (e) { return send(res, 200, { error: e.message }); }
+          const b = await readBody(req);
+          try {
+            /* { retry: "studio-packages" }: only Studio's own packages, into its engine. */
+            if (b.retry === "studio-packages") { await startStudioPackages(); return send(res, 200, pkgRetry); }
+            await startInstall(String(b.backend || ""));
+          } catch (e) { return send(res, 200, { error: e.message }); }
         }
         return send(res, 200, install);
       }
@@ -787,6 +868,31 @@ function showWindow() {
   });
 }
 
+/* The launch modes, and the launcher's own preferences as the page reads them.
+ * `autoLaunch` is the favourite: the star on a card, started by main() below
+ * every time the launcher starts (settings.json launcherAutoLaunch). */
+const LAUNCH_MODES = ["full", "music", "cloud", "runpod"];
+function launcherPrefs(saved) {
+  return {
+    closeStopsStudio: saved.launcherCloseStopsStudio === true,
+    autoLaunch: LAUNCH_MODES.includes(saved.launcherAutoLaunch) ? saved.launcherAutoLaunch : null,
+  };
+}
+/** Start the favourite, once, as the launcher opens. Not when Studio already
+ *  runs (launch() finds it and opens it instead), not when the system check
+ *  says the mode cannot run here: the log says why, and nothing starts. */
+async function autoLaunch() {
+  const mode = launcherPrefs((await readJson(SETTINGS)) || {}).autoLaunch;
+  if (!mode) return;
+  const c = await getCheck(false).catch(() => null);
+  if (!c?.modes?.[mode]?.available) {
+    addLog(`Your favourite (${mode}) cannot start on this PC right now; see System. Remove the star to stop trying.`, "sys");
+    return;
+  }
+  addLog(`Starting your favourite. Remove the star on its card to stop this.`, "sys");
+  await launch(mode).catch((e) => addLog(`The favourite did not start: ${e.message}`, "err"));
+}
+
 async function main() {
   /* One launcher at a time: a second double-click just shows the first. */
   try {
@@ -810,6 +916,7 @@ async function main() {
   console.log(`  launcher: ${launcherUrl}`);
   getCheck(false).catch(() => {});   // warm the system check while the window opens
   showWindow();
+  autoLaunch();
 
   const shutdown = () => {
     if (child) killTreeSync(child.pid);

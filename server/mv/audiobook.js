@@ -18,6 +18,7 @@
  * it exits. Beds go through the ordinary music queue like any song.
  */
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
@@ -44,7 +45,7 @@ function runPy(script, args, timeoutMs = 30 * 60e3, python = config.python) {
   });
 }
 
-const HERE = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 /* ─────────────────────────────────────────────────────────── ingest */
 
@@ -459,6 +460,10 @@ export async function makeBed(deps, slug, { mood = "calm", seed } = {}) {
   const job = jobs.enqueue({
     title: `bed · ${mood}`, caption, lyrics: "[Instrumental]\n[Outro]",
     seed: usedSeed, maxDuration: 90, instrumental: true,
+    /* A bed is never a paid song: nothing here asks the person to pay for
+     * one. With the hosted engine on, the runner refuses it in words and
+     * sends nothing (server/jobs.js LOCAL_ONLY). */
+    requiresLocal: true,
   });
   const done = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => { jobs.off("update", onUpd); reject(new Error("bed render timed out")); }, 30 * 60e3);

@@ -187,9 +187,29 @@ await rm(vidBase, { recursive: true, force: true });
 console.log("\nVIDEO WIRING");
 const WF = read("workflow.js");
 ok("both video graphs take named files, merged LAST so one part replaces one part",
-  /\.\.\.config\.video\.engines\.h3, \.\.\.\(models \|\| \{\}\)/.test(WF)
+  /\.\.\.\(config\.video\.engines\[engine\] \|\| config\.video\.engines\.h3\), \.\.\.\(models \|\| \{\}\)/.test(WF)
   && /\.\.\.config\.video\.engines\.ltx, \.\.\.\(models \|\| \{\}\)/.test(WF));
-ok("the route serves the video shelf with its encoders and VAEs", /\/api\/videomodels"[\s\S]{0,400}listVideoPickable\(config\)/.test(INDEX));
+/* The encoder and VAE rows arrive JUDGED, not just listed. listParts returns
+ * every file in models/vae and models/text_encoders by name, which is what let
+ * the video-VAE dropdown offer a FLUX autoencoder and a music codec with equal
+ * confidence; listVideoParts is the same shelf with a per-engine verdict read
+ * off the tensors. Naming both halves, so serving the raw shelf again fails
+ * here rather than quietly reaching the screen. */
+ok("the route serves the video shelf with its encoders and VAEs",
+  /\/api\/videomodels"[\s\S]{0,900}listVideoPickable\(config\)/.test(INDEX));
+ok("...and those encoders and VAEs come back with a per-engine verdict on them",
+  /\/api\/videomodels"[\s\S]{0,900}listVideoParts\(config\)/.test(INDEX));
+/* ⚠ THE DOOR, NOT ONLY THE DROPDOWN. Hiding a part in a <select> is a courtesy
+ * to whoever is looking at it; /api/video takes these by name from the MCP
+ * tools, a script, or a second window left open on the old page. Until the
+ * refusal below, a FLUX autoencoder named as H3's video VAE was accepted here
+ * and failed three minutes later inside ComfyUI. The DiT half of that function
+ * has always refused by engine; these three now answer to the same standard. */
+ok("a text encoder or VAE built for another engine is refused at the door, not just hidden",
+  /row\[verdict\]\?\.\[engine\] === "no"/.test(INDEX)
+  && /it is built differently from the one it came with/.test(INDEX));
+ok("...and only a positive refusal is refused, so an unreadable part still goes through",
+  !/row\[verdict\]\?\.\[engine\] !== "yes"/.test(INDEX));
 ok("a named video file is checked before the render is queued", /const picked = await videoModelPatch\(b, eng\)/.test(INDEX)
   && /if \(picked\.error\) return json\(res, 400/.test(INDEX));
 ok("a model for the OTHER engine is refused by name rather than loaded wrongly",
@@ -199,8 +219,8 @@ ok("on H3 a named file stands in for the reference checkpoint too, not half of i
 ok("the job carries the patch to the graph", /models: picked\.models \|\| undefined/.test(INDEX) && /models: job\.models/.test(ART));
 ok("the Video screen has all four rows", /id="vidModel"/.test(HTML) && /id="vidEncoder"/.test(HTML)
   && /id="vidVideoVae"/.test(HTML) && /id="vidAudioVae"/.test(HTML));
-ok("...the audio VAE is offered on H3 only, where the graph has one to replace",
-  /vidAudioVaeL", "vidAudioVaeW"\]\) \{ const el = \$\(id\); if \(el\) el\.hidden = eng !== "h3"; \}/.test(APP));
+ok("...the audio VAE is offered on the H3 graph (H3, FastH3), not on LTX, which has none to replace",
+  /vidAudioVaeL", "vidAudioVaeW"\]\) \{ const el = \$\(id\); if \(el\) el\.hidden = eng === "ltx"; \}/.test(APP));
 ok("...the shelf is re-read when the engine changes", /vidModelShape\(\);/.test(APP));
 ok("...and nothing is sent while every row says auto", /function vidModelChoice\(\)/.test(APP)
   && /\.\.\.vidModelChoice\(\),/.test(APP));

@@ -9,24 +9,54 @@
  * and only into a folder Studio owns:
  *
  *   <app data>\engine\            (or AIPLAY_ENGINE_DIR)
- *     ComfyUI\                    the latest ComfyUI release
+ *     ComfyUI\                    ComfyUI at COMFY_TAG (server/setup/pins.js)
  *     venv\                       its python environment
  *     python\                     the python that venv was made from
+ *     studio-constraints.txt      every package's version (pip freeze) when Studio's went in
  *     .aiplay-engine.json         marker: this folder is Studio's to replace
+ *   <app data>\tools\uv\uv.exe    the kept uv (pinned, checksum-checked): server/setup/uv.js
+ *
+ * WHICH COMFYUI. The tag in server/setup/pins.js, never whichever release is
+ * newest: an upstream release reaches new installs only when that line changes.
+ * AIPLAY_COMFY_ARCHIVE_URL replaces the download URL (a mirror; the test
+ * points it at a closed port to reach the failure path without a network).
  *
  * WHAT IT RUNS is ComfyUI's own manual-install instructions, read out of the
- * README of the ComfyUI it just downloaded, so a new torch / ROCm / CUDA line
- * upstream is followed without a Studio update (the constants below are only
- * the fallback). Python comes from uv (astral-sh/uv), which fetches a standalone
- * interpreter, so no system Python is needed.
+ * README of the ComfyUI it just downloaded (the constants below are only the
+ * fallback). Python comes from uv (astral-sh/uv), which fetches a standalone
+ * interpreter, so no system Python is needed. After ComfyUI's requirements it
+ * adds Studio's own packages (server/setup/studio-packages.js: OpenCV, librosa,
+ * soundfile, SciPy), only the ones that do not import, under a constraints
+ * file holding every package already installed at its version, so nothing
+ * there moves (one that is installed but does not import is put back at that
+ * version). If only those fail, the engine is kept and the answer says so.
  *
- * ON FAILURE it deletes everything it made — the engine folder and its download
- * cache — and exits 1 with the exact error, so the next attempt starts clean.
- * It refuses to delete or reuse a folder without its own marker.
+ * NOTHING OUTSIDE ITS FOLDERS. uv's `python install` would also drop a
+ * python3.x.exe in ~/.local/bin and register the interpreter in the Windows
+ * registry; both are switched off (server/setup/pins.js UV_PYTHON_INSTALL_ARGS,
+ * UV_PRIVATE_ENV), so the Python lives only in <engine>python.
+ *
+ * ON FAILURE it deletes the engine folder it made and exits 1 with the exact
+ * error. The download cache (pip's and uv's wheels, beside the engine folder)
+ * and the kept uv are KEPT, so the next attempt does not fetch gigabytes of
+ * the same wheels again; a finished install removes the cache. It refuses to
+ * delete or reuse a folder without its own marker.
+ *
+ *   --studio-packages   add only Studio's packages to a FINISHED engine this
+ *                       installer made (marker complete). Refused on any other
+ *                       folder, and it deletes nothing of the engine's; the
+ *                       pip download cache beside it (<engine>-cache\pip) is
+ *                       removed afterwards.
+ *   --add-only          with --studio-packages, from inside a running Studio
+ *                       (the in-app button, MCP): adds what is missing and
+ *                       replaces nothing, since the running engine holds the
+ *                       installed packages' files open. A package that is
+ *                       installed but does not import is then left for the
+ *                       launcher's Try again, which runs with Studio stopped.
  *
  * Output: plain log lines, plus machine lines the launcher reads:
- *   @@step {"id":"torch","label":"Installing PyTorch","n":5,"of":9}
- *   @@done {"rig":"…","python":"…","backend":"amd","torch":"2.13.0+rocm10.0.0"}
+ *   @@step {"id":"torch","label":"Installing PyTorch","n":5,"of":10}
+ *   @@done {"rig":"…","python":"…","backend":"amd","torch":"2.13.0+rocm10.0.0","studio":{"ok":true}}
  *   @@error {"message":"…","step":"torch"}
  */
 import { spawn, execFile } from "node:child_process";
@@ -37,6 +67,11 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { COMFY_TAG, comfyArchiveUrl, keptUvPath, UV_PYTHON_INSTALL_ARGS, UV_PRIVATE_ENV } from "../server/setup/pins.js";
+import { ensureUv } from "../server/setup/uv.js";
+import {
+  STUDIO_PACKAGES, STUDIO_MODULES, MODULES_PROBE, LEFTOVERS_PROBE, probeLine, missingModules, studioWarning, addStudioPackages,
+} from "../server/setup/studio-packages.js";
 
 const run = promisify(execFile);
 const arg = (name) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : null; };
@@ -58,6 +93,7 @@ const STEPS = [
   ["python", "Installing Python"],
   ["torch", "Installing PyTorch"],
   ["deps", "Installing ComfyUI's requirements"],
+  ["studio", "Installing Studio's own packages"],
   ["verify", "Checking PyTorch can see the hardware"],
   ["test", "Test-starting ComfyUI"],
   ["save", "Saving settings"],
@@ -138,7 +174,12 @@ function torchCommand(readme) {
 
 async function download(url, file, label) {
   log(`Downloading ${label}: ${url}`);
-  const res = await fetch(url, { redirect: "follow", headers: { "User-Agent": "AIPLAY-Studio-installer" } });
+  /* "fetch failed" is Node's whole sentence for an unreachable host; say which
+   * host and why, since that is what a person can act on. */
+  const res = await fetch(url, { redirect: "follow", headers: { "User-Agent": "AIPLAY-Studio-installer" } }).catch((e) => {
+    throw new Error(`Could not reach ${new URL(url).host} to download ${label} (${e?.cause?.code || e?.message || e}). `
+      + "Check the internet connection, or a firewall or VPN that blocks it.");
+  });
   if (!res.ok || !res.body) throw new Error(`Download failed (${res.status} ${res.statusText}): ${url}`);
   const total = Number(res.headers.get("content-length")) || 0;
   let got = 0, shown = -1;
@@ -209,23 +250,59 @@ function exec(cmd, args, { cwd, env, timeoutMs = 0 } = {}) {
   });
 }
 
-function uvAsset() {
-  const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
-  if (WIN) return `uv-${arch}-pc-windows-msvc.zip`;
-  if (MAC) return `uv-${arch}-apple-darwin.tar.gz`;
-  return `uv-${arch}-unknown-linux-gnu.tar.gz`;
-}
-
-async function findFile(dir, name) {
-  for (const e of await readdir(dir, { withFileTypes: true })) {
-    const p = path.join(dir, e.name);
-    if (e.isFile() && e.name === name) return p;
-    if (e.isDirectory()) { const hit = await findFile(p, name); if (hit) return hit; }
-  }
-  return null;
-}
-
 async function readJson(p) { try { return JSON.parse(await readFile(p, "utf-8")); } catch { return null; } }
+
+const venvPython = (root) => (WIN ? path.join(root, "venv", "Scripts", "python.exe") : path.join(root, "venv", "bin", "python"));
+const PIP_ENV = {
+  PIP_CACHE_DIR: path.join(CACHE, "pip"), PIP_DISABLE_PIP_VERSION_CHECK: "1",
+  PIP_NO_INPUT: "1", PYTHONUTF8: "1", PYTHONNOUSERSITE: "1",
+};
+const runPy = (py, code, timeout = 300_000) =>
+  run(py, ["-s", "-c", code], { env: { ...process.env, ...PIP_ENV }, timeout, windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+
+/** The engine's `pip freeze`: every installed distribution as name==version. */
+const pipFreeze = async (py) =>
+  (await run(py, ["-s", "-m", "pip", "freeze"], { env: { ...process.env, ...PIP_ENV }, timeout: 120_000, windowsHide: true, maxBuffer: 16 * 1024 * 1024 })).stdout;
+
+/**
+ * Studio's own packages, into an engine this installer made
+ * (server/setup/studio-packages.js addStudioPackages): every installed
+ * package is written into studio-constraints.txt from `pip freeze` and pip
+ * gets that file with -c, so nothing installed moves; only the modules that
+ * do not import are named, and one pip lists but cannot import is put back
+ * at its frozen version with --force-reinstall --no-deps, unless `replace`
+ * is false (--add-only: Studio is running), then only what it lacks is added.
+ * Returns { ok, pinned, plan, kept, keptModules, error? }; never throws for a
+ * pip failure, because the engine it is adding to already works (the caller
+ * says so, loudly).
+ */
+function installStudioPackages(py, pip, { replace = true } = {}) {
+  return addStudioPackages({
+    root: ROOT, pip, log, write: (file, text) => writeFile(file, text), replace,
+    runPy: (code, timeout) => runPy(py, code, timeout), freeze: () => pipFreeze(py),
+  });
+}
+
+/** The engine record's studioPackages: what the check found, and which
+ *  modules it checked, so a record made before SciPy joined the list says so
+ *  instead of vouching for a module nobody looked at (launcher/checks.mjs). */
+const studioRecord = (studio) => ({ ok: studio.ok, missing: studio.missing, checked: [...STUDIO_MODULES] });
+
+/** A real import of each of Studio's modules: { ok, missing, reasons }. */
+async function checkStudioModules(py) {
+  try {
+    const answer = probeLine((await runPy(py, MODULES_PROBE)).stdout, "modules") || {};
+    const missing = missingModules(answer);
+    return { ok: !missing.length, missing, reasons: Object.fromEntries(missing.map((m) => [m, answer[m] || "not imported"])) };
+  } catch (e) {
+    return { ok: false, missing: missingModules({}), reasons: { error: String(e.stderr || e.message).trim().split("\n").pop() } };
+  }
+}
+
+/** Half-removed package folders pip left in site-packages ("~cipy"), or null. */
+async function readLeftovers(py) {
+  try { return probeLine((await runPy(py, LEFTOVERS_PROBE, 60_000)).stdout, "leftovers"); } catch { return null; }
+}
 
 /* ── the install ─────────────────────────────────────────────────────────── */
 
@@ -260,27 +337,23 @@ async function install() {
   } catch (e) { if (/Not enough disk space/.test(e.message)) throw e; log(`(could not read free space: ${e.message})`); }
 
   step("uv");
-  const uvArchive = path.join(CACHE, uvAsset());
-  await download(`https://github.com/astral-sh/uv/releases/latest/download/${uvAsset()}`, uvArchive, "uv");
-  await extract(uvArchive, path.join(CACHE, "uv"));
-  const uv = await findFile(path.join(CACHE, "uv"), WIN ? "uv.exe" : "uv");
-  if (!uv) throw new Error("The uv download did not contain the uv program.");
-  const uvEnv = { UV_PYTHON_INSTALL_DIR: path.join(ROOT, "python"), UV_CACHE_DIR: path.join(CACHE, "uv-cache"), UV_NO_CONFIG: "1" };
+  /* Kept at <app data>\tools\uv, pinned and checked against its published
+   * SHA-256, and reused by every later setup (server/setup/venv.js). */
+  const uv = await ensureUv({ appData: APPDATA, log });
+  /* The Python stays inside ROOT: no python3.x.exe in ~/.local/bin and no
+   * registry entry (server/setup/pins.js UV_PRIVATE_ENV), so clean() leaves
+   * nothing behind that points at a deleted interpreter. */
+  const uvEnv = { ...UV_PRIVATE_ENV, UV_PYTHON_INSTALL_DIR: path.join(ROOT, "python"), UV_CACHE_DIR: path.join(CACHE, "uv-cache") };
 
   step("comfy");
-  let tag = null;
-  try {
-    const r = await fetch("https://api.github.com/repos/comfyanonymous/ComfyUI/releases/latest",
-      { headers: { "User-Agent": "AIPLAY-Studio-installer", Accept: "application/vnd.github+json" } });
-    if (r.ok) tag = (await r.json()).tag_name || null;
-  } catch { /* fall back to the main branch */ }
-  const srcUrl = tag
-    ? `https://github.com/comfyanonymous/ComfyUI/archive/refs/tags/${tag}.tar.gz`
-    : "https://github.com/comfyanonymous/ComfyUI/archive/refs/heads/master.tar.gz";
-  log(tag ? `Latest ComfyUI release: ${tag}` : "Could not read the latest release; using the main branch.");
-  const srcArchive = path.join(CACHE, "comfyui.tar.gz");
+  const tag = COMFY_TAG;
+  const srcUrl = process.env.AIPLAY_COMFY_ARCHIVE_URL || comfyArchiveUrl(tag);
+  log(`ComfyUI ${tag}: the version this Studio is tested with (a newer release is not taken until Studio pins it).`);
+  const srcArchive = path.join(CACHE, `comfyui-${tag}.tar.gz`);
+  await rm(srcArchive, { force: true });   // a kept cache may hold a cut-off one
   await download(srcUrl, srcArchive, "ComfyUI");
   const unpack = path.join(CACHE, "comfyui-src");
+  await rm(unpack, { recursive: true, force: true });
   await extract(srcArchive, unpack);
   const top = (await readdir(unpack))[0];
   await rename(path.join(unpack, top), path.join(ROOT, "ComfyUI"));
@@ -291,14 +364,11 @@ async function install() {
 
   step("python");
   const venv = path.join(ROOT, "venv");
-  await exec(uv, ["python", "install", plan.python], { env: uvEnv });
+  await exec(uv, ["python", "install", ...UV_PYTHON_INSTALL_ARGS, plan.python], { env: uvEnv });
   await exec(uv, ["venv", "--seed", "--python", plan.python, venv], { env: uvEnv });
-  const py = WIN ? path.join(venv, "Scripts", "python.exe") : path.join(venv, "bin", "python");
+  const py = venvPython(ROOT);
   if (!existsSync(py)) throw new Error(`The python environment was not created at ${venv}.`);
-  const pipEnv = {
-    PIP_CACHE_DIR: path.join(CACHE, "pip"), PIP_DISABLE_PIP_VERSION_CHECK: "1",
-    PIP_NO_INPUT: "1", PYTHONUTF8: "1", PYTHONNOUSERSITE: "1",
-  };
+  const pipEnv = PIP_ENV;
   const pip = (args) => exec(py, ["-m", "pip", "install", "--progress-bar", "raw", ...args], { env: pipEnv, cwd: comfyDir });
 
   step("torch");
@@ -309,6 +379,10 @@ async function install() {
 
   step("deps");
   await pip(["-r", path.join(comfyDir, "requirements.txt")]);
+
+  step("studio");
+  const studioRun = await installStudioPackages(py, pip);
+  if (!studioRun.ok) log(`\n(!) Studio's own packages did not install: ${studioRun.error}. The engine install continues; this is reported at the end.`);
 
   step("verify");
   const probe = [
@@ -333,6 +407,14 @@ async function install() {
         : "Update the Intel Arc driver, then try again — or choose CPU.";
     throw new Error(`PyTorch ${probed.version} installed, but it cannot see a ${BACKEND.toUpperCase()} graphics card. ${hint}${out.stderr ? `\n${out.stderr.trim().split("\n").slice(-6).join("\n")}` : ""}`);
   }
+  /* Studio's own packages, imported for real. Reported, not fatal: the engine
+   * renders without them, and deleting a working engine over OpenCV would cost
+   * the person the whole install to save one retry. */
+  const studioCheck = await checkStudioModules(py);
+  const studio = { ok: studioCheck.ok, missing: studioCheck.missing, pinned: studioRun.pinned || null };
+  studio.warning = studioWarning(studio.missing, studioRun.ok ? "" : studioRun.error, studio.ok ? null : await readLeftovers(py));
+  log(studio.ok ? `Studio's own packages import: ${STUDIO_MODULES.join(", ")}.` : `(!) ${studio.warning}`);
+  for (const [m, why] of Object.entries(studioCheck.reasons || {})) log(`    ${m}: ${why}`);
 
   step("test");
   const flags = BACKEND === "cpu" && !MAC ? ["--cpu"] : [];
@@ -347,31 +429,89 @@ async function install() {
   const next = {
     ...cur, rig: ROOT, python: py,
     torchBackend: probed.backend, torchVersion: probed.version,
-    comfyExtraArgs: flags, launchFrom: `Studio's own ComfyUI (${tag || "main"}, ${BACKEND})`,
-    engineInstall: { backend: BACKEND, comfy: tag || "main", torch: probed.version, at: new Date().toISOString() },
+    comfyExtraArgs: flags, launchFrom: `Studio's own ComfyUI (${tag}, ${BACKEND})`,
+    engineInstall: { backend: BACKEND, comfy: tag, torch: probed.version, studioPackages: studioRecord(studio), at: new Date().toISOString() },
   };
   if (gpu) next.gpu = gpu; else if (BACKEND === "cpu") next.gpu = { vendor: "cpu", name: "CPU only", totalMb: 0, source: "chosen at install" };
   await mkdir(APPDATA, { recursive: true });
   await writeFile(SETTINGS, JSON.stringify(next, null, 2));
-  await writeFile(MARKER, JSON.stringify({ backend: BACKEND, complete: true, comfy: tag, torch: probed.version, finishedAt: new Date().toISOString() }, null, 2));
-  /* The download cache is gigabytes of wheels nobody needs again. */
+  await writeFile(MARKER, JSON.stringify({ backend: BACKEND, complete: true, comfy: tag, torch: probed.version, studio: studioRecord(studio), finishedAt: new Date().toISOString() }, null, 2));
+  /* A finished install needs its download cache no more: gigabytes of wheels.
+   * (A FAILED one keeps it; see clean().) The kept uv is not in here. */
   await rm(CACHE, { recursive: true, force: true }).catch(() => {});
-  log(`\nDone. ComfyUI ${tag || "(main)"} with torch ${probed.version} is ready at ${ROOT}.`);
-  log(`@@done ${JSON.stringify({ rig: ROOT, python: py, backend: BACKEND, torch: probed.version, comfy: tag })}`);
+  log(`\nDone. ComfyUI ${tag} with torch ${probed.version} is ready at ${ROOT}.`);
+  log(`@@done ${JSON.stringify({ rig: ROOT, python: py, backend: BACKEND, torch: probed.version, comfy: tag, studio: { ok: studio.ok, missing: studio.missing, warning: studio.warning } })}`);
 }
 
-/** Remove what this installer made — only ever a folder carrying its marker. */
+/** Remove what this installer made after a failure — only ever the engine
+ *  folder, and only while it carries the marker. The download cache (pip's and
+ *  uv's wheels) and the kept uv stay, so a retry reuses what already came down. */
 async function clean() {
   if (existsSync(ROOT) && existsSync(MARKER)) await rm(ROOT, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
-  if (existsSync(path.join(CACHE, ".aiplay-engine-cache"))) await rm(CACHE, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
 }
 
 /* --plan <README.md>: print which PyTorch command this backend and card would
- * get from that README, and install nothing. */
+ * get from that README, and where everything would go; install nothing. */
 if (process.argv.includes("--plan")) {
   const readme = await readFile(arg("plan"), "utf-8");
-  log(JSON.stringify({ backend: BACKEND, gpu: GPU_NAME, ...torchCommand(readme), args: pipArgs(torchCommand(readme).cmd) }));
+  log(JSON.stringify({
+    backend: BACKEND, gpu: GPU_NAME, ...torchCommand(readme), args: pipArgs(torchCommand(readme).cmd),
+    steps: STEPS.map(([id]) => id), comfy: { tag: COMFY_TAG, url: comfyArchiveUrl(COMFY_TAG) },
+    root: ROOT, cache: CACHE, uv: keptUvPath(APPDATA), studio: STUDIO_PACKAGES,
+    uvPythonInstall: ["python", "install", ...UV_PYTHON_INSTALL_ARGS, torchCommand(readme).python], uvEnv: UV_PRIVATE_ENV,
+  }));
   process.exit(0);
+}
+
+/* After --studio-packages: the pip wheels it fetched (<engine>-cache\pip) are
+ * not kept, since a finished engine has no install to retry, and the cache
+ * folder goes too once nothing but its own marker is left in it. Only ever
+ * the cache beside a marked engine, never the engine. */
+async function dropPipCache() {
+  await rm(path.join(CACHE, "pip"), { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }).catch(() => {});
+  const left = existsSync(CACHE) ? await readdir(CACHE).catch(() => ["?"]) : ["?"];
+  if (left.every((n) => n === ".aiplay-engine-cache")) await rm(CACHE, { recursive: true, force: true }).catch(() => {});
+}
+
+/* --studio-packages: only Studio's own packages, into a FINISHED engine this
+ * installer made. Anything else is refused, and this path deletes nothing of
+ * the engine's: the engine it adds to already works. */
+if (process.argv.includes("--studio-packages")) {
+  const addOnly = process.argv.includes("--add-only");
+  let code = 1;
+  try {
+    const mark = await readJson(MARKER);
+    if (mark?.complete !== true) {
+      throw new Error(`${ROOT} holds no finished engine made by this installer, so nothing was installed into it. Studio adds packages only to an engine it installed itself.`);
+    }
+    try {
+      const py = venvPython(ROOT);
+      if (!existsSync(py)) throw new Error(`The engine at ${ROOT} has no python at ${py}.`);
+      const comfyDir = path.join(ROOT, "ComfyUI");
+      const pip = (args) => exec(py, ["-m", "pip", "install", "--progress-bar", "raw", ...args], { env: PIP_ENV, cwd: comfyDir });
+      const got = await installStudioPackages(py, pip, { replace: !addOnly });
+      const check = await checkStudioModules(py);
+      /* What --add-only left in place and still does not import: the launcher's. */
+      const putBack = (got.kept || []).filter((_, i) => check.missing.includes(got.keptModules?.[i]));
+      const studio = { ok: check.ok, missing: check.missing,
+        warning: studioWarning(check.missing, got.ok ? "" : got.error, check.ok ? null : await readLeftovers(py), { putBack }) };
+      await writeFile(MARKER, JSON.stringify({ ...mark, studio: studioRecord(studio) }, null, 2));
+      const cur = await readJson(SETTINGS);
+      if (cur?.engineInstall) {
+        await writeFile(SETTINGS, JSON.stringify({ ...cur, engineInstall: { ...cur.engineInstall, studioPackages: studioRecord(studio) } }, null, 2));
+      }
+      log(studio.ok ? `Studio's own packages import: ${STUDIO_MODULES.join(", ")}.` : `(!) ${studio.warning}`);
+      log(`@@done ${JSON.stringify({ rig: ROOT, python: py, studio })}`);
+      code = studio.ok ? 0 : 1;
+    } finally {
+      await dropPipCache();
+    }
+  } catch (e) {
+    const message = String(e?.message || e).trim();
+    log(`\nFAILED: ${message}`);
+    log(`@@error ${JSON.stringify({ message, step: "studio", cleaned: false })}`);
+  }
+  process.exit(code);
 }
 
 try {
@@ -381,8 +521,10 @@ try {
   const message = String(e?.message || e).trim();
   log(`\nFAILED at "${current}": ${message}`);
   let cleaned = true;
-  try { await clean(); log("Removed the partial install and its download cache."); }
-  catch (c) { cleaned = false; log(`Could not fully remove the partial install: ${c.message}`); }
+  try {
+    await clean();
+    log(`Removed the partial engine folder. The download cache (${CACHE}) and the kept uv stay, so the next try does not download the same files again.`);
+  } catch (c) { cleaned = false; log(`Could not fully remove the partial install: ${c.message}`); }
   log(`@@error ${JSON.stringify({ message, step: current, cleaned })}`);
   process.exit(1);
 }

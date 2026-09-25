@@ -30,6 +30,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { homedir } from "node:os";
 import path from "node:path";
+import { COMFY_TAG, comfyPinNote } from "../server/setup/pins.js";
 
 const run = promisify(execFile);
 
@@ -322,6 +323,12 @@ async function finalize(rig, cur, { announce }) {
     const warn = mismatch(next.gpu, tb, next.engineInstall?.backend);
     if (warn) notes.push(warn);
   }
+  /* Studio's own engine on another ComfyUI than the pinned tag (one installed
+   * before the pin). Read from the engine folder's own marker, so a ComfyUI the
+   * person installed is never judged. One small file, so every run. */
+  const engineMark = await readFile(path.join(rig, ".aiplay-engine.json"), "utf-8").then(JSON.parse).catch(() => null);
+  const pinWarn = comfyPinNote(engineMark);
+  if (pinWarn) notes.push(pinWarn);
 
   if (announce || !QUIET || notes.length) {
     console.log(`  engine: ${rig}\n  python: ${py}`);
@@ -334,8 +341,19 @@ async function finalize(rig, cur, { announce }) {
   }
 
   if (JSON.stringify(next) !== JSON.stringify(cur)) {
+    /* ONLY WHAT THIS RUN CHANGED, merged into the file as it is NOW. The
+     * launcher runs this check while its window is open, and a preference saved
+     * meanwhile (the favourite star, closing stops Studio, a folder) was put back
+     * to the copy read at the start when `next` was written whole. */
+    const latest = await saved();
+    const out = { ...latest };
+    for (const k of new Set([...Object.keys(cur), ...Object.keys(next)])) {
+      if (JSON.stringify(cur[k]) === JSON.stringify(next[k])) continue;
+      if (next[k] === undefined) delete out[k];
+      else out[k] = next[k];
+    }
     await mkdir(path.dirname(SETTINGS), { recursive: true });
-    await writeFile(SETTINGS, JSON.stringify(next, null, 2));
+    await writeFile(SETTINGS, JSON.stringify(out, null, 2));
     if (announce) console.log(`\n  Saved to ${SETTINGS}`);
   }
   report = {
@@ -345,6 +363,7 @@ async function finalize(rig, cur, { announce }) {
     modelsDir: next.modelsDir || null, notes,
     mismatch: mismatch(next.gpu, next.torchBackend ? { backend: next.torchBackend, version: next.torchVersion } : null, next.engineInstall?.backend),
     engineInstall: next.engineInstall || null,
+    comfyPin: engineMark?.complete ? { pinned: COMFY_TAG, installed: engineMark.comfy || null } : null,
   };
   return 0;
 }

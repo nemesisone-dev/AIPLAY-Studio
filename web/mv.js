@@ -14,6 +14,7 @@
 
 import { mountBoard, mvBoardModel, abBoardModel } from "./mvboard.js";
 import { appConfirm, appPrompt } from "./dialog.js";
+import { runWords } from "./runwords.js";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
@@ -49,6 +50,17 @@ const STAGES = [
   ["publish", "Publish"],
   ["complete", "Complete"],
 ];
+
+/* NOT BUILT YET, SO NOT ON THE RAIL (UI_PLAN B4). Publish and Complete are the
+ * website's last two stages and have no screen in this fork; the rail offered
+ * them anyway and each opened a card about a planning file. They stay in
+ * STAGES, because the ids are the stage machine's and a project's label still
+ * reads "Complete" once it is exported; the rail just ends at Finish & export,
+ * and a finished project opens there. */
+const MV_UNBUILT = new Set(["publish", "complete"]);
+const railStages = () => stagesFor().filter(([id]) => wf.doc?.kind === "audiobook" || !MV_UNBUILT.has(id));
+/** The stage the rail marks, for a project whose stage has no screen yet. */
+const railStage = () => (wf.doc?.kind !== "audiobook" && MV_UNBUILT.has(wf.stage)) ? "finish" : wf.stage;
 
 const wf = { list: [], slug: null, doc: null, stage: "draft", coverage: [], view: null,
              library: [], lint: [] };
@@ -284,6 +296,9 @@ async function loadProject() {
     const d = await (await fetch(`/api/mv/project/${encodeURIComponent(wf.slug)}`)).json();
     if (d.error) throw new Error(d.error);
     wf.doc = d.project; wf.stage = d.stage; wf.coverage = d.coverage || [];
+    /* What this PC gives the project (server/mv/routes.js cardFit): the sizes,
+     * the default longest scene, the step labels, where hybrid sends a scene. */
+    wf.cardFit = d.cardFit || null;
   } catch {
     wf.doc = null;
   }
@@ -326,14 +341,15 @@ function paintRail() {
    * you can browse back without losing your place. Filled = the project's
    * stage; outlined = what you're viewing; dimmed = not reached (still
    * clickable — the dimming says "not here yet", never "may not look"). */
-  const RAIL = stagesFor();
-  const at = RAIL.findIndex((s) => s[0] === wf.stage);
-  const view = wf.view || wf.stage;
+  const RAIL = railStages();
+  const stage = railStage();
+  const at = RAIL.findIndex((s) => s[0] === stage);
+  const view = wf.view || stage;
   $("wfRail").innerHTML = RAIL.map(([id, label], i) => {
     const cls = [
       i > at ? "todo" : "",
-      id === wf.stage ? "current" : "",
-      id === view && id !== wf.stage ? "viewing" : "",
+      id === stage ? "current" : "",
+      id === view && id !== stage ? "viewing" : "",
     ].filter(Boolean).join(" ");
     return `<button class="${cls}" data-stage="${id}" title="${esc(label)}">
       <b>${i + 1}</b>${esc(label)}</button>`;
@@ -457,7 +473,7 @@ const RUN_STAGE = {
   mv_set_bible: "story_review", set_bible: "story_review", bible_spec: "story_review",
   set_board: "storyboards", lint: "story_review",
   generate_clip: "video", regen_clip: "video", regen_by_clip_id: "video",
-  regen_stale: "video", import_clip: "video",
+  regen_stale: "video", import_clip: "video", clip_late: "video", clip_late_lost: "video",
   build_timeline: "rough_cut", read_timeline: "rough_cut",
 };
 /* Runs whose artefact is NOT in the workflow — going to the stage would show
@@ -495,8 +511,10 @@ function renderRail() {
       const go = !t ? ""
         : t.view ? `<a class="feedgo" href="#" data-go="${esc(t.view)}">open ${esc(t.label)} &rsaquo;</a>`
                  : `<a class="feedgo" href="#" data-feedstage="${esc(t.stage)}">${esc(t.label)} &rsaquo;</a>`;
+      /* Plain words, with the tool name in the tooltip (web/runwords.js). */
+      const w = runWords(r);
       return `<li>
-        <span class="feedhead"><b>${esc(r.tool || "")}</b><i>${ago(r.at)}</i></span>
+        <span class="feedhead"><b title="${esc(w.title)}">${esc(w.text)}</b><i>${ago(r.at)}</i></span>
         <span class="feedout">${esc((r.outcome || "").slice(0, 90))}</span>
         ${go}</li>`;
     }).join("")}</ul>
@@ -580,12 +598,14 @@ function renderStage(view) {
     case "storyboards": return renderBoards();
     case "video": return renderClips();
     case "rough_cut":
-    case "finish": return renderRoughCut();
+    case "finish":
+    /* Publish and Complete have no screen of their own yet (MV_UNBUILT): a
+     * finished project opens on Finish & export, where its exports are. */
+    case "publish":
+    case "complete": return renderRoughCut();
     default:
       return `<div class="wfcard"><h3>${esc(labelFor(view))}</h3>
-        <p class="hint">Not built yet in this fork. The plan for it is in
-        <code>MV_FORK_PLAN.md</code>. Everything before it works, so you can take a
-        project this far today.</p></div>`;
+        <p class="hint">This stage has no screen yet. Everything before it works.</p></div>`;
   }
 }
 
@@ -984,6 +1004,7 @@ function renderClips() {
         ? `<button class="edtool sm" data-shotrender="${esc(s.id)}"
              title="Re-render this shot: hold the seed, choose which prompt, and see what changed. The same control the inspector uses — there is only one.">↻ Render…</button>`
         : `<button class="edtool sm" data-genclip="${esc(s.id)}">Generate</button>`}
+        <button class="edtool sm" data-friendclip="${esc(s.id)}" title="Choose a friend and review this saved scene before preparing its render request. It carries the scene's reference pictures; the song stays here, so a lip-sync scene comes back without lip-sync. For one text-only clip outside a project, use Video → Ask friend.">Ask friend</button>
         <button class="edtool sm" data-shot="${esc(s.id)}"
           title="Open this one shot: the exact prompt it sends, which reference sheets actually resolved, and every take with the evidence for its own render">Inspect…</button>
         <button class="edtool sm" data-planadd="clip|${esc(s.id)}"
@@ -992,16 +1013,13 @@ function renderClips() {
   }).join("");
   const done = d.clips.filter((c) => c.clipFile).length;
   return `<div class="wfcard"><h3>Video clips</h3>
-    <p class="hint">Each scene renders with its cast as named references AND the real
-      stretch of the song frozen in — a lyrical shot lip-syncs the actual track. Scenes
-      carrying references render on H3 (2–5 min each); regenerating keeps every earlier
-      take.</p>
+    <p class="hint">Render here or ask a friend.</p>
     <table class="wftable"><thead><tr><th>#</th><th>Time</th><th>Line</th><th>Clip</th><th>Takes</th><th>Board</th><th></th></tr></thead>
     <tbody>${rows}</tbody></table>
-    <p class="hint"><b>Inspect</b> opens one shot on its own: the exact prompt that will be
+    <details class="more"><summary>Shot details</summary><p class="hint"><b>Inspect</b> opens one shot on its own: the exact prompt that will be
       sent — editable, and what you edit is what renders — which reference sheets resolved
       and which names reached the render as nothing, and every take with the prompt and
-      references that made it. Re-rendering from there keeps every earlier take.</p>
+      references that made it. Re-rendering from there keeps every earlier take.</p></details>
     <div id="wfShotEdit"></div>
     ${/* ⚠ WHERE A NIGHT IS DECIDED. One clip is a decision worth one clip's GPU
         * and its undo is not picking the take — press Generate and watch. A SET
@@ -1014,11 +1032,11 @@ function renderClips() {
       <button class="edtool" type="button" data-planfrom="stale"
         title="Seeds a plan from the same scan mv_regen_stale reports: every clip whose take predates its board or its cast.">Plan what's stale</button>
     </div>
-    <p class="hint">A <b>plan</b> is the list of renders somebody intends to make, with the engine,
+    <details class="more"><summary>Plan details</summary><p class="hint">A <b>plan</b> is the list of renders somebody intends to make, with the engine,
       the size and the minutes per item, that you read and approve <b>before</b> the GPU is
       touched — and it shows, per scene, which references would reach the render as nothing.
       Use it when one intent spends more than one expensive call. A single test render does not
-      need one: press Generate, or Inspect and render one shot.</p>
+      need one: press Generate, or Inspect and render one shot.</p></details>
     ${done ? `<div class="framepick"><button class="edtool" id="wfToStudio">Move to Studio → (${done} scene${done > 1 ? "s" : ""}, chronological)</button></div>` : ""}
   </div>`;
 }
@@ -1160,6 +1178,12 @@ function renderSong() {
  * this page's HTML.
  */
 function segmentDialog() {
+  /* The longest scene's default, where it comes from, and the ceiling are the
+   * SERVER's (sizes.js sceneCutFor, through the project's cardFit), never a
+   * number kept here. Without cardFit the box says the server decides. */
+  const cut = wf.cardFit?.cut || null;
+  const maxSec = Number(cut?.maxClipSec) || null;
+  const ceiling = Number(cut?.hardCeilingSec) || null;
   const knob = (id, label, def, unit, why) => `
     <label class="segknob" for="${id}"><span>${esc(label)}</span>
       <span class="segin"><input class="line sm num" type="number" id="${id}" step="0.5" min="0"
@@ -1168,10 +1192,15 @@ function segmentDialog() {
   return `<details class="adv segopts">
     <summary>How the cut is made — four numbers, and what each of them costs</summary>
     <div class="segknobs">
-      ${knob("wfSegMax", "longest scene", "15", "s",
-        "The hard ceiling on one clip, and it is <b>not a taste choice</b>: 15 s is the audio "
-        + "window the video model accepts. Lowering it makes more, shorter clips — more scenes "
-        + "to render, and a night that costs proportionally more. Default 15.")}
+      ${knob("wfSegMax", "longest scene", maxSec ? String(maxSec) : "", "s",
+        (maxSec
+          ? `The longest one clip may run. Default ${maxSec} s, set by the brief's size and engine: `
+            + `${esc(cut.why || "")} `
+          : "The longest one clip may run. Studio's default could not be read; leave it empty to take it. ")
+        + "It is taken when the song is cut: a size changed later keeps the cut it has until you cut again. "
+        + "A line longer than this is split into back-to-back scenes, so nothing sung is left without a picture. "
+        + (ceiling ? `${ceiling} s is the hard ceiling. ` : "")
+        + "Lowering it makes more, shorter clips: more scenes to render, and a night that costs more.")}
       ${knob("wfSegMin", "shortest scene", "4", "s",
         "Below this a leftover is folded into its neighbour instead of becoming a scene of its "
         + "own, so long as the merge still fits under the ceiling. It exists to stop sub-second "
@@ -1263,7 +1292,7 @@ function renderSegments() {
     <p class="hint dim"><b>Typing a new start or end is safe</b> — the server re-snaps the
       pair rather than storing what you typed. It clamps both ends inside the song, swaps
       them if you put the end before the start, never lets the window exceed the
-      <b>15-second ceiling</b> the video model's audio input imposes, then re-reads which
+      <b>15-second hard ceiling</b> on one clip, then re-reads which
       lyric lines the new window covers: the scene's kind flips between lyrical and
       instrumental on its own, and a new anchor line is picked from what is actually
       inside it. A scene that has already rendered keeps its clip and is marked stale
@@ -1273,15 +1302,74 @@ function renderSegments() {
 
 /* ---- stage 2: the brief ---- */
 
+/* ⚠ THE BRIEF'S SETTINGS, drawn from the server's cardFit (server/mv/routes.js)
+ * and from no list kept in this file: the size list is sizes.js's, each size
+ * says whether this card reaches it, the shapes are the two renderSize makes,
+ * and the step labels are worded from the speed-up files on disk. Without
+ * cardFit each control keeps only the brief's own value, and a line says the
+ * PC's settings could not be read, rather than showing a guess. */
+const NO_FIT = "Could not load this PC's settings (sizes, shapes, steps). Reload the page to see them.";
+
+/* One size option's words, as it RENDERS in the chosen shape: 9:16 swaps the pair. */
+function sizeOptionText(z, aspect) {
+  const [w, h] = aspect === "9:16" ? [z.height, z.width] : [z.width, z.height];
+  return `${z.label} · ${w}x${h}${z.experimental ? ", experimental" : ""}`
+    + `${z.forCard ? " · Studio's pick for this card" : ""}${z.fits === false ? " · above this card" : ""}`;
+}
+
+function briefSize(b, fit) {
+  const cur = b.qualityMode || "recommended";
+  const sizes = fit?.sizes?.choices || [];
+  const aspect = b.aspectRatio === "9:16" ? "9:16" : "16:9";
+  const opts = sizes.length ? sizes.map((z) =>
+    `<option value="${esc(z.id)}"${cur === z.id ? " selected" : ""}${z.line ? ` title="${esc(z.line)}"` : ""}>`
+    + `${esc(sizeOptionText(z, aspect))}</option>`).join("")
+    : `<option value="${esc(cur)}" selected>${esc(cur)}</option>`;
+  const chosen = sizes.find((z) => z.id === cur);
+  /* Where a scene can land on LTX, what LTX makes of this size. */
+  const mode = b.videoEngine || "hybrid";
+  const ltxMatters = mode === "ltx" || (mode === "hybrid" && fit?.ltxReady);
+  return `<div class="params">
+      <label for="wfQuality">size</label>
+      <span class="pv"><select id="wfQuality" class="sel2"
+        title="The size every clip renders at. Stored as the brief's qualityMode; mv_set_brief quality sets it.">${opts}</select></span>
+    </div>
+    ${!fit ? `<p class="hint warnhint">${esc(NO_FIT)}</p>` : ""}
+    ${fit?.sizes?.why ? `<p class="hint dim" title="${esc(chosen?.note || "")}">${esc(fit.sizes.why)}</p>` : ""}
+    ${fit?.sizes?.ramWarning ? `<p class="hint warnhint">${esc(fit.sizes.ramWarning)}</p>` : ""}
+    ${chosen?.line ? `<p class="hint warnhint">${esc(chosen.line)}</p>` : ""}
+    ${ltxMatters && chosen?.ltxLine ? `<p class="hint dim">${esc(chosen.ltxLine)}</p>` : ""}
+    ${fit?.cut?.note ? `<p class="hint warnhint">${esc(fit.cut.note)}</p>` : ""}`;
+}
+
+function renderBriefSettings() {
+  const b = wf.doc.brief || {};
+  const fit = wf.cardFit || null;
+  const aspects = fit?.sizes?.aspects || [];
+  const aspectNow = aspects.includes(b.aspectRatio) ? b.aspectRatio : (aspects[0] || b.aspectRatio || "");
+  const aspectOpts = aspects.length
+    ? aspects.map((a) => `<option${aspectNow === a ? " selected" : ""}>${esc(a)}</option>`).join("")
+    : `<option selected>${esc(aspectNow)}</option>`;
+  return `${briefSize(b, fit)}
+    <div class="params">
+      <label for="wfAspect">aspect</label>
+      <span class="pv"><select id="wfAspect" class="sel2" title="The two shapes the renderer makes.">
+        ${aspectOpts}
+      </select></span>
+    </div>
+    ${fit?.aspectNote ? `<p class="hint warnhint">${esc(fit.aspectNote)}</p>` : ""}`;
+}
+
 function renderBrief() {
   const b = wf.doc.brief || {};
   const f = (id, label, val, ph) => `<label class="flabel" for="${id}">${label}</label>
     <input class="line" id="${id}" value="${esc(val || "")}" placeholder="${esc(ph)}">`;
+  const fit = wf.cardFit || null;
   return `<div class="wfcard">
     <h3>Creative interview</h3>
-    <p class="hint">What kind of video is this? Fill it in here, or just ask the agent —
-      it can hold a real conversation about the song and write these for you through
-      <code>mv_set_brief</code>. The website only ever offered the six boxes.</p>
+    <p class="hint" title="An agent writes these through mv_set_brief.">What kind of video is
+      this? Fill it in here, or ask an agent connected on the Agent page to talk it through
+      with you and fill it in.</p>
     ${f("wfMedium", "Medium", b.medium, "anime, live action, claymation, 3D…")}
     ${f("wfTone", "Tone", b.tone, "melancholic, defiant, playful…")}
     ${f("wfNarrative", "Narrative approach", b.narrative, "one story, performance only, abstract…")}
@@ -1289,18 +1377,12 @@ function renderBrief() {
     <textarea id="wfFree" rows="3" placeholder="Characters you have in mind, places, things to avoid…">${esc(b.freeText || "")}</textarea>
     <label class="flabel" for="wfDirection">Direction summary</label>
     <textarea id="wfDirection" rows="3" placeholder="Two or three sentences the director works from. The agent usually writes this.">${esc(b.directionSummary || "")}</textarea>
-    <div class="params">
-      <label for="wfAspect">aspect</label>
-      <span class="pv"><select id="wfAspect" class="sel2">
-        ${["16:9", "9:16", "1:1", "4:3", "21:9"].map((a) =>
-          `<option${b.aspectRatio === a ? " selected" : ""}>${a}</option>`).join("")}
-      </select></span>
-    </div>
+    ${renderBriefSettings()}
     <div class="params">
       <label for="wfEngine">engine</label>
       <span class="pv"><select id="wfEngine" class="sel2">
-        ${[["hybrid", "hybrid — H3 where it matters"], ["ltx", "LTX — fast, everywhere"], ["h3", "H3 — best, ~10x cost"]]
-          .map(([v, t]) => `<option value="${v}"${(b.videoEngine || "hybrid") === v ? " selected" : ""}>${t}</option>`).join("")}
+        ${[["hybrid", fit?.hybridLine || "hybrid — H3 where it matters"], ["ltx", "LTX — fast, everywhere"], ["h3", "H3 — best, ~10x cost"]]
+          .map(([v, t]) => `<option value="${v}"${(b.videoEngine || "hybrid") === v ? " selected" : ""}>${esc(t)}</option>`).join("")}
       </select></span>
     </div>
     <div class="params">
@@ -1313,20 +1395,23 @@ function renderBrief() {
     <div class="params">
       <label for="wfSteps">video steps</label>
       <span class="pv"><select id="wfSteps" class="sel2">
-        ${/* 8 was absent while the reference path shipped no 8-step build;
-             the ref2v 8-step v1.0 LoRA is on the rig since 2026-09-12 and is the
-             MATCHED setting with references (workflow.js h3TurboLoraFor). A
-             number under the loaded build's design point burns: 3 with
-             references ran the 4-step build at three steps (Hex Appeal,
-             2026-09-19), which read like an image at a very high cfg. */
-          [["", "default — leave it to the engine"],
-           ["4", "4 — fast build (~2.5 min per 5s scene at native size)"],
-           ["8", "8 — matched reference build, the one to use with cast references (~10 min per 5s scene)"],
-           ["20", "20 — full model, best detail (~11 min per 5s scene)"]]
-          .map(([v, t]) => `<option value="${v}"${String(b.videoSteps ?? "") === v ? " selected" : ""}>${t}</option>`).join("")}
+        ${/* The labels are the server's (clipsteps.js stepChoices): "default"
+             names the count matched to the speed-up files on this PC, and "8"
+             only calls itself the reference build to use when the 8-step
+             reference file is here. A number under the loaded build's design
+             point burns: 3 with references ran the 4-step build at three steps
+             (Hex Appeal, 2026-09-19). */
+          (wf.cardFit?.steps?.options
+            || [{ value: String(b.videoSteps ?? ""), label: b.videoSteps == null ? "default" : String(b.videoSteps) }])
+          .map((o) => `<option value="${esc(o.value)}"${String(b.videoSteps ?? "") === o.value ? " selected" : ""}>${esc(o.label)}</option>`).join("")}
       </select></span>
-      <span class="pv"><label class="hint">Song under the clip <select id="wfSong" class="sel2">
-        ${[["auto", "auto — only where a board sings"], ["always", "always — every scene hears the song (lipsync)"]]
+      ${/* ⚠ ITS OWN ID. It was "wfSong", the Upload & analyze song picker's id,
+          so changing it posted attach_song with "always" as the file. */""}
+      <span class="pv"><label class="hint">Song under the clip <select id="wfSongCond" class="sel2">
+        ${/* The words only; the id and the values are kept. New projects start
+            * on "always" (store.js blankProject, the REWIND A/B of 2026-09-24). */""}
+        ${[["always", "always: every scene hears the song, so a singing mouth follows the words on H3 (Hex Appeal's setup; new projects start here). A close face that is not singing may open its mouth: keep “mouth closed” in its words"],
+           ["auto", "auto: only boards marked as sung (lipSync; an agent sets it)"]]
           .map(([v, t]) => `<option value="${v}"${(b.songConditioning || "auto") === v ? " selected" : ""}>${t}</option>`).join("")}
       </select></label></span>
     </div>
@@ -1355,10 +1440,20 @@ function renderBible() {
     <h3>Script &amp; direction</h3>
     <p class="hint">The production bible: the story, the visual style, the reusable
       characters and backgrounds, and one storyboard per scene — <b>this is what steers
-      the clips</b>. Write it here, or ask the agent to draft it and edit what it wrote:
-      it calls <code>mv_bible_spec</code> for the contract plus your actual scenes,
-      authors, and commits with <code>mv_set_bible</code>. Either way the fields below
-      are the same fields — <b>a scene's shot <i>action</i> is what writes its clip</b>.</p>
+      the clips</b>. Once a bible exists, every part of it is editable here, and
+      <b>a scene's shot <i>action</i> is what writes its clip</b>.</p>
+    ${has ? "" : `<div class="hint" title="The agent reads the contract with mv_bible_spec and commits the bible with mv_set_bible.">
+      <p><b>How to get one today:</b> this page has no form that writes a first bible yet, so the
+      first script comes from an outside AI assistant:</p>
+      <ol>
+        <li>Open the <b>Agent</b> page and connect Claude Desktop, Claude Code or Cursor to Studio (it shows how, step by step).</li>
+        <li>In that assistant, ask: <i>“Write the script for the music video ${esc(d.title || d.slug || "")}.”</i>
+          It reads your scenes and the rules, and writes the whole bible in one go.</li>
+        <li>Come back here: the story, the cast and one storyboard per scene appear on this card, and every part of it is editable.</li>
+      </ol>
+      <p>Studio's own Chat cannot do it, with a local or a cloud model, because its tool list leaves out
+      tools that take a whole document. Without a script you can still press <b>Generate</b> on a scene
+      under <b>Video clips</b>: it becomes a performance shot steered only by its lyric line.</p></div>`}
     ${has ? `
       <div class="params bibleform">
         <label for="wfLogline">logline</label>
@@ -2250,8 +2345,10 @@ async function openShotInspector(segmentId, { focus = null } = {}) {
      * are only ATTACHED when the engine takes them. Showing the list without
      * this block would repeat, one level up, the exact lie the panel exists to
      * catch — so the heading changes too, from "handed" to "resolved". */
-    const warned = (sh.warnings || []).map((w) => `<div class="shotmiss">
-      <b>The prompt names ${w.names.length} picture${w.names.length === 1 ? "" : "s"} this render will NOT be given.</b>
+    const warned = (sh.warnings || []).map((w) => w.kind === "ltx-not-here"
+      ? `<div class="shotmiss"><b>Renders on H3: LTX is not on this PC.</b> ${esc(w.why)}</div>`
+      : `<div class="shotmiss">
+      <b>The prompt names ${(w.names || []).length} picture${(w.names || []).length === 1 ? "" : "s"} this render will NOT be given.</b>
       ${esc(w.why)}</div>`).join("");
 
     /* ⚠ THE HONEST LIMIT, SAID ON THE SHOT AS WELL AS ON THE MAP.
@@ -2323,7 +2420,13 @@ async function openShotInspector(segmentId, { focus = null } = {}) {
             * further down. It is the field that decides whether a change to the
             * board or the bible can reach this scene at all. */""}
         <span><b>prompt</b> ${esc(SOURCE_WHY[sh.promptSource] || sh.promptSource || "unknown")}</span>
+        ${/* The server's words (shot.js songLine, clipsteps.js): is the song under
+            * this clip, so a singing mouth follows it, and the step count
+            * generate.js will send. */""}
+        <span><b>song</b> ${esc(sh.songLine || "")}</span>
+        <span><b>steps</b> ${esc(sh.steps ?? "?")}</span>
       </div>
+      ${sh.stepsNote ? `<p class="hint">${esc(sh.stepsNote)}</p>` : ""}
 
       ${staleLine}${ltxLine}${missing}${dropped}${warned}
       <p class="hint"><b>${sh.refsSent ? "What the model is handed" : "What resolved"}</b>, in this
@@ -2640,7 +2743,7 @@ function renderAssets(kind) {
   }).join("");
   const HEAD = { characters: "Characters", backgrounds: "Backgrounds", props: "Props" };
   const HINT = {
-    characters: "The people the video reuses. A character with a picture holds its identity across every shot, because the clip engine takes it as a named reference. The description is editable in place — it saves when you click away.",
+    characters: "The people the video reuses. A ticked character with a picture keeps its identity in H3 clips, because the clip engine takes it as a named reference. Kept best (Hex Appeal; REWIND A/B, 2026-09-24): 1–3 tight crops of one view each on a near-black card, one row per view (Name, Name body, Name side); Import brings in your own crop. The description is editable in place and saves when you click away.",
     backgrounds: "The places the video returns to. Descriptions save when you click away.",
     /* PROPS ARE CAST, and until now this page never said so — props could be
      * declared in the bible and ticked on a board, and there was no card, no
@@ -2944,8 +3047,8 @@ const QUALITY_TRAPS = {
     "hybrid sends any scene carrying a named character to H3 and everything else to LTX, so one "
     + "imported character can turn a twenty-minute render into an overnight one.",
   "step-band":
-    "5-12 steps with references on silently loads the 4-step reference file and runs it at up to "
-    + "12 steps. There is no 8-step reference build. Use 4, or 13+.",
+    "this step count runs the speed-up file that loads past the count it was made for, so the "
+    + "estimate is a floor. Leave steps on default to run the matched count for the files on this PC.",
   "above-native":
     "above H3's native 1344x768 — untrained territory, and priced accordingly.",
   "h3-oom":
@@ -3425,7 +3528,7 @@ function renderPlanFoot(v, t, live, running) {
         title="Lets the render in flight finish, then stops. Killing a nearly-complete H3 clip throws away twenty minutes for nothing.">Pause</button>
       <button class="edtool sm" type="button" id="planResume"${v.state === "paused" ? "" : " disabled"}>Resume</button>
       <button class="edtool sm" type="button" id="planStop"${live ? "" : " disabled"}
-        title="Cancels the PLAN and marks everything still approved as skipped. The clip already on the GPU finishes — there is no cancel path into the renderer from here.">Stop</button>
+        title="Stops now: cancels the plan, marks everything still approved as skipped, and cancels this project's clip on the graphics card. Pause is the one that lets a render finish.">Stop</button>
       <button class="edtool sm" type="button" id="planDiscard"${running ? " disabled" : ""}
         title="Throws the whole plan away. Refused while it is running.">Discard plan</button>
       ${renderPastPlans()}
@@ -3925,9 +4028,9 @@ function wirePlan() {
   on("planPause", "onclick", () => runPlan("pause"));
   on("planResume", "onclick", () => runPlan("resume"));
   on("planStop", "onclick", async () => {
-    if (!(await appConfirm("Stop this plan? Everything still approved is marked skipped.\n\n"
-      + "The clip already on the GPU finishes — there is no cancel path into the renderer from "
-      + "here, and pretending otherwise would be worse than saying so."))) return;
+    if (!(await appConfirm("Stop this plan now? Everything still approved is marked skipped, "
+      + "and the clip it has on the graphics card is cancelled.\n\n"
+      + "To let that clip finish first, press Pause instead."))) return;
     return runPlan("stop");
   });
   on("planDiscard", "onclick", async () => {
@@ -4133,11 +4236,28 @@ function wire(view) {
   };
 
   on("wfSong", "onchange", async (e) => {
+    /* Only the Upload & analyze picker is "wfSong"; the brief's "Song under
+     * the clip" is wfSongCond and saves with the brief. */
     const file = e.target.value;
     if (!file) return;
     await busy(() => api({ action: "attach_song", slug: wf.slug, file }));
   });
   on("wfAnalyze", "onclick", () => busy(() => api({ action: "analyze", slug: wf.slug })));
+  /* The size's own sentence follows the choice before it is saved. */
+  on("wfQuality", "onchange", (e) => {
+    const z = (wf.cardFit?.sizes?.choices || []).find((x) => x.id === e.target.value);
+    e.target.title = z?.line || z?.note || "";
+  });
+  /* The size options name the size as it renders in the chosen shape. */
+  on("wfAspect", "onchange", (e) => {
+    const sel = $("wfQuality");
+    const sizes = wf.cardFit?.sizes?.choices || [];
+    if (!sel || !sizes.length) return;
+    for (const o of sel.options) {
+      const z = sizes.find((x) => x.id === o.value);
+      if (z) o.textContent = sizeOptionText(z, e.target.value);
+    }
+  });
   /* ⚠ EMPTY IS NOT ZERO. `segNum` answers `undefined` for a box nobody typed
    * in, JSON.stringify drops an undefined value, and the route only takes a
    * number it reads as finite — so an untouched dialog posts the body this
@@ -4166,10 +4286,13 @@ function wire(view) {
        * night was reachable only by an agent. Empty string means "unset", which
        * must travel as null rather than 0. */
       videoSteps: $("wfSteps").value ? Number($("wfSteps").value) : null,
+      /* The size (sizes.js's list; "recommended" is full size). Sent from the
+       * control on screen, so the size shown is the size saved. */
+      qualityMode: $("wfQuality") ? $("wfQuality").value : undefined,
       /* The song frozen under a REFERENCE render — the renderer's switch was
        * reachable by nobody until 2026-09-19, and a singer's video shipped
        * without lipsync because of it. */
-      songConditioning: $("wfSong") ? $("wfSong").value : "auto",
+      songConditioning: $("wfSongCond") ? $("wfSongCond").value : "auto",
     },
   })));
 
@@ -4548,6 +4671,9 @@ function wire(view) {
       if (btn) btn.title = cb.checked ? SINGLE_TITLE : SHEETS_TITLE;
     };
   }
+  for (const btn of document.querySelectorAll("[data-friendclip]")) {
+    btn.onclick = () => document.dispatchEvent(new CustomEvent("aiplay:collab-scene", { detail: { slug: wf.slug, segmentId: btn.dataset.friendclip } }));
+  }
   for (const btn of document.querySelectorAll("[data-genclip]")) {
     btn.onclick = () => {
       btn.textContent = "rendering…"; btn.disabled = true;
@@ -4616,9 +4742,27 @@ function wire(view) {
     if (host) {
       api({ action: "lint", slug: wf.slug }).then((r) => {
         host.innerHTML = r.issues.length
-          ? `<ul class="lintlist">${r.issues.map((i) => `<li class="lint-${i.level}">
-              ${i.level === "error" ? "✖" : "⚠"} <b>${esc(i.where)}</b> ${esc(i.msg)}</li>`).join("")}</ul>`
+          ? `<ul class="lintlist">${r.issues.map((i, idx) => `<li class="lint-${i.level}">
+              ${i.level === "error" ? "✖" : "⚠"} <b>${esc(i.where)}</b> ${esc(i.msg)}${i.fix
+                ? ` <button class="edtool sm" type="button" data-lintfix="${idx}">${esc(i.fix.label)}</button>` : ""}</li>`).join("")}</ul>`
           : `<p class="hint">✓ Nothing wrong — sheets, boards and references all line up.</p>`;
+        /* A FIX IS ONE CLICK: the server wrote it (bible.js lintProject) as an
+         * existing route action, set_shot (tick the name, keeping the board's
+         * other references) or set_brief. The page adds no judgement of its own. */
+        for (const btn of host.querySelectorAll("[data-lintfix]")) {
+          btn.onclick = async () => {
+            const i = r.issues[Number(btn.dataset.lintfix)];
+            if (!i?.fix) return;
+            btn.disabled = true;
+            try {
+              await api({ action: i.fix.action, slug: wf.slug, segmentId: i.fix.segmentId, refs: i.fix.refs, brief: i.fix.brief });
+              await loadProject();
+            } catch (e) {
+              btn.disabled = false;
+              btn.title = explain(e);
+            }
+          };
+        }
       }).catch(() => { host.innerHTML = ""; });
     }
   }
@@ -4834,6 +4978,16 @@ export function initWorkflow(library) {
     e.preventDefault();
     wf.view = a.dataset.feedstage;
     paint();
+  });
+  /* Collab asks for a project by slug — a friend's order becomes "Order o_… from
+   * <name>", and its plan is the Plan card at the top of that project. This
+   * only chooses the project; the app's view change calls wfOpen(), which
+   * loads it, and nothing here approves or runs anything. */
+  document.addEventListener("aiplay:open-project", (e) => {
+    const slug = e.detail?.slug;
+    if (typeof slug !== "string" || !slug) return;
+    wf.slug = slug;
+    wf.view = null;
   });
 
   $("wfRail").addEventListener("click", (e) => {

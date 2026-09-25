@@ -51,6 +51,9 @@ const CSS = readFileSync(path.join(HERE, "..", "..", "web", "welcome.css"), "utf
  * below that says "the page" has to mean both of them or the newer one is
  * unguarded. */
 const INFO = readFileSync(path.join(HERE, "..", "..", "web", "info.js"), "utf8");
+/* The third: web/level.js, the Simple / Advanced level (UI_PLAN E1). It posts
+ * `level` to the same dispatch, so "the page" means it as well. */
+const LEVELJS = readFileSync(path.join(HERE, "..", "..", "web", "level.js"), "utf8");
 const INFOCSS = readFileSync(path.join(HERE, "..", "..", "web", "info.css"), "utf8");
 const MCP = readFileSync(path.join(HERE, "..", "mcp-welcome.js"), "utf8");
 const INDEX = readFileSync(path.join(HERE, "..", "index.js"), "utf8");
@@ -71,7 +74,6 @@ const APP = readFileSync(path.join(HERE, "..", "..", "web", "app.js"), "utf8");
  * also its catalogue id and the view name it must mount under. */
 const PAGES = [
   { rail: "daw", js: "web/daw.js", html: "web/daw.html" },
-  { rail: "avatars", js: "web/avatars.js", html: "web/avatars.html" },
 ].map((p) => ({ ...p,
   src: readFileSync(path.join(HERE, "..", "..", ...p.js.split("/")), "utf8"),
   doc: readFileSync(path.join(HERE, "..", "..", ...p.html.split("/")), "utf8") }));
@@ -187,15 +189,18 @@ const serverActions = [...new Set(
  * agent, and reachable by nobody — which is the exact hole direction 2 exists
  * to find. */
 const uiActions = new Set([...`${UI}
-${INFO}`.matchAll(/action:\s*"([a-z0-9_]+)"/g)].map((m) => m[1]));
+${INFO}
+${LEVELJS}`.matchAll(/action:\s*"([a-z0-9_]+)"/g)].map((m) => m[1]));
 const mcpActions = new Set([...MCP.matchAll(/action:\s*"([a-z0-9_]+)"/g)].map((m) => m[1]));
 
 /* A regex that matches nothing passes everything, so prove the extraction found
  * a real surface before trusting a word it says. */
+/* Seven since UI_PLAN B5 and E1: first_run (the three lines Home shows a new
+ * install) and level (Simple or Advanced). */
 ok(`the census sees the welcome dispatch at all (${serverActions.length} actions)`,
-  serverActions.length === 5, serverActions.join(", "));
-ok("...and they are the five this surface is specified to have",
-  ["catalogue", "dismiss", "reopen", "screen_info", "showcase"].every((a) => serverActions.includes(a)),
+  serverActions.length === 7, serverActions.join(", "));
+ok("...and they are the seven this surface is specified to have",
+  ["catalogue", "dismiss", "first_run", "level", "reopen", "screen_info", "showcase"].every((a) => serverActions.includes(a)),
   serverActions.join(", "));
 
 /* ── direction 1: did a gesture invent a write path? ─────────────────────── */
@@ -268,7 +273,7 @@ const callBodies = (src) => {
 
 const routeParams = [...new Set([...ROUTES.matchAll(/\bb\.([A-Za-z_]\w*)/g)].map((m) => m[1]))]
   .filter((p) => p !== "action").sort();
-const uiSends = new Set([...callBodies(UI), ...callBodies(INFO)]);
+const uiSends = new Set([...callBodies(UI), ...callBodies(INFO), ...callBodies(LEVELJS)]);
 const mcpSends = callBodies(MCP);
 ok(`the parameter census sees the route's fields (${routeParams.join(", ") || "none"})`,
   routeParams.length >= 1);
@@ -317,7 +322,7 @@ const proseIn = (src) => [...src.matchAll(/"([^"\\\n]{75,})"/g)].map((m) => m[1]
  * renders a paragraph, an honest limit, a first move and a dependency list for
  * every screen in the app — four times the temptation web/welcome.js had to
  * write one sentence of its own "just here, it is only a label". */
-for (const [name, src] of [["web/welcome.js", UI], ["web/info.js", INFO]]) {
+for (const [name, src] of [["web/welcome.js", UI], ["web/info.js", INFO], ["web/level.js", LEVELJS]]) {
   const longStrings = proseIn(src);
   ok(`${name} writes no product copy of its own`,
     longStrings.length === 0,
@@ -351,6 +356,32 @@ ok("every rail entry has a paragraph in the catalogue",
 ok("...and the catalogue names no screen that does not exist",
   [...covered].every((v) => rail.includes(v)),
   [...covered].filter((v) => !rail.includes(v)).join(", "));
+/* ORDER, where the rail's order is the owner's. Since UI_PLAN B1 (approved
+ * 2026-09-24) the rail opens Home, then Make: Music, Pictures, Video, Music
+ * video, with Chat and the rest folded under More tools (chat/ui_test pins
+ * that). THE TOUR IS NOT THE RAIL, ON PURPOSE: it draws the catalogue by its
+ * own three groups (make, assemble, run: what you do, not where the link is),
+ * so Chat stays in its "make" group second, where it reads as "or just say
+ * what you want", and Music video sits under "assemble". The catalogue is not
+ * reordered to the rail: its entries are shared by several lanes, and the tour
+ * is no longer what a new install sees first (the Home lines are, UI_PLAN B5).
+ * So only what a reader would trip on is pinned: it opens on Home, the three
+ * make screens it shares with the rail come in the rail's order, and the Comfy
+ * API card sits after Music. The rest of the catalogue has older drift from
+ * the rail (daw, vfx, settings/mcp, Explore) that this check would fail on
+ * without a change having caused it. */
+{
+  const order = [...CATALOGUE.matchAll(/^\s*id: "([a-z]+)", icon:/gm)].map((m) => m[1]);
+  const make = ["create", "images", "video"];
+  ok("the catalogue opens on Home, and Music, Pictures and Video come in the rail's order",
+    order[0] === "home"
+      && make.every((v, i) => i === 0 || order.indexOf(make[i - 1]) < order.indexOf(v))
+      && make.every((v, i) => i === 0 || railViews.indexOf(make[i - 1]) < railViews.indexOf(v)),
+    `catalogue ${order.slice(0, 7).join(", ")} · rail ${railViews.slice(0, 6).join(", ")}`);
+  ok("...and the Comfy API card comes after Music, where its rail link is",
+    order.indexOf("router") > order.indexOf("create") && railViews.indexOf("router") > railViews.indexOf("create"),
+    `catalogue ${order.indexOf("router")}, rail ${railViews.indexOf("router")}`);
+}
 
 /* ── every screen carries an ⓘ ──────────────────────────────────────────────
  *
@@ -510,6 +541,15 @@ ok(`web/info.js names no readiness state of its own (${Object.keys(NEED_STATES).
   `${namedStates.join(", ")} — typed into web/info.js. Ask the state instead: put a flag on it `
     + "in server/welcome/catalogue.js NEED_STATES, which is the table the panel is already "
     + "handed and the one an agent reads too.");
+
+/* THE GROUP ANSWER REACHES THE PANEL. Before a music engine is ready the Models
+ * screen badges every music row "one music engine required" and no single one
+ * `required` (server/models.js markRequired). The join used to carry only
+ * `required`, so this panel would have shown the selected engine with no chip
+ * at all while the Models screen said one is required. */
+ok("a music row's group answer reaches the info panel, in the Models screen's words",
+  /requiredGroup: cap\?\.requiredGroup \?\? null,/.test(ROUTES)
+  && /n\.requiredGroup === "music" \? '<span class="infoneed">one music engine required<\/span>'/.test(INFO));
 
 /* ── the panel may not push the screen out from under itself ───────────────
  *

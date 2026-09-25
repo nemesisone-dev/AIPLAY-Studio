@@ -272,12 +272,18 @@ export const SIZE_RULES = [
   },
   {
     id: "length",
-    headline: "Clip length is not what costs you. Size is.",
+    /* WITHDRAWN AND REPLACED 2026-09-10 — see the same note in
+     * server/welcome/catalogue.js. The 56-to-209 frame band this card used to
+     * quote was the cost model run over lengths nothing on this rig has
+     * rendered, and it is wrong at the top end. */
+    headline: "Length is cheap until it isn't, and we never rendered the cliff.",
     body:
-      "Delivering a fixed three minutes at 1792x1008 costs 16.1-20.6 GPU-hours across the entire "
-      + "legal length range, a 28% band — while the size ladder alone is a 2.7x range. Total cost "
-      + "also RISES with clip length, which is the opposite of the usual intuition. So cut to the "
-      + "music and choose the size for the budget, never the other way round.",
+      "Inside the measured range, size is the bill: the ladder alone is a 2.7x span and length costs "
+      + "almost nothing. Above roughly 331k latent tokens that stops holding — an outside replication "
+      + "over 158 renders measured 30% more frames costing 2.6x, with hard out-of-memory failures. "
+      + "The largest render behind these numbers is 149k tokens; 1792x1008 at 209 frames is 437k, "
+      + "well past the cliff. Cut to the music inside the range we measured, and treat a long clip at "
+      + "a large size as unmeasured rather than cheap.",
     cite: DOCS.faces,
   },
 ];
@@ -612,17 +618,36 @@ export const KNOBS = [
   },
 
   /* ── steps and length, which belong to the render rather than the engine ─── */
+  /* `formControl`: the Video screen's own control for this value. The Lab shows
+   * that control's value and a way to it rather than a second control (UI_PLAN
+   * C3: one step control and one audio control on the screen); video_settings
+   * still reads and sets the row. */
   {
     id: "steps",
     label: "Steps",
     applies: "h3",
     kind: "number", min: 2, max: 40, step: 1,
     path: ["video", "engines", "h3", "steps"],
+    formControl: "vidSteps",
+    /* EACH MEASUREMENT WITH ITS SCOPE, as config.js's `steps` note gives them.
+     * This used to call 20 on the bare model "11 m 00 s, and visibly the
+     * best", but that verdict was the turbo LoRA run AT 20 (2026-08-18); only
+     * the time carries over, because 20 steps cost the same on either path.
+     * The one bare-against-turbo A/B on file is arm H vs C. And 8 loads an
+     * 8-step file only where one is on disk: the Models screen fetches the
+     * 4-step builds alone, which is why config.js's default follows the disk. */
     effect:
-      "Not a quality dial — a model picker. 4 loads the 4-step distillation (~2 m 37 s at native "
-      + "size and 124 frames), 8 loads the 8-step one (5 m 08 s, clean but flat), 20 loads no LoRA "
-      + "at all and runs the bare model (11 m 00 s, and visibly the best: face, knit and lamp all "
-      + "resolve). The bands between the builds are the ones with no good answer.",
+      "Not a quality dial, a model picker. 4 loads the 4-step distillation (~2 m 37 s at native "
+      + "size and 124 frames). 8 loads the 8-step one where that file is on disk (5 m 08 s, clean "
+      + "but flat); without it, 8 runs the 4-step file past its design point. 20 loads no LoRA and "
+      + "runs the bare model: 11 m 00 s is the time of any 20-step render, measured with the LoRA "
+      + "loaded, and the 'visibly the best' once quoted with it was that LoRA-at-20 render. The one "
+      + "A/B of the bare model against a turbo build (arm H vs C, one shot, reference path) found it "
+      + "about equal to the ref2v 8-step at 2.4x the time. The bands between the builds are the ones "
+      + "with no good answer. A clip made on the Video screen follows that screen's own step slider; "
+      + "this is the default only for a render that names none (make_clip without quality, the API). "
+      + "With reference pictures it is the reference build's own count instead (8 where the 8-step "
+      + "reference file is on disk).",
     cite: DOCS.directing,
   },
   {
@@ -632,10 +657,11 @@ export const KNOBS = [
     kind: "enum", options: ["auto", "res_multistep", "euler", "euler_ancestral", "dpmpp_2m", "ddim"],
     path: ["video", "engines", "h3", "sampler"],
     effect:
-      "Auto uses Euler for the LightX2V 4/8-step turbo builds, following their published ComfyUI "
-      + "recipe, and res_multistep for the bare quality model and the measured TaoMate 3-step "
-      + "path. An explicit sampler overrides both. Earlier local measurements used res_multistep; "
-      + "Euler's effect on this rig's image quality has not yet been measured.",
+      "Auto uses res_multistep on the reference path (pictures or sounds attached), measured: Hex "
+      + "Appeal's final cut and the REWIND A/B's winning arm, 2026-09-24. It uses Euler for the "
+      + "first/last-frame LightX2V 4/8-step turbo builds, following their published recipe (not "
+      + "measured here), and res_multistep for the bare model and TaoMate 3-step. An explicit "
+      + "sampler overrides every path.",
     cite: DOCS.bleed,
   },
   {
@@ -656,9 +682,72 @@ export const KNOBS = [
     applies: "h3",
     kind: "bool", onValue: true, offValue: false,
     path: ["video", "engines", "h3", "dropAudio"],
+    formControl: "vidAudio",
     effect:
       "H3 always renders sound whether or not you keep it, so keeping it is free. Discard it for "
-      + "clips that sit under a song you already made — that song is the audio.",
+      + "clips that sit under a song you already made — that song is the audio. A clip made on the Video "
+      + "screen follows its own H3 audio control; this is the default only for a render that names none.",
+    cite: DOCS.config,
+  },
+
+  /* ── sparse attention, the Fast setting's measured speed-up ──────────────── */
+  {
+    id: "sparse_attention",
+    label: "Sparse attention (Fast setting)",
+    applies: "h3",
+    kind: "enum", options: ["sol-attn", "off"],
+    path: ["video", "engines", "h3", "sparse"],
+    formControl: "vidSparse",
+    /* Both halves are config's (h3tier.js H3_SOL_ATTN, the one copy): the
+     * note the switch's tooltip shows, then the recipe in words. */
+    effect: [config.video.engines.h3?.solAttn?.note, config.video.engines.h3?.solAttn?.recipe].filter(Boolean).join(" "),
+    cite: DOCS.config,
+  },
+
+  {
+    id: "free_before_clip",
+    label: "Fresh engine before each H3 clip",
+    applies: "h3",
+    kind: "enum", options: ["auto", "always", "never"],
+    path: ["video", "freeBeforeClip"],
+    effect: "Restarts the engine before an H3 or FastH3 clip when it has already rendered something. Measured on an "
+      + "RX 9060 XT: a second clip in the same engine spilled into shared memory and took about 152 s a step "
+      + "instead of 82 s; unloading the models did not help, a restart did (78 s). Auto does it on any card that is "
+      + "not NVIDIA. The restart costs about 45 s.",
+    cite: DOCS.config,
+  },
+  {
+    id: "sparse_everywhere",
+    label: "Sparse attention on every step count (experimental)",
+    applies: "h3",
+    kind: "bool", onValue: true, offValue: false,
+    path: ["video", "engines", "h3", "sparseAll"],
+    effect: "Runs sol-attn sparse attention on Standard and Best too, not only on the Fast setting, when the sparse "
+      + "attention switch is on. Faster at large sizes, a slightly softer picture. References stay dense. Not "
+      + "measured by the H3 lab: check the take.",
+    cite: DOCS.config,
+  },
+  {
+    id: "sparse_tau",
+    label: "Sparse attention strength (tau)",
+    applies: "h3",
+    kind: "number", min: 1, max: 2, step: 0.1,
+    path: ["video", "engines", "h3", "solAttnTau"],
+    effect: "How much attention sol-attn skips. 1.0 keeps about 16% of blocks, 1.5 about 7%, 2.0 about 2.7% "
+      + "(ComfyUI's Block Sparse Attention node). Higher is faster and softer. Unset, the lab's 1.3.",
+    cite: DOCS.config,
+  },
+  {
+    id: "block_cache",
+    label: "Block cache (experimental)",
+    applies: "h3",
+    kind: "bool", onValue: true, offValue: false,
+    path: ["video", "engines", "h3", "blockCache"],
+    /* h3tier.js H3_BLOCK_CACHE: the node, its recipe and what was measured. */
+    effect: "Skips most of H3's transformer blocks on steps where the picture barely changes (the MiniMax H3 "
+      + "Block Cache (T8) custom node, which must be installed in ComfyUI). Plain clips only, and never with sparse "
+      + "attention on. Its author measured 1.09x to 1.20x at 20 steps on NVIDIA; untested on the 3 to 8 step "
+      + "settings and on AMD: check the take.",
     cite: DOCS.config,
   },
 
@@ -791,6 +880,9 @@ export function knobRows(engineKey) {
       value: knobValue(k),
       effect: k.effect, cite: k.cite,
       path: k.path.join("."),
+      /* The Video screen's own control for this value (UI_PLAN C3), or null:
+       * the Lab mirrors that control instead of drawing a second one. */
+      formControl: k.formControl || null,
       /* Where a row parks a value it will put back. Null on most rows; a row
        * that has one is a row that touches a field the render does not read,
        * and both hands should be able to see that rather than infer it. */

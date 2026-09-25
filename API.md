@@ -59,6 +59,30 @@ cannot execute; the route tells the two apart and says which one it got.
 Full description, the record it writes, and what it deliberately does not defend
 against: [docs/ENGINE_DOOR.md](docs/ENGINE_DOOR.md).
 
+### Refused: sexual content involving minors (422)
+
+Every door that makes a picture or a clip refuses a request whose words pair a
+child or teenager with nudity or sexual content. This includes `/api/image`,
+`/api/images/ai-edit`, `/api/video`, `/api/restyle`, `/api/art`,
+`/api/reactive/run`, `/api/batch`, `/api/mv`, `/api/collab`, `/api/router/run`,
+`/api/enhance` and `/api/engine`. The answer is always:
+
+```json
+{ "error": "This can't be made: it pairs a child or teenager with sexual content.", "code": "minor-sexual" }
+```
+
+The status is HTTP 422 and nothing is queued. `error` always starts with that
+sentence; when there is something to do about it (move "no children" to the
+negative prompt, or part of it came from a picture or cast member the request
+uses) that follows in `error` and in `hint`. `found` says where each half came
+from (`"prompt"` or `"context"`), never the words. Some doors also say `reason`.
+A picture graph that writes its prompt while it runs answers 422 with code
+`unverifiable-text`. There is no flag that turns this off. The negative prompt
+is never counted as intent. See [docs/SAFETY.md](docs/SAFETY.md).
+
+`POST /api/safety/check` is internal: Studio's own ComfyUI node asks it, with a
+per-boot token, about graphs posted to the engine directly.
+
 ---
 
 ## Reading state
@@ -92,7 +116,10 @@ because browser FLAC decoding proved unreliable.
 
 ### `GET /api/audio/NAME`
 The audio itself, **with HTTP range support** (206). Native YuE2 WAV files are
-served as `audio/wav`; seeking depends on range support.
+served as `audio/wav`; seeking depends on range support. `bytes=-N` is the last
+N bytes. A player that hangs up early (a seek, a pause, the next track) releases
+the file at once, so a later tag or cover rewrite is not refused with `EPERM`
+on Windows (server/sendfile.js).
 
 ---
 
@@ -144,10 +171,20 @@ Submit `POST /api/generate` with native-specific fields:
 }
 ```
 
-`caption` and nonempty `lyrics` are required. `cot` is `full` (default),
+`caption` and nonempty `lyrics` are required. `seed` is optional: without one
+each request rolls its own (0 to 2^32 − 1), as every other engine does; it used
+to be 831001 every time. `cot` is `full` (default),
 `melody` or `off`; `narSteps` defaults to 32 (16 is experimental), with an
 integer API range of 1–256. Optional `cfgScale` is finite, 0–20; optional `abc`
-is text up to 64 KiB and requires CoT `melody` or `full`. Lyrics may carry
+is text up to 64 KiB and requires CoT `melody` or `full`. The sampler's dials
+use the Python kit's names and reach the runtime by its own: `temperature`
+(0–5) and `topP` (0.01–1) become `semantic_temperature` / `semantic_top_p`
+(the performance; vendor defaults 1.0 / 0.95), and `planTemperature` (0–5) /
+`planTopP` (0.01–1) become `abc_temperature` / `abc_top_p` (the planner; 0.7 /
+0.9). Blank leaves the vendor default. The planner does not run with a supplied
+`abc` or with `cot: "off"`, so its two dials are refused there by sentence
+(`reason: "sampling"`) rather than dropped. `key`, `bpm`, `meter` and `abcOpen`
+are the Python kit's only: this runtime has no open-score option. Lyrics may carry
 section tags (`[Verse]`, `[Chorus]`, …), YuE2's own lyric format;
 `allowSectionLabels` is still accepted but no longer needed. Unknown options,
 instrumentals, previews, audio references and duration/Python runtime controls
@@ -214,6 +251,17 @@ The following body describes **MiniMax Music 3**, not native YuE2:
 Only `caption` is required. Jobs queue and run **one at a time** — asking for four
 takes costs time, not memory.
 
+**Paid, so asked every time.** With the hosted engine switched on (Settings → No strong
+graphics card?), a MiniMax Music 3 song bills the person's own key. It is refused with
+`409 {reason: "confirm-spend", error, paid: {usdEach, usdTotal, runs, key, keySavedAt, spentUsd, capUsd}}`
+until the same request carries `"confirmSpend": true` — exactly `true`; the `error` is the
+sentence to show the person. With no key saved: `400 {reason: "needs-key"}`. Nothing is sent
+either way. MCP `make_song` takes `confirm_spend`; pass it only after the person agreed to pay
+for that song. A MiniMax continuation (`/api/extend`, `/api/replace`) never goes to the hosted engine:
+with it switched on, the door answers `409 {reason: "hosted-on"}` and queues nothing.
+`POST /api/music` (every action, including `model`, which can switch the hosted engine on or off)
+is same-origin JSON only, and `GET /api/apimode` answers only on this machine's own host.
+
 **YuE2 through ComfyUI** (`"engine": "yue2-comfy"`) adds `cot` (`full` | `melody` | `off`),
 `narSteps`, and a LoRA: `"lora": "<file in models/loras>"` with `"loraStrength": 1`
 (−4 to 4). Omit `lora` to use the Music page's saved choice, send `""` for none. A name
@@ -224,10 +272,17 @@ skipped — ComfyUI's loader matches keys and ignores the rest without an error.
 The composer has its own door: `"loraClip": "<file in models/loras>"` with
 `"loraClipStrength": 1` patches the autoregressive half (ComfyUI's CLIP side) through
 LoraLoader on the clip wire, the audio model untouched — the catalogued instrumental
-planner LoRA goes there, and with `"instrumental": true` and nothing named it is used by
-itself when it is on a shelf, the sheet becoming `[instrumental]`. Same refusal for a
+planner LoRA goes there, and with `"instrumental": true`, nothing named and no `abc` it is
+used by itself when it is on a shelf, the sheet becoming `[instrumental]`. Same refusal for a
 name off the shelf; `{"action":"planner-lora"}` saves the page's choice; `GET /api/status`
 reports both under `config.musicYue2LoraClip` / `…Strength`.
+A supplied score (`"abc"`, up to 64 KiB, with `cot` `full` or `melody`) is sung as written:
+the planner is left out and the text goes to YuE2GenerateMusic. `temperature`, `topP`,
+`topK`, `repetitionPenalty` and, without a score, `planTemperature` / `planTopP` reach the
+nodes. What this graph cannot do is refused with one sentence and nothing queued (`400`,
+`engine: "yue2-comfy"`): `abcOpen` (`comfy-open-score`), `key` / `bpm` / `meter`
+(`comfy-seed-score`), `coverOf` (`comfy-cover-prime`), a `cfgScale` other than 1
+(`comfy-guidance`), and planner dials with no planner running.
 
 **ACE-Step 1.5 through ComfyUI** (`"engine": "ace-step15"`) renders the chosen DiT
 (`POST /api/music {"action":"model","value":"ace-step15:<file>"}`) with ComfyUI's own
@@ -262,12 +317,23 @@ score planner. Out-of-range values are refused with `reason: "sampling"` or
 `"seed"`. MCP: the same on `make_song` as `key`, `bpm`, `meter`, `temperature`,
 `top_p`, `plan_temperature`.
 
+Which build takes which: `key`, `bpm`, `meter`, `abcOpen` and `coverOf` are the
+Python kit's (`engine: "yue2"`) alone; the dials reach all three builds (native
+GGUF as its own request options, above; ComfyUI through its nodes). The Music
+page shows a row only on a build that takes it (`data-python-yue` rows are the
+kit's; Guidance is not shown on ComfyUI, whose graph samples at cfg 1), and
+sends only what it shows — `server/music-engine-rows_test.js` holds each
+visible row against each build's door.
+
 ### `POST /api/song_to_score`
 `{ "source": { "path" | "library_file" | "data_url" … }, "mode": "melody" }` — a
 finished song, transcribed by SheetSage2 (ComfyUI's own audio-encoder node, core from
 0.35) into the two-voice score YuE2 sings from. `melody` (default) keeps the tune,
 `full` keeps the chords too. Needs the catalogue's "Cover — SheetSage2 song-to-score"
-row installed, else `400` with `needsModel: "coverSheetSage2"`. Holds the card for the
+row installed, else `400` with `needsModel: "coverSheetSage2"`. Same-origin local JSON only
+(`403` otherwise), and the body is capped at 72 MB (`413`). With `"stem": "vocals"`,
+a machine that cannot separate stems answers `409` with `setup: "stems"` (see
+Refusals below). Holds the card for the
 transcription. Then `/api/generate` with that `abc`, `cot: "melody"` and a NEW style
 line is the cover: the melody is kept, the voice and the arrangement are re-rendered.
 MCP: `song_to_score`, then `make_song`.
@@ -276,11 +342,20 @@ MCP: `song_to_score`, then `make_song`.
 `{ "source": { "path": "C:\\…\\hum.wav" } }` — or `{ "library_file": "…" }`, or
 `{ "data_url": "data:audio/webm;base64,…", "name": "hum.webm" }` — plus optional `bpm`
 and `key`. A pitch tracker in the engine's python (no model, no card) turns one
-hummed voice, 1–60 s, into the two-voice ABC score YuE2 takes verbatim. Answers
-`abc`, `bpm`, `key`, `notes`, `bars`, `seconds`. Send the score to `/api/generate`
+hummed voice, 1–60 s, into the two-voice ABC score YuE2 takes verbatim, in
+seconds (pYIN at hop 512). Each bar is spelled against
+the key signature, with `=`, `^` or `_` wherever the sounding pitch needs one
+(an accidental holds to the end of its bar in this dialect), lengths are the
+dialect's own multipliers (tied where needed), and the silence before the
+first note is trimmed. Answers
+`abc`, `bpm`, `key`, `notes`, `bars`, `seconds`, `leadIn` (the seconds trimmed). Send the score to `/api/generate`
 as `abc` with `cot` melody or full; add `"abcOpen": true` to leave the score open so
 the planner continues the hummed bars into a whole song (the driver's `--abc-open`).
-MCP: `hum_to_score`, then `make_song` with `abc` and `abc_open`.
+Same-origin local JSON only (`403` otherwise): it runs the engine's python on a
+path the body names. The body is capped at 72 MB (`413` above it). A python missing a module the
+tracker needs answers `409` with `module`, `pip` and, for an engine Studio
+installed, `setup: "studio-packages"`. MCP: `hum_to_score` (`source`, or a flat
+`library_file`), then `make_song` with `abc` and `abc_open`.
 
 ### `POST /api/extend`
 ```jsonc
@@ -424,6 +499,76 @@ the new frames alone kept beside it as `<id>_new.mp4`. The source is untouched.
 Without ffmpeg the new frames come back as the clip and its record's
 `continuation.joined` is false with the reason. MCP: `extend_clip`.
 
+### `POST /api/video` · `{ "action": "check" }` and what `create` says back
+`{ "action": "check", "prompt", "width", "height", "seconds", "steps",
+"refImages", "refAudios", "persona", "song", "sparse", "fromCover" | "fromUpload" | "toCover" | "toUpload" | "framed",
+"sourceVideo" }` — the plan a `create` with the same body would render on this
+card (server/video-plain.js `videoPlan`), without staging or queueing
+anything: `engine`, `width`, `height`, `seconds`, `steps`, `sparse`, `sampler`,
+`fit` (`sentence` "This size needs about X GB free on the graphics card; you
+have Y GB…", `needGb`, `haveGb`, `over`, `scope`), `warnings` `[{id, text}]`,
+`notes` `[{id, text}]` (caveats that change nothing: `sparse-untried`, sol-attn
+at a size the lab never measured it at) and `refusal`. `create` renders that
+plan and returns the same `warnings`: `size` (no size named, so an H3 render
+on a smaller card starts at the card's tier size, said as "measured to fit" or,
+for the 6 GB preview, "not yet seen to fit"), `steps` (Fast with references
+runs the 4-step reference build's own count; 6 or 7 steps are left alone),
+`tags` (a `<Picture n>` / `<Audio n>` nothing attached answers is taken out of
+the description), `frames-untried` (a first or last frame on FastH3, which the
+lab ran on text only), `not-offered` (H3 on a card it is not offered on; the
+Video screen asks before it sends), `sparse` (sol-attn named for a render that
+cannot take it), `fit` and `ram` (under 32 GB of RAM). References on FastH3 or
+LTX are refused with `reason: "refs-ignored"` in the sentence `/api/status`
+sends per engine as `refsIgnored`. `"sparse": "sol-attn" | "off"` is H3's
+sparse attention for that render, applied on the Fast setting's plain path (the
+3-step build; no references, continuation or video-to-video) only; absent, the
+saved `sparse_attention` (video_settings) applies, and the Video screen sends it
+only while its switch differs from the saved value. `/api/status` also sends
+per engine `h3Tiers` (whether H3's card tiers apply) and `fastNote` (the Fast
+chip's words, which follow the disk and the saved sparse attention). A failed
+clip's status row carries the sentence as `error`, the engine's own text as
+`detail`, its kind as `errorReason` (`out-of-memory`, `ram-out-of-memory`,
+`refused`, `unreachable`, `engine-gone`, `timeout`, …) and both in `fullError`.
+The door takes Studio's own page or a local client only, with a 1 MB body, and
+so does `POST /api/videolab`. MCP: `make_clip` `check_only` (with `notes`),
+`sparse`, and its reply's `warnings`.
+
+**Keeping a character** (the REWIND A/B, 2026-09-24, DIRECTING.md §2). `create`
+and `check` take `"persona": "<saved character>"`: it is resolved before the
+safety check (so the check sees its pictures and words), up to three of its
+pictures ride after `refImages`, each bound in the prompt as "<Picture N> is
+Name.", and its description follows as "Name: description.". A name the shelf does
+not have is refused with `reason: "persona"`; on FastH3 or LTX a persona is
+refused like any reference (`refs-ignored`). A render with references that names
+no `steps` runs the reference build's own count, `referenceSteps` (sent per
+engine on `/api/status`; 8 where the 8-step reference file is on disk). `check`
+takes `"song": true` for a song the page holds (`create` reads `audioTrack`).
+Both replies carry `sampler` (res_multistep on the reference path) and
+`character`: `{ keeps, pictures, persona, unnamed, steps, measuredSteps,
+measuredHere, song, receipt, hint }` on H3 (null elsewhere), where `receipt` is
+the Video screen's words ("keeps Mira: 3 pictures + 8 steps + song (lip-sync)";
+pictures without a saved character are "2 reference pictures", and pictures the
+words never tag are "not named") and `hint` the Keep row's line (name the
+pictures, name the character, the song for a singer, then whether the measured
+build is on this PC). `measuredSteps` is the measured setup's count, a
+constant 8 (video-plain.js `KEEP_MEASURED`: the ref2v 8-step v1.0 build),
+apart from what this disk runs; `measuredHere` says whether that build is on
+this PC. Every reply also carries `songLine` `{ meta, hint }`: Song under the
+clip's words for this engine (lip-sync on H3 with pictures; on LTX mouths were
+measured not to follow). Warnings: `persona-pictures` (more than three: a clip
+takes the first three) and `persona-missing` (`create` only: a picture among
+those that ride could not be found). Notes: `runs` (the build, steps, sampler
+and video decoder), `pictures` (more than three reference pictures),
+`persona-unnamed` (the words never name the character), `steps-measured`
+(fewer steps than, or another build than, the one keeping a character was
+measured on), `decoder` (the measured setup used the fp16 decoder) and
+`audio-ref` (a sound reference re-sings; lip-sync is the song under the clip).
+`/api/status` sends per engine `referenceSteps` and `keepFast` `{ steps, note
+}` (the Fast chip while a character is kept). MCP: `make_clip` `persona`, and
+its reply's `character` and `character_hint` (`check_only` adds
+`keeps_character`, `sampler` and `soundtrack`); `studio_status`
+`video.h3_reference_steps`.
+
 ### The conditioning bridge on `POST /api/video`
 `create` and `extend` both take `"bridge": "<adapter file>" | "off"` and
 `"bridgeAlpha": 0–1` for that render; absent, the Video panel's
@@ -453,20 +598,45 @@ the reply carries `stem: { file, path, made }`. Refused with `reason:
 
 ### Steering the defaults from an agent
 Every render setting has a tool: `make_clip` (`quality` fast|best, `steps`,
-`bridge`, `bridge_alpha`), `video_settings` (every Video Lab knob, including
-`turbo3_max_steps`, `turbo_shift_video`, `bridge_adapter`, `bridge_alpha`),
+`persona` (Keep my character; its reply says what it keeps in `character`),
+`bridge`, `bridge_alpha`, `sparse`, `check_only`), `video_settings` (every Video Lab knob, including
+`turbo3_max_steps`, `turbo_shift_video`, `bridge_adapter`, `bridge_alpha`, `sparse_attention`),
 `set_video_engine`, `set_image_engine` (the persistent automatic song-cover
-preference; standalone `make_image` takes its own `engine`), `make_song` (every YuE2 dial: `key`, `bpm`, `meter`, `temperature`,
+preference, or with `use_for` "pictures" the Images screen's engine that
+`make_image` and music-video stills use when they name none; `"auto"` forgets
+the choice), `set_music_engine`
+(the persistent music model; `"auto"` forgets the choice), `make_song` (every YuE2 dial: `key`, `bpm`, `meter`, `temperature`,
 `top_p`, `top_k`, `repetition_penalty`, `plan_temperature`, `plan_top_p`,
 `lora`), and `download_model` (a catalogue row, with `accept_region` for the
 territory-locked ones — never assumed). On the page the same choices are two
 layers: the Video screen's Fast / Standard / Best chips and the Images engine
 dropdown for everyone, the step slider, the Video Lab knobs and Advanced
-Options for people who want the number.
+Options for people who want the number. The step counts behind Fast / Standard
+/ Best (and make_clip's `quality`) follow the turbo files on disk: Standard,
+also the default, is 8 only where both 8-step builds are present, else 4.
+`studio_status` shows them as `video.h3_quality_steps`.
+
+When nothing is saved, the music model, the picture model and the cover engine
+follow what is on the disk (YuE2 through ComfyUI, then YuE2 GGUF; the
+recommended picture model that is present), worked out on every read and never
+written into settings.json. A saved choice always wins; a settings file an
+older Studio wrote keeps its values (and the Images engine keeps Qwen Image
+2.1, the old default), reported as `kept`. `studio_status` `defaults` lists each
+one as `{key, value, chosenBy: "machine" | "you", why}`, plus `kept`,
+`savedValue` (this session runs something else than the saved choice: the
+music-only launch, or a saved GGUF that is not installed; nothing is
+rewritten) and `paid` (API mode on: songs are billed to the person's own key).
+With no picture model on the disk no cover is queued and the cover row says
+"Add a picture model to get covers." Settings → *Picked for this PC* shows the
+same rows, with Change and, on a saved one, *Let Studio pick*.
 
 ### The cover, on the page
-Advanced Options → *Hum a melody, or cover a song* → transcriber *Whole song*:
-pick a **Library song**, leave **Voice only** ticked, press **Transcribe**. The
+Melody & score → *Hum a melody, or cover a song* → transcriber *Whole song*:
+pick a **Library song**, choose what to **Read the tune from** (*its separated
+voice*, which needs stem separation set up — it starts unticked until it is —
+or the whole mix), press **Transcribe**. The status line names the step and its
+clock ("Separating the voice… 0:42", "Reading the notes (SheetSage2)… 0:12"),
+and ■ Stop ends it (for a whole song through `POST /api/cancel`). The
 score lands in the box, ticked for Create; write the new singer into the style
 line ("male lead vocal, warm baritone…"), keep or change the words, press
 Create. The same words and tune, a new voice. Over MCP: `song_to_score`
@@ -614,14 +784,73 @@ part of your film). Design and the owner's answers: `docs/COLLAB.md`.
 
 ### `POST /api/batch`
 `{ "action": "start", "items": [...], "takes": 4, "cap": 50 }` — also `pause`,
-`resume`, `stop`, `clear`.
+`resume`, `stop`, `clear`. Same-origin JSON only. With the hosted engine on, a music
+run is refused with the whole night's estimate (`reason: "confirm-spend"`) until `start`
+carries `"confirmSpend": true` (MCP `overnight_start`: `confirm_spend`).
 
 Round-robin by design: take 1 of every idea, then take 2. A run that only gets
 60% through overnight leaves you covered on every idea rather than twenty takes
 of the first and none of the rest.
 
 ### `POST /api/cancel`
-Interrupts the job in flight.
+The Stop button: cancels the song in flight and the queued songs, drops the
+queued pictures, stems and timed lyrics, and stops the one of those that is
+running — including a demucs or lyrics process, whose whole process tree is
+ended. Other engine work (a chat turn, a friend's render) keeps its place. Answers
+the song queue plus `artStopped`: `{ dropped, wasRunning, kind, killed, stopping,
+interrupted, engineCancelled }`; `stopping` stays true until the process is gone.
+MCP: `stop_generation`.
+
+### `POST /api/stems`
+```jsonc
+{ "action": "run", "file": "aiplay_00021.flac" }   // same-origin local JSON only
+{ "action": "python" }                              // report
+{ "action": "python", "value": "C:\\…\\python.exe" } // choose; "" or null = default
+{ "action": "when", "value": "off|all|starred|liked" }
+```
+`run` separates one song into vocals, drums, bass and other (demucs htdemucs_ft,
+behind music on the art queue). It answers `200 { ok, jobId }`, or
+`200 { ok, joined: true, jobId }` when that song is already being separated, or
+`409`, before anything is queued, when the stem separation python lacks demucs
+or PyTorch (a missing python is refused within a second; the import check takes a
+few seconds at most, and counts as missing after ten) (`reason` `stems-python-missing` |
+`stems-demucs-missing` | `stems-torch-missing`, `python`, `pip`, and
+`setup: "stems"` unless `AIPLAY_SYS_PYTHON` names the python), or `409` with
+`reason: "refused"` when the queue said no. `python` is Settings > Songs >
+"stem separation python": `{ ok, stems: { python, chosen, source, defaultPython,
+modules: { demucs, torch }, ready, note } }`. MCP: `separate_stems`,
+`stems_python`, `setup_feature {"id":"stems"}`.
+
+### `POST /api/whisper` · `GET /api/whisper`
+```jsonc
+// same-origin local JSON only; exactly one of file | clip | path
+{ "action": "transcribe", "file": "aiplay_00021.flac",   // a library song
+  "lyrics": "…", "language": "en", "words": true, "writeLrc": true, "vocals": true }
+{ "action": "transcribe", "clip": "import_talk_x1.mp4" } // a clip or imported file
+{ "action": "transcribe", "path": "D:\\…\\output\\stems\\htdemucs_ft\\song\\vocals.flac" }
+{ "action": "model", "value": "large-v3|large-v3-turbo|medium|small|base|tiny" }
+```
+Whisper over any file, in the timed lyrics python with the timed lyrics model,
+queued on the art queue (kind `whisper`) behind music like a separation. A
+`path` must resolve inside the output folder. `transcribe` answers
+`{ ok, jobId, input, usesVocalStem, model, lrc?, wordLrc? }`, or `400` with
+`setup: "lyrics"` when the whisper python is missing. `GET /api/whisper?job=<id>`
+answers `{ job: { id, state: queued|running|done|failed|stopped, error?, result? } }`;
+`result` is `{ language, text, segments: [{ start, end, text, words? }], duration,
+aligned?: { lines: [{ start, text, words? }], confidence, matched }, lrc?, wordLrc?,
+device, model }`. With known `lyrics` the lines keep those words and take
+whisper's timing; `writeLrc` writes `<name>.whisper.lrc` and `.whisper.word.lrc`
+(read them at `/api/lrc/<name>`). `GET /api/whisper` (or `model` with no value)
+reports `{ whisper: { python, source, ready, modules, note, install?, setup?,
+model, models, device, jobs } }`. MCP: `whisper_transcribe`, `whisper_status`.
+
+### Refusals: `409` and `setup`
+`409` means this machine is not ready (a python, a module or a model is
+missing). The body is `{ error, setup?, python?, pip?, module?, needsModel?,
+reason? }`: the sentence's first line says what is missing and where; `setup`,
+when present, is the id `POST /api/setup {"action":"run","id":…}` takes to fix
+it (`stems`, `studio-packages`, `lyrics`). The page offers that as an Install
+button; MCP tools append the id to the error for the agent to ask about.
 
 ---
 
@@ -655,6 +884,28 @@ memory tier (restarts the engine and clears the AR cache).
 `ws://127.0.0.1:4173/live` pushes `{ type: "state", current, queue, history, run }`
 on every transition. It carries **job state only, no library** — merge it into
 what you already hold rather than replacing.
+
+---
+
+## No strong graphics card? (`/api/cloud`)
+
+Friend first, then your own key. One answer for the Settings card and `cloud_status`:
+`ways` in order (asking a friend on Collab, then a paid service on the person's own key),
+the hosted engine's switch, cap and spend, and the Comfy API key's status. Keys are never
+returned; a key's status says when it was saved and whether another copy of Studio on this
+Windows account saved it (`savedHere: false`, and the sentence in `said`). Studio reads no
+key from an environment variable or another program. Implemented in `server/cloud-switch.js`.
+
+| Route | What it does |
+|---|---|
+| `GET /api/cloud` | `order`, `ways`, `friend` {available, note}, `hosted` {on, runsHere, note, provider, capUsd, spend, key, keySaid}, `comfy` {key, keySaid, note}; this machine's own host only |
+| `POST /api/cloud {action:"set", on?, monthlyCapUsd?, provider?}` | the hosted engine's switch, cap (0–1000) and provider; the same writer as `POST /api/apimode {action:"config"}` |
+| `POST /api/cloud {action:"comfyKey", key}` | check the Comfy API key with Comfy's free model list, then save it |
+| `POST /api/cloud {action:"forgetComfyKey"}` | delete the saved Comfy API key |
+
+Every POST is same-origin JSON. MCP: `cloud_status` (a read the in-app chat may use) and
+`set_cloud` (withheld from the chat: it decides whether songs bill). A Comfy API run
+(`POST /api/router/run`, Use Comfy API mode only) likewise needs `"confirmSpend": true`.
 
 ---
 
@@ -715,8 +966,8 @@ asynchronous preparation or model analysis. `preview:true` includes the contact
 sheet. `prepare_request` requires `reviewed:true`; returns an HTTP generation
 request and its equivalent typed `make_song` arguments, but submits neither.
 Vision analysis uses an installed Qwen3-VL through the engine door; transcription
-uses SheetSage2. A score requires Python YuE2 or native GGUF, while a brief-only
-request can also use ComfyUI. Native GGUF currently requires lyrics.
+uses SheetSage2. A score works on all three YuE2 builds (Python, ComfyUI and native
+GGUF). Native GGUF currently requires lyrics.
 
 Source evidence, suggestions and edited briefs remain separate. This is not
 native YuE2 multimodal input or guaranteed audiovisual synchronization. See

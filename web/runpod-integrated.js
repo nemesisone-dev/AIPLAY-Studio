@@ -1,4 +1,8 @@
-/* RunPod inside AIPLAY's normal Images and Video screens.
+/* RunPod inside AIPLAY's Images and Video screens, in the launcher's "RunPod GPU"
+ * mode only (config.remoteOnly). In any other mode this file does nothing: the
+ * blocks stay hidden, no request goes to /api/runpod, and Make / Render are
+ * never intercepted. In that mode every Images and Video render goes to the Pod
+ * (there is no local engine to choose), so the "Render on" chooser stays hidden.
  *
  * The local forms remain authoritative for prompts and common render settings.
  * This module only changes where the final button sends them. The worker token
@@ -140,7 +144,6 @@ function paintTarget(kind) {
     if (label) label.hidden = remote;
     if (control?.parentElement) control.parentElement.hidden = remote;
   }
-  localStorage.setItem(`aiplay.${kind}.renderWhere`, remote ? "runpod" : "local");
   const button = $(kind === "img" ? "imgGo" : "vidCreate");
   if (button && !active.has(kind)) button.textContent = remote
     ? (kind === "img" ? "Make image on RunPod" : "Render clip on RunPod")
@@ -298,12 +301,14 @@ function resume(jobs) {
   }
 }
 
-function init() {
+async function init() {
   if (!$("imgRenderWhere") || !$("vidRenderWhere")) return;
+  let status = null;
+  try { status = await (await fetch("/api/status")).json(); } catch { return; }
+  if (!status?.config?.remoteOnly) return;
   for (const kind of ["img", "vid"]) {
-    const select = $(`${kind}RenderWhere`);
-    select.value = localStorage.getItem(`aiplay.${kind}.renderWhere`) || "local";
-    select.addEventListener("change", () => paintTarget(kind));
+    $(`${kind}RunPodBlock`).hidden = false;
+    $(`${kind}RenderWhere`).value = "runpod";
     paintTarget(kind);
   }
   for (const button of document.querySelectorAll("[data-runpod-settings]")) button.addEventListener("click", openSettings);
@@ -371,10 +376,6 @@ function init() {
     if (target("vid") !== "runpod") return;
     event.preventDefault(); event.stopImmediatePropagation(); submit("vid");
   }, true);
-  fetch("/api/status").then((r) => r.json()).then((status) => {
-    if (!status.config?.remoteOnly) return;
-    for (const kind of ["img", "vid"]) { $(`${kind}RenderWhere`).value = "runpod"; paintTarget(kind); }
-  }).catch(() => {});
   refreshWorker().catch((error) => setState(error.message, true));
   loadAccount();
 }

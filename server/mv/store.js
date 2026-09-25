@@ -107,16 +107,26 @@ export function blankProject(title, kind = "mv") {
        * anatomy faults would be taught to the clip as intention. Worth turning
        * on only when the boards have been looked at and are good. */
       boardRef: false,
+      /* THE SONG UNDER EVERY SCENE'S CLIP ("Song under the clip: always"), Hex
+       * Appeal's setting and where new projects start since 2026-09-24. The
+       * REWIND A/B (same seeds, two blind judges; DIRECTING.md §2) put it
+       * under every reference shot and the sung line followed the words;
+       * "auto" puts it only under boards marked as sung (lipSync), which only
+       * an agent sets. Its render-time cost was never measured on its own.
+       * An older project keeps what it stored (no value reads as auto). */
+      songConditioning: "always",
       /* WHICH IMAGE MODEL DRAWS THE SHEETS AND BOARDS.
        *
-       * null keeps the library-wide default (config.art.engine, flux2). The
-       * point of exposing it per project: FLUX.2 is the only engine here with
-       * REFERENCE images, and it is a generalist — asked for anime hands it
+       * null keeps the library-wide cover default (config.art.engine: your
+       * saved choice, or, when nobody chose, the recommended picture model on
+       * this PC — server/fit.js defaultFor). The point of exposing it per
+       * project: FLUX.2 and Qwen Image 2.1 take REFERENCE images, and FLUX.2
+       * is a generalist — asked for anime hands it
        * produces the extra fingers this project found. An anime-specialised
        * checkpoint draws the style far better and takes no references, which
        * is an acceptable trade for a project whose identity comes from H3's
        * own reference path rather than from the board. */
-      imageEngine: null,          // null | "flux2" | "ideogram" | "checkpoint"
+      imageEngine: null,          // null | "flux2" | "ideogram" | "checkpoint" | "qwen-image-2.1"
       imageCheckpoint: null,      // a file in ComfyUI/models/checkpoints
       storyboardStyle: "sketch",
     },
@@ -255,8 +265,11 @@ export async function updateProject(slug, fn) {
   });
 }
 
-export async function createProject(title, kind = "mv") {
+/* `brief` (optional) is laid over a new video's blank brief: the routes pass
+ * the card's size (server/mv/sizes.js), worked out when the project is made. */
+export async function createProject(title, kind = "mv", { brief = null } = {}) {
   const doc = blankProject(title, kind);
+  if (brief && doc.brief) Object.assign(doc.brief, brief);
   // Two projects called "Neon" must not become one folder. The suffix is only
   // added on a real collision so the common case stays readable.
   let slug = doc.slug, n = 2;

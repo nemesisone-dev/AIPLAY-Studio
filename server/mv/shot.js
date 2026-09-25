@@ -127,6 +127,20 @@ const rowFor = (doc, name) =>
  * separate places used to spell it as a bare 9. */
 export const REF_CAP = 9;
 
+/* IS LTX ON THIS PC? A FACT, INJECTED. "hybrid" sends a scene with no cast to
+ * LTX, and a newcomer cannot download LTX (its repo is gated), so on a fresh
+ * install every cast-less scene went to an engine that is not there. This file
+ * stays pure: the server hands in a probe (server/mv/routes.js, from index.js's
+ * videoReady("ltx")), and with none installed, as in a test or a script, LTX
+ * counts as ready, which is how hybrid behaved before. `opts.ltxReady` on one
+ * call beats both. */
+let ltxProbe = null;
+export function setLtxReady(fn) { ltxProbe = typeof fn === "function" ? fn : null; }
+export function ltxReadyNow() {
+  if (!ltxProbe) return true;
+  try { return ltxProbe() !== false; } catch { return true; }
+}
+
 /* ─────────────────────────────────────────────────────── the resolution */
 
 /**
@@ -224,11 +238,63 @@ export function resolveShot(doc, segmentId, opts = {}) {
    * chose until after it had run. That is now the first thing the shot record
    * says, above the prompt, for exactly this reason. */
   const mode = String(doc.brief?.videoEngine || "hybrid").toLowerCase();
-  const hasRefs = castRefs > 0 && doc.brief?.castRefs !== false;
+  const refsWanted = doc.brief?.castRefs !== false;
+
+  /* ⚠ TWO QUESTIONS THAT WERE ONE VARIABLE, AND THE SECOND ANSWER WAS WRONG.
+   *
+   * "does this scene justify H3's price?" and "should this scene's pictures be
+   * attached?" are not the same question, and `hasRefs = castRefs > 0` used to
+   * answer both. For hybrid that is harmless — a cast-less scene goes to LTX,
+   * and LTX has no picture input, so there is nothing to attach either way.
+   *
+   * On an EXPLICIT "h3" project it was a straight defect. The engine is H3
+   * because the brief said so; the ten-times cost is already being paid; and
+   * then a board with no person on it — a room, a prop, an empty case — had its
+   * pictures withheld anyway, because the ROUTER's question came back "no
+   * cast". The plates were resolved, named in the prompt, and never sent. Worse
+   * than losing them: `opensOn` below then pinned the flux storyboard as frame
+   * 0 on exactly those shots, so the one picture that DID reach the render was
+   * the one the owner had asked to keep out of the clip path.
+   *
+   * MEASURED on ABOVE THE WATER: 8 of 34 shots, and 9 of the coda's 12, because
+   * a shot of a city has nobody standing in it. The workaround was to import a
+   * duplicate of a plate under `characters` purely to trip the counter — two of
+   * the nine slots spent on one image to answer a question nobody was asking.
+   *
+   * So the router keeps counting CAST (that part was right and is why props
+   * stopped re-routing the engine), and the attachment follows THE ENGINE THAT
+   * WILL ACTUALLY RUN. `brief.castRefs: false` still switches pictures off
+   * everywhere, which is the only thing it ever claimed to do. */
+  /* ⚠ AND HYBRID'S CHEAP BRANCH ONLY WHEN IT IS THERE. A scene with no cast
+   * goes to LTX when LTX is on this PC; otherwise to H3, the engine that is,
+   * and the shot says so (warning "ltx-not-here") rather than sending the
+   * render to weights that do not exist. An explicit "ltx" is left alone: a
+   * person who named the engine gets it, or its own missing-model refusal. */
+  const ltxHere = typeof opts.ltxReady === "boolean" ? opts.ltxReady : ltxReadyNow();
+  const castless = !(castRefs > 0 && refsWanted);
+  const engine = mode === "h3" ? "h3" : mode === "ltx" ? "ltx"
+    : (!castless ? "h3" : ltxHere ? "ltx" : "h3");
   // H3 is the only engine with a <Picture N> input, so refs can only be honoured
   // there. Asking for LTX is therefore also asking to drop them.
-  const useRefs = hasRefs && mode !== "ltx";
-  const engine = mode === "h3" ? "h3" : mode === "ltx" ? "ltx" : (useRefs ? "h3" : "ltx");
+  const useRefs = engine === "h3" && refsWanted && refs.length > 0;
+
+  /* IS THE SONG UNDER THIS CLIP? generate.js's rule, character for character
+   * (collab/lending_test holds the three copies to one text): LTX always; H3
+   * off the reference path, where the board sings, or where the brief puts it
+   * under every scene. Said on the shot (`songUnder`, `songLine`) before
+   * anything is spent, because a singing mouth follows the words only when the
+   * song is under the clip (the REWIND A/B, 2026-09-24, DIRECTING.md §2). */
+  const songUnderClip = engine === "ltx" || !useRefs || Boolean(board?.lipSync)
+    || doc.brief?.songConditioning === "always";
+  const songUnder = !!doc.song?.file && songUnderClip;
+  const songLine = !doc.song?.file ? "no song attached to this project"
+    : engine === "ltx" ? "song under this clip (LTX always hears it; its mouths do not follow it, measured)"
+    : !useRefs ? "song under this clip (text path, no pictures)"
+    : board?.lipSync ? "song under this clip: this board sings (lip-sync)"
+    : doc.brief?.songConditioning === "always"
+      ? "song under this clip: the brief puts it under every scene, so a singing mouth follows the words"
+    : "no song under this clip: Song under the clip is auto and this board is not marked as sung, so a mouth "
+      + "here will not follow the words";
 
   /* THE STORYBOARD AS A REFERENCE (not a first frame), OPT-IN PER PROJECT.
    *
@@ -289,6 +355,14 @@ export function resolveShot(doc, segmentId, opts = {}) {
    * reach the video model" for the take record and the map. */
   const refsSent = useRefs && refs.length > 0;
   const warnings = [];
+  if (mode === "hybrid" && castless && !ltxHere) {
+    warnings.push({
+      kind: "ltx-not-here",
+      names: [],
+      why: "this scene carries no cast, so hybrid would render it on LTX, but LTX is not on this PC: "
+        + "it renders on H3 instead, which takes longer. Choose h3 in the brief to make that the rule for every scene.",
+    });
+  }
   if (refs.length && !useRefs) {
     warnings.push({
       kind: "named-but-not-sent",
@@ -332,6 +406,7 @@ export function resolveShot(doc, segmentId, opts = {}) {
     refCap: REF_CAP,
 
     engineMode: mode, useRefs, engine,
+    songUnder, songLine,
     boardRefIndex, opensOn, guideMode,
     keyframes: keyframes ? keyframes.length : 0,
 

@@ -75,7 +75,10 @@ test("one solid block: chips on top, the writing space, one bar with Send at its
   const form = html.slice(html.indexOf('<form class="simple-input"'), html.indexOf("</form>", html.indexOf('<form class="simple-input"')));
   assert.ok(form.indexOf('id="simpleChips"') < form.indexOf('id="simpleText"') && form.indexOf('id="simpleText"') < form.indexOf('class="simple-bar"'));
   for (const id of ["exPick", "simpleModel", "simpleNew", "simpleSend"]) assert.ok(form.includes(`id="${id}"`), `${id} is inside the block`);
-  assert.match(form, /<button class="simple-send"[^>]*>↑<\/button>\s*<\/div>\s*$/, "Send ends the bar");
+  /* Labelled, not a bare ↑ (UI_PLAN B3): the one button in Simple says what it
+   * makes. Images and Video say Make picture and Make clip (web/assist.js). */
+  assert.match(form, /<button class="simple-send"[^>]*>Make song<\/button>\s*<\/div>\s*$/, "Make song ends the bar");
+  assert.match(src("../web/assist.js"), /view: "images", make: "Make picture",[\s\S]*?view: "video", make: "Make clip",/);
   assert.match(css, /\.create form\.simple-input textarea \{\s*flex: none;[^}]*height: 280px/, "the writing space never shrinks");
   assert.match(app, /form\?\.addEventListener\("mousedown"/, "a click anywhere in the block writes in it");
   // A dropped song fills the read-only boxes, as a preset does; presets for every model.
@@ -89,7 +92,9 @@ test("grow handles instead of corner grips; Simple mode hides Lyrics and Styles 
   const app = src("../web/app.js"), css = src("../web/styles.css");
   for (const [id, key] of [["simpleText", "simple"], ["lyrics", "lyrics"], ["caption", "caption"]])
     assert.ok(app.includes(`growHandle($("${id}"), "${key}"`), id);
-  assert.match(css, /#simpleText, #lyrics, #caption \{ resize: none; \}/);
+  // #scaffold joined them when the section structure became a textarea in the
+  // same box as the lyrics, instead of a <pre> in a black panel below it.
+  assert.match(css, /#simpleText, #lyrics, #scaffold, #caption \{ resize: none; \}/);
   assert.match(css, /\.growbar i \{[^}]*background: var\(--primary\)/, "light blue");
   assert.match(css, /\.growbar \{[^}]*bottom: -8px;[^}]*opacity: 0;[\s\S]*?\.growbar:hover, \.growbar\.drag/, "on the outer border, shown only near it");
   for (const [ta, box] of [["simpleText", "simplePanel"], ["lyrics", "lyricsBox"], ["caption", "stylesBox"]])
@@ -232,16 +237,89 @@ test("rework is the default; a failed separation ends the wait; the assistant se
   const art = new EventEmitter(); art.queue = []; art.current = null;
   art.request = (job) => { setTimeout(() => art.emit("failed", { file: job.file, kind: "stems", error: "demucs crashed" }), 20); return job; };
   const t0 = Date.now();
-  await assert.rejects(ensureVocalStem("song.flac", { art, outputDir: "C:/nowhere-aiplay", timeoutMs: 60000 }), /separation of song\.flac failed: demucs crashed/);
+  /* The preflight is injected: the default one asks this PC's stems python
+   * for demucs, and a machine without one would fail here for a reason this
+   * case is not about. */
+  await assert.rejects(ensureVocalStem("song.flac", { art, outputDir: "C:/nowhere-aiplay", timeoutMs: 60000, preflight: async () => ({ ok: true }) }), /separation of song\.flac failed: demucs crashed/);
   assert.ok(Date.now() - t0 < 5000, "not the fifteen-minute wait");
   const app = src("../web/app.js");
   assert.match(app, /scores\[file\] = \$\("yAbc"\)\?\.value/, "one transcription per song");
   assert.match(app, /d\.music_models = /); assert.match(app, /FAILED — \$\{j\.error/);
 });
 
+/* Every `.libhead` in the file, located by DIV DEPTH rather than by a regex:
+ * walk from each opening tag counting `<div`/`</div>` until the count returns to
+ * zero, and that is its matching close. Positions, not slices — a wrapper's
+ * "everything after me" reaches the end of the document, so asking which wrapper
+ * some id follows by substring gives the FIRST wrapper every time. Comments are
+ * stripped first so a `<div` inside one cannot shift the count. */
+function libheads(html) {
+  const bare = html.replace(/<!--[\s\S]*?-->/g, "");
+  const out = [];
+  const open = /<div class="libhead[^"]*"[^>]*>/g;
+  let m;
+  while ((m = open.exec(bare))) {
+    const openEnd = m.index + m[0].length;
+    const tag = /<div\b[^>]*>|<\/div\s*>/g;
+    tag.lastIndex = openEnd;
+    let depth = 1, t = null;
+    while (depth > 0 && (t = tag.exec(bare))) depth += t[0].startsWith("</") ? -1 : 1;
+    assert.equal(depth, 0, "a .libhead that never closes");
+    out.push({ attrs: m[0], openAt: m.index, closeAt: t.index, inner: bare.slice(openEnd, t.index) });
+  }
+  return { bare, heads: out };
+}
+
+test("the library heading is one sticky block, and the gallery is not inside it", () => {
+  const html = src("../web/index.html"), css = src("../web/styles.css"), info = src("../web/info.js");
+  const { bare, heads } = libheads(html);
+  assert.equal(heads.length, 3, "one per gallery: Music, Images, Video");
+
+  /* ⚠ ONE WRAPPER, NOT FOUR STICKY SIBLINGS. Sticky elements do not stack:
+   * four of them at `top: 0` land on top of one another, and stacking them by
+   * hand hard-codes each one's height into the next one's `top` — heights that
+   * change the moment the tick bar wraps. */
+  for (const h of heads) assert.match(h.inner, /class="stagehead"/, "the heading is inside it");
+
+  /* ⚠ AND THE GRID IS OUTSIDE IT — a gallery inside the sticky wrapper is a
+   * header that never lets its own grid scroll. The wrapper that owns a grid is
+   * the LAST one opening before it, which is why this needs positions. */
+  for (const id of ["imgGrid", "clipGrid"]) {
+    const at = bare.indexOf(`id="${id}"`);
+    assert.ok(at > 0, `${id} is in the page`);
+    const owner = heads.filter((h) => h.openAt < at).pop();
+    assert.ok(owner, `${id} follows a .libhead`);
+    assert.ok(at > owner.closeAt, `${id} is NOT inside the sticky header above it`);
+  }
+
+  /* Music's wrapper is hidden as a unit. It sits directly in `.stage` — the
+   * scroller every view shares — so hiding only its children leaves its own
+   * padding and hairline as a bar across the top of every other screen.
+   * Measured at height 10 on Images before setView hid the wrapper. */
+  const music = heads.find((h) => h.attrs.includes("musicHead"));
+  assert.ok(music, "Music's wrapper is named, because it is hidden as a unit");
+  assert.match(music.inner, /id="batchBar"/, "the song bar is one of the three inside it");
+  assert.match(src("../web/app.js"), /\$\("musicHead"\)\.hidden = name !== "create";/,
+    "and the WRAPPER is what setView hides, not the three controls separately");
+
+  /* ⚠ THE WRAPPER IS A LEVEL, AND `:scope >` STOPS AT LEVELS. Without this,
+   * Images and Video fell into mountInfo's "no heading" branch and their circled-i
+   * floated above the page instead of sitting in the title. */
+  assert.match(info, /:scope > \.libhead > \$\{h\}/,
+    "mountInfo finds a heading one level down, inside the sticky wrapper");
+  assert.match(info, /classList\.contains\("libhead"\) \? header\.parentElement : header/,
+    "and the panel opens after the BLOCK, so a screenful of prose is not pinned to the window");
+
+  assert.match(css, /\.libhead\{position:sticky;top:0/, "it is actually sticky");
+  /* `top:0` is the scrollport's PADDING box, so it leaves `.stage`'s 16px above
+   * the header for the grid to scroll through. Measured at headerTop-6 with the
+   * grid scrolled 1500px: DIV.masonry on Images, IMG.cthumb on Video. */
+  assert.match(css, /\.libhead::before\{[^}]*bottom:100%/,
+    "and it covers the scroller's top padding, which `top:0` does not reach");
+});
+
 test("each gallery has its own selection bar: Music's only on Music, new ones on Images and Video", () => {
   const html = src("../web/index.html"), app = src("../web/app.js"), css = src("../web/styles.css");
-  assert.match(app, /\$\("batchBar"\)\.hidden = name !== "create";/, "the song bar is the Music page's");
   assert.match(css, /\.batchbar\[hidden\] \{ display: none !important; \}/, "and hidden really hides it");
   assert.match(html, /id="imgBatch"[\s\S]*?data-pick="collage"[\s\S]*?data-pick="trash"[\s\S]*?data-pick="clear"[\s\S]*?<div class="clipgrid" id="imgGrid">/, "Images: under its search row, above the gallery");
   assert.match(html, /id="clipBatch"[\s\S]*?data-pick="boost"[\s\S]*?data-pick="trash"[\s\S]*?<div class="clipgrid" id="clipGrid">/, "Video: under its search row, above the clips");
@@ -260,7 +338,7 @@ test("the Images page's ⓘ sits in its heading, not loose above the page", () =
 
 test("Music, Images and Video share one layout: creator column left, what it made on the right", () => {
   const html = src("../web/index.html"), app = src("../web/app.js"), css = src("../web/styles.css");
-  assert.match(html, /<section class="ovcol" id="imgPanel" hidden>\s*<div class="vidform">\s*<div class="ovhead"><h2>Images<\/h2><\/div>/, "Images' form is the left column, titled like Video's");
+  assert.match(html, /<section class="ovcol" id="imgPanel" hidden>\s*<div class="vidform">\s*<div class="ovhead"><h2>Pictures<\/h2><\/div>/, "Images' form is the left column, titled like Video's, and named as the rail names it (UI_PLAN B1)");
   assert.match(html, /<div id="imagesview" hidden>\s*<div class="vidwrap">\s*<div class="vidlib">/, "the stage holds only the gallery");
   assert.match(app, /const hasLeft = lib \|\| name === "overnight" \|\| name === "video" \|\| name === "images";/);
   assert.match(app, /\$\("imgPanel"\)\.hidden = name !== "images";/);
@@ -270,10 +348,13 @@ test("Music, Images and Video share one layout: creator column left, what it mad
   assert.match(css, /:is\(#imgPanel \.vidform, #vidPanel\) :is\(\.lbl, \.flabel\) \{\s*text-transform: none;/, "one label style");
 });
 
-test("Images and Video line up row for row; Video's note sits above Render clip; Music's idea label matches", () => {
+test("Images and Video line up row for row; every note sits above its button; Music's idea label matches", () => {
   const css = src("../web/styles.css");
   assert.match(css, /#vidPanel \{ gap: 12px; \}/, "both columns step by 12px");
-  assert.match(css, /#vidPanel \.ctawrap > \.ctanote \{ order: -1; \}/, "the note above the button");
+  // Video's note was ordered above Render clip with flex. Every screen's note
+  // sits under its own button in the flow now (UI_PLAN C2), so nothing to order.
+  assert.match(css, /\.ctanote, #imgPanel \.ctawrap > \.hint \{[\s\S]*?position: static;/, "the note sits under the button");
+  assert.doesNotMatch(css, /#vidPanel \.ctawrap > \.ctanote \{ order: -1; \}/);
   assert.match(css, /#imagesview \.wrow\.imgtools \{ margin: 0 0 8px; min-height: 32px;/, "the galleries' bars on one line");
   assert.match(css, /\.create \.simple \.simple-label \{ font-size: var\(--fs-md\); font-weight: 500; margin: 7px 6px 1px 10px;/, "Music's label like the others");
 });
@@ -343,7 +424,11 @@ test("Video Advanced in order: settings, Frames, Sound, Fine tuning, Lab, then R
   for (let i = 1; i < order.length; i++) assert.ok(at(order[i - 1]) < at(order[i]), `${order[i - 1]} before ${order[i]}`);
   // A dropdown and its file button share one row.
   for (const [sel, btn] of [["vidFrom", "vidFromPick"], ["vidTo", "vidToPick"], ["vidSndSong", "vidSndPick"], ["vidRefSong", "vidRefAudPick"]])
-    assert.match(p, new RegExp(String.raw`<div class="pickrow">\s*<select id="${sel}"[\s\S]*?</select>\s*<button[^>]*id="${btn}"`), sel);
+    assert.match(p, new RegExp(String.raw`<div class="pickrow"( hidden)?>\s*<select id="${sel}"[\s\S]*?</select>\s*<button[^>]*id="${btn}"`), sel);
+  // The two frame slots are picture drop boxes now (web/picdrop.js); their
+  // dropdown row stays in the page, hidden, as the state it writes to.
+  for (const sel of ["vidFrom", "vidTo"])
+    assert.match(p, new RegExp(String.raw`<div id="${sel}Drop"></div>\s*<div class="pickrow" hidden>\s*<select id="${sel}"`), `${sel} drop box`);
   // The notes that floated between controls are "!" tips.
   for (const id of ["vidToNote", "vidLoopNote", "vidAdvNote", "vidQualityNote"]) {
     assert.match(p, new RegExp(`class="tipsrc" id="${id}"`), id);
@@ -365,7 +450,12 @@ test("Images and Video get Music's grow handle on their Simple and Advanced boxe
 
 test("Video quality: Fast only when it differs from Standard, chips in a row; no Make button in any Simple mode", () => {
   const app = src("../web/app.js"), css = src("../web/styles.css");
-  assert.match(app, /\$\("vidQFast"\)\.hidden = !eng\.turbo3Ready;/, "without TaoMate, Fast is Standard: one chip, not two");
+  /* Fast and Standard are the server's numbers (stepDefaults, which follow the
+   * disk), so "the same" is a comparison of those numbers, not of the TaoMate
+   * flag: without TaoMate Fast is the 4-step build, which equals Standard on a
+   * disk without the 8-step files. server/mcp-steer_test.js pins the numbers. */
+  assert.match(app, /\$\("vidQFast"\)\.hidden = !tb && qs\.fast === qs\.standard;/,
+    "where Fast would equal Standard: one chip, not two (with the builds known, Fast is TaoMate's 3, dimmed when missing)");
   assert.match(css, /#vidQualityRow > \.pv\.chips \{ flex-wrap: nowrap;/);
   assert.match(css, /\.create\.simplemode \.ctawrap > \.cta, \.assist-on \.ctawrap > \.cta \{ display: none !important; \}/,
     "the assistant makes it on your word: Create, Make image and Render clip hide in Simple");
@@ -399,7 +489,9 @@ test("the left column: the same room on the right as on the left, and a divider 
   const html = src("../web/index.html"), app = src("../web/app.js"), css = src("../web/styles.css");
   assert.match(css, /\.create, #vidPanel, #imgPanel \{ scrollbar-gutter: stable; padding-right: 16px; \}/, "16px to the scrollbar, as the left's 16px");
   assert.match(html, /<div class="colgrip" id="colGrip" role="separator" aria-orientation="vertical"/);
-  assert.match(css, /grid-template-columns: 220px var\(--colw, minmax\(340px, 420px\)\) minmax\(0, 1fr\);/);
+  // The rail is its own draggable width now (--railw, 248px by default), so
+  // this column sits between two grips rather than beside a fixed 220px.
+  assert.match(css, /grid-template-columns: var\(--railw, 248px\) var\(--colw, minmax\(340px, 420px\)\) minmax\(0, 1fr\);/);
   assert.match(app, /const clamp = \(w\) => Math\.round\(Math\.max\(320, Math\.min\(w, maxW\(\)\)\)\);/, "never under 320px, the stage keeps 380px");
   assert.match(app, /grip\?\.addEventListener\("dblclick", \(\) => set\(0\)\);/, "double-click resets");
 });

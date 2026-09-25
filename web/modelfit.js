@@ -67,6 +67,9 @@ const gb = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(2)} GB` : `${Math.round(n / 1
  */
 function tail(fit) {
   if (!fit) return "";
+  /* The server's own tail, where the generic pairs below would mislead: H3's
+   * answer on a smaller card is a SIZE, not a recommendation it is under. */
+  if (fit.short) return fit.short;
   if (fit.needVramGb == null) return fit.why || "";
   const you = fit.yourVramGb;
   const ram = fit.yourRamGb;
@@ -103,10 +106,19 @@ function badge(fit, states) {
   const s = states?.[fit.state];
   if (!s) return "";
   const t = tail(fit);
-  /* The tone is the server's too — four states map to four colours there, and
-   * a fifth state added in fit.js arrives here already knowing how to look. */
+  /* The tone is the server's too — five states map to four colours there, and
+   * a sixth state added in fit.js arrives here already knowing how to look. */
   return `<span class="fitbadge fit-${esc(s.tone)}" title="${esc(fit.why || s.line)}"
     ><b>${esc(s.chip)}</b>${t ? `<span>${esc(t)}</span>` : ""}</span>`;
+}
+
+/**
+ * The verdict's warning, in full, under a row's badge: H3's "only measured
+ * with 32 GB of RAM" and "no AMD render tested yet". Too long for a chip and
+ * too important for a hover, so it is a line of its own. The server's words.
+ */
+function warnLine(fit) {
+  return fit?.warning ? `<span class="fitwarn">⚠ ${esc(fit.warning)}</span>` : "";
 }
 
 /** One pick in the block at the top. */
@@ -115,7 +127,7 @@ function pickRow(p, states) {
   return `
     <div class="fitpick">
       <div class="fitpickhead">
-        <span class="fitslot">${esc(p.slot)}</span>
+        <span class="fitslot">${esc(p.slotLabel || p.slot)}</span>
         <b>${esc(p.label)}</b>
         ${badge(p.fit, states)}
         <span class="fitsize">${p.ready ? "already on disk" : gb(p.bytes)}</span>
@@ -131,6 +143,22 @@ function pickRow(p, states) {
         p.region ? `<p class="fitregion">⚠ ${p.region.excluded.map(esc).join(" · ")}</p>` : ""}
       ${p.ready ? "" : `<button type="button" class="btn sm ghost" data-fitgoto="${esc(p.id)}">Show me this row</button>`}
     </div>`;
+}
+
+/* WHAT TO DO INSTEAD, as buttons: a note may carry `instead` (fit.js: the
+ * "No video engine" note names asking a friend first and a paid service on the
+ * person's own key second). The order and the words are the server's; a way
+ * whose screen this launch mode hides (Collab in Music only) gets no button,
+ * and the sentence above it still says it. */
+function insteadRow(n, root) {
+  const reachable = (view) => {
+    const a = typeof root.querySelector === "function" ? root.querySelector(`.nav a[data-view="${view}"]`) : null;
+    return !!a && !a.hidden && a.style?.display !== "none";
+  };
+  const ways = (n.instead || []).filter((w) => w?.view && reachable(w.view));
+  if (!ways.length) return "";
+  return `<p class="fitinstead">${ways.map((w, i) => `<button type="button" class="btn sm${w.paid ? " ghost" : ""}"
+    data-fitview="${esc(w.view)}">${i + 1}. ${esc(w.title)}${w.paid ? " (paid)" : ""}</button>`).join(" ")}</p>`;
 }
 
 /**
@@ -209,6 +237,7 @@ export function paintFit(d, root = document) {
         <div class="fitnote">
           <b>${esc(n.headline)}</b>
           <p>${esc(n.detail)}</p>
+          ${insteadRow(n, root)}
           ${n.url ? `<p><a href="${esc(n.url)}" target="_blank" rel="noopener">Open the model page</a></p>` : ""}
         </div>`).join("")}</div>` : ""}
     ${/* pip packages are not downloads and the screen has always half-admitted
@@ -237,7 +266,7 @@ export function paintFit(d, root = document) {
       /* Into the head row, beside the licence, where the eye already goes. */
       (card.querySelector(".mhead") || card).appendChild(slot);
     }
-    slot.innerHTML = badge(c.fit, states);
+    slot.innerHTML = badge(c.fit, states) + warnLine(c.fit);
   }
 }
 
@@ -251,6 +280,14 @@ export function paintFit(d, root = document) {
  */
 export function initFit(root = document) {
   root.addEventListener("click", (e) => {
+    /* A "what to do instead" button: the rail link does the navigating, so
+     * this file needs no setView of its own. */
+    const go = e.target.closest?.("[data-fitview]");
+    if (go) {
+      root.querySelector(`.nav a[data-view="${CSS.escape(go.dataset.fitview)}"]`)?.click();
+      if (go.dataset.fitview === "settings") root.getElementById("set-hosted")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
     const b = e.target.closest?.("[data-fitgoto]");
     if (!b) return;
     const card = root.querySelector(`[data-cap="${CSS.escape(b.dataset.fitgoto)}"]`);

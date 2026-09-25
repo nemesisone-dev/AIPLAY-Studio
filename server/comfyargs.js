@@ -26,7 +26,36 @@ export const STUDIO_OWNED = new Set([
   "--extra-model-paths-config", "--base-directory", "--models-directory", "--user-directory",
   "--disable-auto-launch", "--auto-launch", "--quick-test-for-ci", "--dont-print-server",
   "--tls-keyfile", "--tls-certfile", "--enable-cors-header", "--list-feature-flags",
+  /* The minors rule's backstop always loads: see keepSafetyGate below. */
+  "--whitelist-custom-nodes",
 ]);
+
+/** The Studio's own safety node (server/comfy_nodes/aiplay_safety_gate.py),
+ *  by the name ComfyUI's custom-node loader knows it. */
+export const SAFETY_GATE_MODULE = "aiplay_safety_gate.py";
+
+/**
+ * ⚠ NO SETTING TURNS THE MINORS BACKSTOP OFF, and "Don't load custom node
+ * packs" is a setting. ComfyUI's --disable-all-custom-nodes skips every
+ * custom-node module, the Studio's safety gate included, which would leave a
+ * revealed or pinned port running graphs nobody checked. So when that flag is
+ * in the launch (from the launcher OR copied from the install's own flags),
+ * the gate is whitelisted by name (--whitelist-custom-nodes, which the install
+ * must define), and an install too old to know that flag gets its custom
+ * nodes back instead: the gate loads either way.
+ */
+export function keepSafetyGate(args, cliArgsText) {
+  const a = (args || []).map(String);
+  if (!a.includes("--disable-all-custom-nodes")) return a;
+  const knows = typeof cliArgsText === "string" && cliArgsText.includes("\"--whitelist-custom-nodes\"");
+  if (!knows) return a.filter((f) => f !== "--disable-all-custom-nodes");
+  const i = a.indexOf("--whitelist-custom-nodes");
+  if (i < 0) return [...a, "--whitelist-custom-nodes", SAFETY_GATE_MODULE];
+  let j = i + 1;
+  while (j < a.length && !a[j].startsWith("--")) j++;
+  if (a.slice(i + 1, j).includes(SAFETY_GATE_MODULE)) return a;
+  return [...a.slice(0, j), SAFETY_GATE_MODULE, ...a.slice(j)];
+}
 
 const choice = (id, section, label, help, choices, extra = {}) => ({ id, section, label, help, kind: "choice", choices, ...extra });
 const bool = (id, section, label, flag, help, extra = {}) => ({ id, section, label, help, kind: "bool", flag, ...extra });
@@ -117,7 +146,7 @@ export const COMFY_OPTIONS = [
 
   /* ── custom nodes ────────────────────────────────────────────────────── */
   bool("noCustomNodes", "Custom nodes", "Don't load custom node packs", "--disable-all-custom-nodes",
-    "Studio's music graphs use only ComfyUI's built-in nodes, so this starts faster; your other node packs will not load in Studio's engine."),
+    "Studio's music graphs use only ComfyUI's built-in nodes, so this starts faster; your other node packs will not load in Studio's engine. Studio's own safety node still loads."),
   bool("noApiNodes", "Custom nodes", "Disable API nodes", "--disable-api-nodes", "Also stops the frontend reaching the internet."),
   bool("manager", "Custom nodes", "Enable ComfyUI-Manager", "--enable-manager", ""),
 ];
@@ -182,6 +211,12 @@ export const VRAM_MODES = new Set(["--gpu-only", "--highvram", "--normalvram", "
  * and the "soft crash". Normal mode keeps a model resident exactly as long as
  * there is room for it, which is all --highvram was ever buying. It stays in
  * Advanced for anyone who runs one model forever on a server card.
+ *
+ * ⚠ THE 12 GB LINE AND H3 (lab, 2026-09-24). H3 rendered bit-identical under a
+ * 12 GB cap, but that run used --lowvram. What this function gives a real
+ * 12 GB card, normal mode, was never run at 12 GB. The flags are unchanged
+ * until it is; server/h3tier.js carries the same caveat in its tier sentence
+ * and config.js's Auto note says it to the person.
  */
 export function autoVramFlags(totalMb) {
   const gb = Number(totalMb) / 1024;
@@ -261,6 +296,19 @@ export function fixApplies(mode, vendor) {
   if (m === "on") return true;
   if (m === "off") return false;
   return vendor === "amd" || vendor === "intel";
+}
+
+/** The attention the PERSON chose, for rules that give way to one (art.js
+ *  h3Attention), or null. With the fix on, its PyTorch attention is laid over
+ *  every launch whatever was saved, and the launcher's Advanced panel shows it
+ *  as the value, so any Save there stores it. That value is the fix speaking,
+ *  not the person: read as their choice, it would quietly take H3's per-graph
+ *  Comfy Kitchen node away on every AMD install whose panel was ever saved.
+ *  Someone on AMD who wants H3 on PyTorch turns the fix off and picks it. */
+export function chosenAttention(saved, { fix = "auto", vendor = null } = {}) {
+  const a = typeof saved === "string" && saved ? saved : null;
+  if (a === DEFAULT_OPTIONS.attention && fixApplies(fix, vendor)) return null;
+  return a;
 }
 
 export function effectiveValues(saved, rev, cliArgsText, { fix = "auto", vendor = null } = {}) {

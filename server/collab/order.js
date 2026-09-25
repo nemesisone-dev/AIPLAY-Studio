@@ -39,6 +39,13 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
+import { assertSafe } from "../safety/refusal.js";
+
+/* The one rule for "this step count overruns the speed-up file that loaded",
+ * shared with the Plan card's floor note and the lender's accept check
+ * (lending.js speedUpCheck), so the three cannot disagree about a render. */
+import { trapBand } from "../mv/plancost.js";
+import { MV_SIZES, MV_ASPECTS, MV_SIZE_DEFAULT, renderSizeOf } from "../mv/sizes.js";
 
 export const ORDER_V = 1;
 
@@ -56,6 +63,11 @@ export const ENGINE_MODES = Object.freeze(["h3", "ltx", "hybrid"]);
 export const STEPS_MIN = 2;
 export const STEPS_MAX = 40;
 export const SEED_MAX = 4294967295;
+
+/** Encoder slack on a returned take's frame count, around the count the
+ *  renderer's own grid gives (lending.js expectForOrder), never around a
+ *  length rounded by hand. */
+export const FRAME_SLACK = 4;
 
 /** The longest an order may stand. A sealed file is forever otherwise. */
 export const MAX_HOURS = 24 * 14;
@@ -114,9 +126,12 @@ function looksLikePicture(buf) {
 export const PROMPT_CAP = 8000;
 const LABEL_CAP = 200;
 
-/** The six sizes this app can render. A packet asking for anything else cannot
- *  be reproduced here, and is refused rather than rendered at another size. */
-const SIZES = Object.freeze([[864, 480], [1344, 768], [1920, 1088], [480, 864], [768, 1344], [1088, 1920]]);
+/** The sizes this app can render, in both shapes, read off server/mv/sizes.js
+ *  (it was six typed pairs, which would have refused a friend's order at a card
+ *  tier's 960x544). A packet asking for anything else cannot be reproduced here,
+ *  and is refused rather than rendered at another size. */
+const SIZES = Object.freeze(MV_ASPECTS.flatMap((aspect) => MV_SIZES.map((sz) =>
+  renderSizeOf({ qualityMode: sz.id, aspectRatio: aspect }))));
 
 /**
  * A shot packet, checked as far as this module needs it — which is further than
@@ -134,7 +149,13 @@ function isShotPacket(shot) {
     && typeof shot.segmentId === "string" && typeof shot.prompt === "string";
 }
 
-function checkShot(shot) {
+/** The wordless flags a shot's pictures carry (packet.js puts `safety` on
+ *  each reference and guide row). Junk is ignored by the check, and a flag
+ *  can only ever add a half. */
+export const shotFlags = (shot) => [...(Array.isArray(shot?.refs) ? shot.refs : []), ...(Array.isArray(shot?.guides) ? shot.guides : [])]
+  .map((r) => r?.safety).filter((f) => f && typeof f === "object");
+
+function checkShot(shot, { context = [] } = {}) {
   const secs = Number(shot.seconds);
   /* A floor as well as a ceiling: 0.001 passed a "greater than zero" test and
    * made the consent card read "0.001s" for a render that costs exactly as much
@@ -148,7 +169,17 @@ function checkShot(shot) {
   if (String(shot.prompt).length > PROMPT_CAP) {
     throw refuse("bad-shot", `That scene's prompt is ${String(shot.prompt).length} characters. A prompt has to be readable by the person deciding whether to render it, and this one is longer than anything a person reads.`);
   }
-  for (const k of ["segmentId", "engine", "engineMode", "mode", "promptSource", "guideMode", "negative"]) {
+  /* ⚠ THE MINORS RULE, ON BOTH SIDES OF A LOAN. This one function runs when
+   * an order is SEALED (makeOrder, on the sender) and when it is ACCEPTED
+   * (readOrder, on the lender), so a scene that pairs a child or teenager with
+   * sexual content can neither be sent nor be taken on. The prompt is the
+   * frozen text the lender would render verbatim; the negative is not intent.
+   * The prompt names its cast only by NAME, so what each picture was made as
+   * travels beside it as two booleans (shotFlags) and is read on both sides;
+   * the sender also adds the cast's own words (`context`), which never leave
+   * its machine. Throws a 422 with the one sentence (server/safety/refusal.js). */
+  assertSafe({ door: "collab.order", via: "collab", texts: [String(shot.prompt)], context, flags: shotFlags(shot) });
+  for (const k of ["segmentId", "engine", "engineMode", "mode", "promptSource", "guideMode", "negative", "songUnder"]) {
     if (shot[k] !== undefined && shot[k] !== null && String(shot[k]).length > LABEL_CAP) {
       throw refuse("bad-shot", `That scene's ${k} is far longer than a label should be.`);
     }
@@ -184,11 +215,11 @@ function shotFiles(shot) {
  * carries no `name` — it is a frame rather than a character — so the join is on
  * `file`, which both have, and nothing here reads `name` off a guide.)
  */
-export function makeOrder({ shot, files = [], order, returnTo, expiresInHours = 48, now = 0, id = null } = {}) {
+export function makeOrder({ shot, files = [], order, returnTo, expiresInHours = 48, now = 0, id = null, safetyContext = [] } = {}) {
   if (!isShotPacket(shot)) {
     throw refuse("bad-arguments", "An order carries one shot packet, and what was passed is not one. Build it with packet.js shotPacket() — that function is where the decision about what may leave this machine lives, and an order must not make that decision a second time.");
   }
-  checkShot(shot);
+  checkShot(shot, { context: safetyContext });
   if (!returnTo || typeof returnTo !== "object" || !FP_RE.test(String(returnTo.fp || ""))) {
     throw refuse("bad-arguments", "An order must say where the finished take goes back to: returnTo.fp is this machine's own 32-character fingerprint.");
   }
@@ -367,16 +398,18 @@ export function orderPlanItem(orderDoc, slug, segment) {
  * (server/mv/generate.js, and a second identical copy in packet.js) reads
  * `brief.qualityMode` and `brief.aspectRatio` — it does not read a width and a
  * height. So a packet asking for 1920x1088 is honoured by setting
- * `qualityMode: "high"`, and a size that is not one of the six pairs those two
+ * `qualityMode: "high"`, and a size that is not one of the pairs those two
  * dials produce cannot be reproduced at all and is refused rather than rendered
- * at a different size than the Accept card promised.
+ * at a different size than the Accept card promised. The pairs are read off
+ * server/mv/sizes.js, the list renderSize itself reads, so an order for a card
+ * tier (960x544, 832x480) inverts as surely as the three older sizes did.
  */
 export function briefFor(orderDoc) {
   const { width, height } = orderDoc.shot;
-  const TABLE = [
-    [864, 480, "budget", "16:9"], [1344, 768, null, "16:9"], [1920, 1088, "high", "16:9"],
-    [480, 864, "budget", "9:16"], [768, 1344, null, "9:16"], [1088, 1920, "high", "9:16"],
-  ];
+  const TABLE = MV_ASPECTS.flatMap((aspect) => MV_SIZES.map((sz) => {
+    const [w, h] = renderSizeOf({ qualityMode: sz.id, aspectRatio: aspect });
+    return [w, h, sz.id === MV_SIZE_DEFAULT ? null : sz.id, aspect];
+  }));
   const hit = TABLE.find((r) => r[0] === width && r[1] === height);
   if (!hit) {
     throw refuse("size-unreproducible", `This order asks for ${width}x${height}, and this Studio's renders are sized by two dials rather than by a number: the sizes it can make are ${TABLE.map((r) => `${r[0]}x${r[1]}`).join(", ")}. Rendering a different size than the order says would be a take that does not fit the scene it was asked for.`);
@@ -415,8 +448,16 @@ export function describeOrder(orderDoc, now = 0) {
     ? Math.round((Number(orderDoc.expires) - now) / 3600_000)
     : null;
   const prompt = String(s.prompt || "");
+  /* ⚠ LIP-SYNC DOES NOT TRAVEL, AND THE SENTENCE BOTH PEOPLE READ SAYS SO. The
+   * song never leaves the owner's machine (packet.js), so a scene the owner
+   * renders with the song under it — a singing board, or "Song under the clip:
+   * always" — comes back rendered without it. It is lent anyway, because a
+   * silent take beats no take for somebody with no card; it is said here, at
+   * preview, on the lender's card and in the returned take's notes. */
+  const lipSync = s.songUnder === "lipsync" || s.songUnder === "always";
   return `One scene (${o.segmentId}), ${s.seconds ?? "?"}s at ${s.width}x${s.height} on ${o.engineMode} at ${o.steps} steps, seed ${o.seed}, with ${pics} picture${pics === 1 ? "" : "s"}.`
     + (left !== null ? ` ${left > 0 ? `Expires in ${left} hours.` : "Expired."}` : "")
+    + (lipSync ? ` ⚠ Lip-sync does not travel: the owner renders this scene with the song under it (${s.songUnder === "lipsync" ? "a singing board" : "“Song under the clip: always”"}), the song stays on the owner's machine, and this take is rendered without it — mouths will not follow the vocal.` : "")
     + (prompt ? ` It will render: "${prompt.length > 400 ? `${prompt.slice(0, 400)}…` : prompt}"` : " It carries no prompt at all, which is itself a reason not to run it.");
 }
 
@@ -462,6 +503,10 @@ export function makeReturn({ orderId, segmentId, result, probe, record, now = 0 
       outputRights: record.outputRights,
       engine: record.engine ?? null, steps: record.steps ?? null, seed: record.seed ?? null,
       ms: record.ms ?? null,
+      /* The step count the speed-up file this render loaded was made for, or
+       * null where none loads. A number and never a file name: the owner is
+       * told the two counts disagree, not what is on the lender's disk. */
+      turboSteps: Number.isInteger(record.turboSteps) ? record.turboSteps : null,
       /* The lender's OWN actor string, unqualified. The owner prefixes it with
        * `peer:<their fp>:` on adoption — see credit.js's fifth actor class. */
       actor: String(record.actor || "system"),
@@ -512,6 +557,9 @@ export function readReturn(payload) {
   if (!INNER_ACTOR_RE.test(String(p.record.actor || ""))) {
     p.record.actor = "system";
   }
+  /* A number the owner's notes quote, so it is bounded like one. */
+  const turbo = p.record.turboSteps;
+  p.record.turboSteps = Number.isInteger(turbo) && turbo >= 1 && turbo <= STEPS_MAX ? turbo : null;
   return { doc: p, bytes: buf };
 }
 
@@ -524,7 +572,11 @@ export function readReturn(payload) {
  * record that also survives the receiver's own ffprobe is not.
  */
 export function checkReturn(returnDoc, orderRow, ourProbe = null) {
-  const bad = (reason, why) => ({ ok: false, reason, why });
+  /* ⚠ NOTES ARE NOT CHECKS. They ride on the verdict either way and change
+   * nothing about it: what the borrower should know about how this take was
+   * made, said in this machine's words from numbers the return carries. */
+  const notes = returnNotes(returnDoc, orderRow);
+  const bad = (reason, why) => ({ ok: false, reason, why, notes });
   if (!orderRow) return bad("return-unknown-order", `This return answers order ${returnDoc.orderId}, which is not one this machine sent. Nothing was adopted.`);
   if (String(orderRow.to?.fp || "").toLowerCase() !== String(returnDoc.from || orderRow.to?.fp || "").toLowerCase() && returnDoc.from) {
     return bad("return-not-my-order", `Order ${returnDoc.orderId} went to ${orderRow.to?.nickname || orderRow.to?.fp} and this return came from somebody else.`);
@@ -563,9 +615,22 @@ export function checkReturn(returnDoc, orderRow, ourProbe = null) {
       return bad("result-not-the-shot", "This clip has an audio track on it. A scene comes back silent; the song is added here, and a track that arrived from somewhere else is a track nobody chose.");
     }
     /* A frame count is allowed a little slack — encoders round — but not much,
-     * because the length is what makes it fit the scene. */
-    if (Number.isFinite(want.frames) && Number.isFinite(probe.frames) && Math.abs(probe.frames - want.frames) > 4) {
-      return bad("result-not-the-shot", `This clip is ${probe.frames} frames and the scene wants about ${want.frames}.`);
+     * because the length is what makes it fit the scene.
+     *
+     * ⚠ AROUND THE RENDERER'S OWN COUNT, NOT A HAND-ROUNDED ONE. The centre
+     * used to be round(seconds * 24), and H3 rounds a clip UP to its 17k+5
+     * grid — a 6 s scene renders 158 frames — so a correct H3 take was refused
+     * by 14 frames. The row now carries the engine's own count
+     * (lending.js expectForOrder), and `framesAny` lists the centres a row
+     * written before that may have meant (lending.js framesAccepted). */
+    const centres = (Array.isArray(want.framesAny) && want.framesAny.length ? want.framesAny : [want.frames])
+      .map(Number).filter(Number.isFinite);
+    if (centres.length && Number.isFinite(probe.frames)
+        && !centres.some((c) => Math.abs(probe.frames - c) <= FRAME_SLACK)) {
+      const grid = want.engine === "h3" ? ", which H3 renders in steps of 17 frames"
+        : want.engine === "ltx" ? ", which LTX renders in steps of 8 frames" : "";
+      return bad("result-not-the-shot", `This clip is ${probe.frames} frames and the scene wants about ${centres.join(" or ")}`
+        + `${Number.isFinite(Number(want.seconds)) ? ` (${Number(want.seconds).toFixed(2)} s on ${want.engine || "its engine"}${grid})` : ""}.`);
     }
   }
   if (ourProbe && returnDoc.probe) {
@@ -575,5 +640,30 @@ export function checkReturn(returnDoc, orderRow, ourProbe = null) {
       }
     }
   }
-  return { ok: true, reason: null, why: "This is the clip that order asked for, at the seed and the steps it named, and it measures the way the scene needs." };
+  return { ok: true, reason: null, why: "This is the clip that order asked for, at the seed and the steps it named, and it measures the way the scene needs.", notes };
+}
+
+/**
+ * What the borrower should know about how a returned take was made. Sentences
+ * composed HERE from numbers — the return carries no prose that reaches this
+ * screen.
+ */
+export function returnNotes(returnDoc, orderRow) {
+  const notes = [];
+  const r = returnDoc?.record || {};
+  /* ⚠ NOT `Number(r.turboSteps)`: that turns "no speed-up file" (null) into 0,
+   * and every take rendered without one read as "made for 0 steps".
+   *
+   * ⚠ ONE RULE ON BOTH MACHINES: plancost's `trapBand`, given the step count
+   * of the file that really loaded on the lender's PC. The lender's accept
+   * card asked the same function (lending.js speedUpCheck), so a take is
+   * noted here exactly when the lender was warned there. */
+  const steps = Number(r.steps), turbo = r.turboSteps;
+  if (Number.isInteger(turbo) && turbo > 0 && trapBand(steps, { loaded: turbo })) {
+    notes.push(`Rendered at ${steps} steps on your friend's PC with a speed-up file made for ${turbo} steps, and ${steps} steps overruns it, so it may look burned or over-sharpened. To match the file their PC has, order ${turbo} steps next time: Collab → Send → “Pin the exact numbers” → Steps.`);
+  }
+  if (orderRow?.songUnder === "lipsync" || orderRow?.songUnder === "always") {
+    notes.push("Rendered without the song under it: the song stays on your machine, so on a lent scene the mouths do not follow the vocal. Render this scene here if the lip-sync matters.");
+  }
+  return notes;
 }

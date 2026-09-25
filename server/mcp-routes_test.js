@@ -80,12 +80,13 @@ function ok(label, cond, detail = "") {
 const MCP_FILES = [
   "server/mcp.js",
   "server/mcp-audio.js",
-  "server/mcp-avatars.js", "server/mcp-collab.js", "server/mcp-daw.js", "server/mcp-engine.js",
-  "server/mcp-guide.js", "server/mcp-models.js", "server/mcp-music-input.js",
+  "server/mcp-avatars.js", "server/mcp-avatar-handoff.js", "server/mcp-avatar-appearance.js", "server/mcp-avatar-playback.js", "server/mcp-avatar-weight-transfer.js", "server/mcp-avatar-fitting.js", "server/mcp-avatar-wardrobe.js", "server/mcp-collab.js", "server/mcp-daw.js", "server/mcp-engine.js",
+  "server/mcp-guide.js", "server/mcp-models.js", "server/mcp-cloud.js", "server/mcp-music-input.js",
   "server/mcp-music-plan.js", "server/mcp-music-score.js", "server/mcp-mv.js",
   "server/mcp-music-auditions.js", "server/mcp-music-kits.js", "server/mcp-music-references.js",
   "server/mcp-music-artifacts.js", "server/mcp-music-listening-lab.js",
   "server/mcp-vfx.js", "server/mcp-videolab.js", "server/mcp-welcome.js", "server/mcp-yue-setup.js", "server/mcp-workspace.js",
+  "server/mcp-setup.js",
   "server/daw/mcp-ear.js", "server/daw/mcp-master.js", "server/daw/mcp-rack.js",
   "server/daw/mcp-refprofile.js", "server/daw/mcp-voicelab.js",
 ];
@@ -97,9 +98,10 @@ const ROUTE_FILES = [
   "server/videolab/routes.js", "server/daw/ear.js", "server/engine/routes.js",
   "server/llm/routes.js", "server/mv/routes.js", "server/welcome/routes.js",
   "server/chat/routes.js", "server/prompt-tools.js", "server/music-input.js",
-  "server/music-plan.js", "server/mesh/avatar.js",
+  "server/music-plan.js", "server/mesh/avatar.js", "server/mesh/avatar-handoff.js", "server/mesh/avatar-playback.js", "server/mesh/avatar-weight-transfer.js", "server/mesh/avatar-fitting.js", "server/mesh/avatar-wardrobe.js",
   "server/music/auditions.js", "server/music/workflows.js", "server/music/identity-kits.js",
   "server/music/artifacts.js", "server/music/listening-lab.js",
+  "server/setup/routes.js", "server/cloud-switch.js", "server/whisper.js",
 ];
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -381,15 +383,19 @@ for (const [f, src] of routeSource) {
 // Factory instances mounted in index.js dispatch in their own modules, rather
 // than through an imported namespace. Read their actual comparisons too; a
 // mounted URL alone does not prove that its create/accept/etc actions exist.
-for (const [route, moduleFile, factory, method] of [
+for (const [route, moduleFile, factory, method, mountingFile = "server/index.js"] of [
+  ["/api/avatar-fitting", "server/mesh/avatar-fitting.js", "createAvatarFittingRoutes", "avatarFittingRoutes(req"],
+  ["/api/avatars/wardrobe", "server/mesh/avatar-wardrobe.js", "createAvatarWardrobeRoutes", "wardrobe(req", "server/mesh/avatar.js"],
+  ["/api/avatars/handoff", "server/mesh/avatar-handoff.js", "createAvatarHandoffRoutes", "handoff(req", "server/mesh/avatar.js"],
   ["/api/images/ai-edit", "server/image-editor.js", "createImageEditor", "imageEditor.request"],
+  ["/api/avatar-weight-transfer", "server/mesh/avatar-weight-transfer.js", "createWeightTransferRoutes", "weightTransferRoutes(req"],
   ["/api/collab/plan", "server/collab/planning.js", "createCollabPlanningRoutes", "collabPlanningRoutes(req"],
   ["/api/music-kits", "server/music/identity-kits.js", "createMusicWorkflowRoutes", "musicWorkflowRoutes(req"],
   ["/api/music-references", "server/music/references.js", "createMusicWorkflowRoutes", "musicWorkflowRoutes(req"],
   ["/api/music-artifacts", "server/music/artifacts.js", "createMusicArtifactRoutes", "musicArtifactRoutes(req"],
   ["/api/music-listening-lab", "server/music/listening-lab.js", "createListeningLabRoutes", "listeningLabRoutes(req"],
 ]) {
-  const indexSource = routeSource.get("server/index.js");
+  const indexSource = routeSource.get(mountingFile);
   const mounted = indexSource.includes(factory) && indexSource.includes(method) && exactPaths.has(route);
   ok(`${route} delegates to its expected factory handler`, mounted);
   if (!mounted) continue;
@@ -741,6 +747,61 @@ ok(`the action check actually compared something (${judged} posted actions, ${to
 if (unresolvedActions.length) {
   console.log(`\n     not judged (${unresolvedActions.length}):`);
   for (const u of unresolvedActions) console.log(`       ${u}`);
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * THE STEM SPLITTER, THE STOP BUTTON AND THE SONG LIST, named (2026-09-24).
+ *
+ * separate_stems and stop_generation are new tools for things the page already
+ * did (Separate stems, Stop) and nothing an agent could reach; stems_python is
+ * Settings' new field. The census above already resolves them; these lines pin
+ * WHICH door and which word, so a later rename of either end fails by name.
+ * list_songs is run for real against a fake Studio, because the rights shape
+ * is the part an agent reads and a static read of run() cannot show it.
+ * ────────────────────────────────────────────────────────────────────────── */
+console.log("\n  -- the stem splitter, the Stop button and the song list --");
+{
+  const one = (name) => analysed.find((t) => t.name === name)?.calls || [];
+  const posts = (name, route, action) => one(name).some((c) => c.method === "POST" && c.path === route && (!action || c.actions.includes(action)));
+  ok("separate_stems posts { action: \"run\" } to /api/stems, and that door handles it",
+    posts("separate_stems", "/api/stems", "run") && actionsByPath.get("/api/stems")?.has("run"), JSON.stringify(one("separate_stems")));
+  ok("stems_python posts { action: \"python\" } to /api/stems, and that door handles it",
+    posts("stems_python", "/api/stems", "python") && actionsByPath.get("/api/stems")?.has("python"), JSON.stringify(one("stems_python")));
+  ok("stop_generation posts to /api/cancel, a door that exists", posts("stop_generation", "/api/cancel") && servesPath("/api/cancel"),
+    JSON.stringify(one("stop_generation")));
+  const routerSrc = read("server/chat/router.js");
+  ok("...and each has its chat-router line", /\n  separate_stems: "gpu",/.test(routerSrc)
+    && /\n  stop_generation: "writes",/.test(routerSrc) && /\n  stems_python: "/.test(routerSrc));
+
+  const http = await import("node:http");
+  const { spawn } = await import("node:child_process");
+  const row = {
+    file: "aiplay_yue2_gguf_x.wav", title: "X", durationSeconds: 30, engine: "yue2-gguf", quantization: "q4_0",
+    stems: null, warnings: [], generationLimits: null, tagged: false,
+    rights: { class: "yours-with-conditions", sellable: true, label: "Sellable by individuals (YuE2 authors' statement, 15 Sep 2026) · companies need a commercial licence",
+      short: "sellable by individuals", capability: "musicYue2Gguf", licence: "CC BY-NC 4.0 (weights)", url: "https://huggingface.co/m-a-p/YuE2-3B/discussions/5",
+      basis: "authors-statement", addOns: [], changed: { from: "not-for-sale", on: "2026-09-24", why: "w" } },
+  };
+  const server = http.createServer((req, res) => {
+    res.writeHead(req.url === "/api/status" ? 200 : 404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(req.url === "/api/status" ? { library: [row] } : { error: "not here" }));
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const mcpUrl = new URL("./mcp.js", import.meta.url).href;
+  const child = spawn(process.execPath, ["--input-type=module", "-e",
+    `const { TOOLS } = await import(${JSON.stringify(mcpUrl)}); console.log(JSON.stringify(await TOOLS.find((t) => t.name === "list_songs").run({})));`],
+    { env: { ...process.env, AIPLAY_URL: `http://127.0.0.1:${server.address().port}` } });
+  let out = "";
+  child.stdout.on("data", (d) => { out += d; });
+  const code = await new Promise((r) => child.on("close", r));
+  server.close();
+  let listed = null;
+  try { listed = JSON.parse(out.trim().split(/\r?\n/).pop())[0]; } catch { /* reported below */ }
+  ok("list_songs returns each song's rights, snake_case, and whether its tags were written",
+    code === 0 && listed?.rights?.class === "yours-with-conditions" && listed.rights.sellable === true
+    && Array.isArray(listed.rights.add_ons) && listed.rights.basis === "authors-statement"
+    && /^Sellable by individuals/.test(listed.rights.label) && listed.rights.changed?.from === "not-for-sale"
+    && listed.tagged === false, out.slice(0, 400));
 }
 
 console.log(`\n${pass} passed, ${failures.length} failed`);

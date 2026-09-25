@@ -3,6 +3,8 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile, unlink } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { qwenReferenceCandidates } from "./qwen-status.js";
+import { QWEN_DRAFT } from "./qwen-image.js";
 
 const SCRIPT = fileURLToPath(new URL("./image_editor.py", import.meta.url));
 const ENGINE = "qwen-image-2.1";
@@ -11,6 +13,10 @@ const MODES = new Set(["edit", "style", "inpaint"]);
 export function editorOptions(body) {
   const allowed = new Set(["action", "documentId", "source", "mode", "prompt", "refImages", "selection",
     "steps", "cfg", "seed", "refResolution", "transparent", "dit", "encoder", "vae"]);
+  /* Fast draft is a Pictures setting. Masked edits are base-only, and edit and
+   * style edits were not what the draft was judged on, so the editor says so
+   * rather than calling the field unsupported. */
+  if (body.draft !== undefined) throw new Error(QWEN_DRAFT.refusals.masked);
   const unsupported = Object.keys(body).filter(key => !allowed.has(key));
   if (unsupported.length) throw new Error(`Unsupported editor fields: ${unsupported.join(", ")}.`);
   const mode = body.mode ?? "edit";
@@ -51,7 +57,7 @@ export function editorOptions(body) {
 }
 
 /** All generation goes through the existing Image API/ArtRunner supplied by index. */
-export function createImageEditor({ imageDir, inputDir, python, generate, preflight = async () => {},
+export function createImageEditor({ imageDir, inputDir, coverDir, python, generate, preflight = async () => {},
   register = async () => {}, documentChanged = async () => {}, runPython } = {}) {
   const jobs = new Map();
   let preparing = 0;
@@ -117,17 +123,27 @@ export function createImageEditor({ imageDir, inputDir, python, generate, prefli
     const maskPath = path.join(scratch, `${id}.npy`);
     const maskName = `aiplay_frame_${randomUUID().replaceAll("-", "").slice(0, 12)}.png`;
     const maskImagePath = path.join(inputDir, maskName);
+    // Unless transparency is asked for, a reference with alpha is sent as
+    // Qwen's vision tower sees it, over white. Its VAE would keep the alpha
+    // and hand back a transparent generation.
+    const references = options.transparent ? [] : options.refImages.map(name => ({ name,
+      candidates: qwenReferenceCandidates(name, { inputDir, coverDir, imageDir }),
+      out: path.join(inputDir, `aiplay_frame_${randomUUID().replaceAll("-", "").slice(0, 12)}.png`) }));
     const stagedOptions = { ...options,
       prompt: mode === "inpaint" ? `Edit <image 1> only where the selection mask in <image 2> is white. Black regions must stay unchanged. ${options.prompt}`
-        : mode === "style" ? `Edit <image 1> using the visual style of <image 2>, preserving the subject and composition of <image 1>. ${options.prompt}` : options.prompt,
-      refImages: [sourceName, ...(mode === "inpaint" ? [maskName] : []), ...options.refImages] };
+        : mode === "style" ? `Edit <image 1> using the visual style of <image 2>, preserving the subject and composition of <image 1>. ${options.prompt}` : options.prompt };
     let prepared;
     try {
-      prepared = await run("prepare", { documentId: body.documentId, source: body.source,
-        mode, selection: body.selection, out: sourcePath, maskOut: maskPath, maskImageOut: maskImagePath });
+      const { references: sent, ...frozen } = await run("prepare", { documentId: body.documentId, source: body.source,
+        mode, selection: body.selection, out: sourcePath, maskOut: maskPath, maskImageOut: maskImagePath, references });
+      prepared = frozen;
+      stagedOptions.refImages = [sourceName, ...(mode === "inpaint" ? [maskName] : []), ...options.refImages.map((name, i) => sent?.[i] ?? name)];
       await preflight(stagedOptions);
     }
-    catch (error) { await Promise.allSettled([unlink(sourcePath), unlink(maskPath), unlink(maskImagePath)]); throw error; }
+    catch (error) {
+      await Promise.allSettled([sourcePath, maskPath, maskImagePath, ...references.map(r => r.out)].map(file => unlink(file)));
+      throw error;
+    }
     const job = { id, status: "generating", actor, createdAt: Date.now(), mode,
       options: stagedOptions, requestedPrompt: options.prompt, documentId: body.documentId, source: body.source,
       sourcePath, maskPath: mode === "inpaint" ? maskPath : null,
@@ -140,8 +156,9 @@ export function createImageEditor({ imageDir, inputDir, python, generate, prefli
         if (!generated?.name) throw new Error("Qwen did not return an image filename.");
         if (generated.seed != null) { job.options.seed = generated.seed; options.seed = generated.seed; }
         const name = `qwen_edit_${token}.png`;
-        const finished = await run("finish", { sourcePath, generated: generated.name,
+        const { warnings = [], ...finished } = await run("finish", { sourcePath, generated: generated.name,
           maskPath: job.maskPath, out: path.join(imageDir, name), thumbOut: path.join(imageDir, `qwen_edit_${token}_t.png`) });
+        if (warnings.length) job.warnings = [...(job.warnings || []), ...warnings];
         job.runId = generated.runId;
         await register(name, { engine: ENGINE, prompt: options.prompt, seed: options.seed,
           generatedFrom: generated.name, derivedFrom: body.source || null, documentId: body.documentId || null, operation: `qwen-${mode}`,
@@ -185,5 +202,6 @@ export function createImageEditor({ imageDir, inputDir, python, generate, prefli
       return { ...publicJob(job), doc: result.doc, revision: result.revision, layerId: result.layerId };
     } finally { job.mutating = false; }
   }
-  return { preview, request, paintTarget: body => run("paint-target", { doc: body.doc, ref: body.ref }) };
+  return { preview, request, paintTarget: body => run("paint-target", { doc: body.doc, ref: body.ref }),
+    flattenReferences: references => run("flatten", { references }).then(result => result.references) };
 }

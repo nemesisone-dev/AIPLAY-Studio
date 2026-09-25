@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title AIPLAY Studio - RunPod preview
+title AIPLAY Studio - RunPod GPU
 if exist "%~dp0node\node.exe" set "PATH=%~dp0node;%PATH%"
 where node >nul 2>nul
 if errorlevel 1 (
@@ -28,7 +28,7 @@ if errorlevel 1 (
 )
 :ready
 set "AIPLAY_OPEN=1"
-echo Opening the local RunPod panel. Keep this window open while using AIPLAY.
+echo Opening AIPLAY Studio in RunPod GPU mode. Keep this window open while using AIPLAY.
 echo Closing it does not stop the remote Pod or its billing.
 node scripts\start-remote.mjs
 if errorlevel 1 pause

@@ -417,6 +417,28 @@ ok("...and every one of them is NAMED in run(), not just declared", unforwarded.
 
 console.log(`        census: ${routeFields.length} route fields — ${routeFields.join(", ")}`);
 
+/* FAST DRAFT: the plain control (the Pictures chip), the number behind it and
+ * the tool, moving together. The route reads b.draft, so the census above
+ * already demands make_image declare and send it; these pin its shape and that
+ * the readiness tool can ask about it too. */
+console.log("\n  -- Fast draft (Qwen Image 2.1) --");
+ok("make_image declares draft as a boolean", mk.inputSchema.properties.draft?.type === "boolean");
+ok("...its description names the measured speed, what it garbles and the base-only cases",
+  /3\.1 s against 11\.2 s/.test(mk.inputSchema.properties.draft.description)
+  && /small text/.test(mk.inputSchema.properties.draft.description)
+  && /transparent, more than 3 references/.test(mk.inputSchema.properties.draft.description));
+ok("...and run() sends it only when given", /draft: typeof a\.draft === "boolean" \? a\.draft : undefined/.test(runSrc));
+ok("the route refuses it off Qwen by the server's own sentence, before any engine check",
+  /if \(b\.draft === true && engine !== QWEN_IMAGE_ENGINE\) return json\(res, 400, \{ error: QWEN_DRAFT\.refusals\.engine/.test(imgRouteSrc));
+ok("...reads what the graph samples rather than the KSampler it may not have",
+  /const sampled = qwenImageSettings\(graph\);\s*b\.steps = sampled\.steps; b\.cfg = sampled\.cfg;/.test(imgRouteSrc));
+const qstat = byName.get("qwen_image_status");
+ok("qwen_image_status can ask for a draft, and forwards it", qstat?.inputSchema?.properties?.draft?.type === "boolean"
+  && /draft: a\.draft/.test(String(qstat.run)));
+ok("the readiness route passes draft=true through", /if \(url\.searchParams\.get\("draft"\) === "true"\) options\.draft = true;/.test(idx));
+const overnight = byName.get("overnight_start");
+ok("Overnight image items keep it too", overnight?.inputSchema?.properties?.items?.items?.properties?.draft?.type === "boolean");
+
 /* ── the negative-prompt rule, in three places, kept identical ─────────────
  *
  * Whether an engine can honour a negative prompt is ONE fact — does the
@@ -498,8 +520,17 @@ ok("the render cost is stated, from the same measurement the tool description qu
 ok("switching engine repaints the block",
   app.slice(app.indexOf('$("imgEngine").onchange'), app.indexOf('$("imgGo").onclick'))
     .includes("imgRefsPaint();"));
+/* The upload used to be inline in the onchange handler, so this read the two as
+ * NEIGHBOURS. It is a shared function now, because the drop target needs the
+ * same upload and two copies would drift about the cap and the accepted
+ * formats - so the pin follows the architecture and gets stronger: one named
+ * path, still /api/frame, and the handler delegating to it rather than rolling
+ * its own. */
 ok("uploads go through /api/frame — the endpoint the Video tab's references use",
-  /imgRefFile"\)\.onchange[\s\S]{0,700}\/api\/frame/.test(app));
+  /async function imgRefUploadFiles\([\s\S]{0,700}\/api\/frame/.test(app));
+ok("...through ONE function, so the button and the drop target cannot drift",
+  /imgRefFile"\)\.onchange[\s\S]{0,400}imgRefUploadFiles\(/.test(app)
+  && (app.match(/imgRefUploadFiles\(/g) || []).length >= 3);
 
 /* -- WHICH MODEL PAINTED IT -----------------------------------------------
  * The engine was recorded from the first day and shown nowhere, which is the
@@ -660,6 +691,11 @@ const NO_CONTROL = {
     "replay of a recorded expansion. The agent path uses it to reproduce a picture exactly; "
     + "the human equivalent is a 'make this one again' button on a tile, which is a gesture "
     + "rather than a form field and has not been built.",
+  refAlpha:
+    "the Transparent box already decides it: off flattens a reference onto white, on keeps "
+    + "its alpha. The only other combination a box could add, keep on an opaque picture, is "
+    + "the one that turned a whole generation transparent. The image editor sends keep for "
+    + "its frozen source, whose alpha a masked edit composites through.",
 };
 
 const noControl = routeFields.filter((f) => !new RegExp("\\b" + f + "\\b").test(imgPostSrc));

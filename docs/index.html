@@ -384,7 +384,7 @@ footer a{color:var(--faint)}
     <div class="card"><span class="ico">✂</span>
       <h3>Music videos</h3>
       <p>Attach a song, cut it into scenes on its own beat grid, cast characters with reference sheets, storyboard, render, and assemble to a timeline.</p>
-      <span class="who">The Workflow screen</span></div>
+      <span class="who">The Music video screen</span></div>
 
     <div class="card"><span class="ico">▤</span>
       <h3>A real DAW</h3>
@@ -491,16 +491,21 @@ footer a{color:var(--faint)}
   <h2>Install</h2>
   <p class="lede">For native music, start with <strong>Node.js 20+ and Studio</strong>.
      No ComfyUI setup, Python environment or unrelated model download.</p>
+  <p><strong>On Windows:</strong> <a href="https://github.com/Senzube4n/AIPLAY-Studio/releases/latest/download/AIPLAY.Studio.Setup.exe">download
+     AIPLAY Studio Setup.exe</a> and run it. It installs Studio, plus a private Node.js 20+ when this PC has none, with no
+     admin prompt. Windows may say “Windows protected your PC” because the installer is not signed yet: click
+     <strong>More info</strong>, then <strong>Run anyway</strong>.</p>
   <p><strong>Same public GitHub, two launch modes.</strong> YuE2 music-only is part of AIPLAY Studio,
      not a separate repository. You download the app, then only the models you choose.</p>
+  <p>Source code (for developers):</p>
 
 <pre>git clone https://github.com/Senzube4n/AIPLAY-Studio.git
 cd AIPLAY-Studio
 npm ci --omit=dev
 npm run start:music</pre>
 
-  <p>Or <a href="https://github.com/Senzube4n/AIPLAY-Studio/archive/refs/heads/main.zip">download and extract the ZIP</a>
-     and double-click <strong>AIPLAY Studio.exe</strong> on Windows and choose <strong>Music only</strong>.
+  <p>Or <a href="https://github.com/Senzube4n/AIPLAY-Studio/archive/refs/heads/main.zip">download and extract the source ZIP</a>
+     (for developers; it needs Node.js installed by hand). Either way, start <strong>AIPLAY Studio.exe</strong> and choose <strong>Music only</strong>.
      In <strong>Models</strong>, explicitly install <strong>YuE2 GGUF Q4 or Q8</strong> and its native runtime,
      then enter a style and lyrics in <strong>Music</strong> and press <strong>Create</strong>. The installer shows the download total
      and notices; unavailable or unverified packages must not appear ready.</p>
@@ -529,24 +534,27 @@ npm run start:music</pre>
     <thead><tr><th>Capability</th><th>Download</th><th>Licence</th></tr></thead>
     <tbody>
       <tr><td>Music engine — MiniMax Music 3</td><td class="n">11.9 GB</td><td>MiniMax Music3 Community</td></tr>
-      <tr><td>Music engine — YuE2 GGUF Q4 / optional Q8 (experimental)</td><td class="n">~2.9 GB</td><td class="flag">CC BY-NC 4.0 (weights) · Apache-2.0/MIT (native code) · NVIDIA CUDA runtime terms on NVIDIA only · ⚠ not for sale</td></tr>
+      <tr><td>Music engine — YuE2 GGUF Q4 / optional Q8 (experimental)</td><td class="n">~2.9 GB</td><td class="flag">CC BY-NC 4.0 (weights) · Apache-2.0/MIT (native code) · NVIDIA CUDA runtime terms on NVIDIA only · ⚠ sellable by individuals</td></tr>
       <tr><td>Cover — SheetSage2 song-to-score (ComfyUI)</td><td class="n">1.4 GB</td><td class="flag">CC BY-NC 4.0 (weights) · ⚠ not for sale</td></tr>
       <tr><td>Video clips — TaoMate 3-step LoRA (H3)</td><td class="n">2.5 GB</td><td class="flag">MiniMax H3 Community Licence (derived from H3) · ⚠ excludes European Union, United Kingdom, Republic of Korea, United States of America</td></tr>
       <tr><td>Video clips — video-to-video control (H3 Fun ControlNet)</td><td class="n">2.3 GB</td><td class="flag">MiniMax H3 Community Licence (a patch on H3's weights) · ⚠ excludes European Union, United Kingdom, Republic of Korea, United States of America</td></tr>
-      <tr><td>Video clips — TaoMate 3-step, rank-19 average (H3, small)</td><td class="n">182 MB</td><td class="flag">MiniMax H3 Community Licence (derived from H3) · ⚠ excludes European Union, United Kingdom, Republic of Korea, United States of America</td></tr>
+      <tr><td>Video clips — Fast setting for H3 (TaoMate 3-step, 182 MB)</td><td class="n">182 MB</td><td class="flag">MiniMax H3 Community Licence (derived from H3) · ⚠ excludes European Union, United Kingdom, Republic of Korea, United States of America</td></tr>
+      <tr><td>Video clips — 4-step speed-up for H3 (1.96 GB)</td><td class="n">2.0 GB</td><td class="flag">MiniMax H3 Community Licence (derived from H3) · ⚠ excludes European Union, United Kingdom, Republic of Korea, United States of America</td></tr>
+      <tr><td>Video clips — 8-step speed-up for H3 (1.96 GB)</td><td class="n">2.0 GB</td><td class="flag">MiniMax H3 Community Licence (derived from H3) · ⚠ excludes European Union, United Kingdom, Republic of Korea, United States of America</td></tr>
       <tr><td>H3 conditioning bridge — BUNNY (action logic)</td><td class="n">22.0 MB</td><td class="flag">MiniMax H3 Community Licence (derived from H3) · ⚠ excludes European Union, United Kingdom, Republic of Korea, United States of America</td></tr>
       <tr><td>H3 conditioning bridge — Semantic Bridge v1</td><td class="n">11.0 MB</td><td class="flag">MiniMax H3 Community Licence (derived from H3) · ⚠ excludes European Union, United Kingdom, Republic of Korea, United States of America</td></tr>
-      <tr><td>Music engine — YuE2 3B for ComfyUI (int8)</td><td class="n">4.0 GB</td><td class="flag">CC BY-NC 4.0 (weights) · ⚠ not for sale</td></tr>
+      <tr><td>Music engine — YuE2 3B for ComfyUI (int8)</td><td class="n">4.0 GB</td><td class="flag">CC BY-NC 4.0 (weights) · ⚠ sellable by individuals</td></tr>
       <tr><td>YuE2 instrumental planner LoRA (ComfyUI)</td><td class="n">213 MB</td><td class="flag">CC BY-NC 4.0 (weights, derived from YuE2-3B) · ⚠ not for sale</td></tr>
       <tr><td>YuE2 real-audio NAR LoRA (ComfyUI)</td><td class="n">108 MB</td><td class="flag">CC BY-NC 4.0 (weights, derived from YuE2-3B) · ⚠ not for sale</td></tr>
       <tr><td>YuE2 real-audio tokenizer (head + MERT-v2-FullSong)</td><td class="n">2.7 GB</td><td class="flag">CC BY-NC 4.0 (head from YuE2-3B; MERT-v2-FullSong) · ⚠ not for sale</td></tr>
       <tr><td>Music engine — ACE-Step 1.5 turbo (ComfyUI)</td><td class="n">14.7 GB</td><td>MIT (ACE-Step's LICENSE; the ComfyUI repack's card tags apache-2.0 with no licence text)</td></tr>
-      <tr><td>Music engine — YuE2 3B</td><td class="n">7.8 GB</td><td class="flag">CC BY-NC 4.0 (weights) · ⚠ not for sale</td></tr>
+      <tr><td>Music engine — YuE2 3B</td><td class="n">7.8 GB</td><td class="flag">CC BY-NC 4.0 (weights) · ⚠ sellable by individuals</td></tr>
       <tr><td>Audio reference — MiniMax Music 3 DAV encoder</td><td class="n">306 MB</td><td>MiniMax Music3 Community · + a pip package</td></tr>
       <tr><td>Cover art — FLUX.2 klein 4B</td><td class="n">12.5 GB</td><td>Apache-2.0</td></tr>
       <tr><td>Chat — Qwen3 4B</td><td class="n">8.0 GB</td><td>Apache-2.0</td></tr>
       <tr><td>Stem separation — HTDemucs (fine-tuned)</td><td class="n">~336 MB</td><td>MIT · pip, not a download</td></tr>
-      <tr><td>Video clips — MiniMax H3 (quantised)</td><td class="n">42.9 GB</td><td class="flag">MiniMax H3 Community · ⚠ excludes European Union, United Kingdom, Republic of Korea, United States of America</td></tr>
+      <tr><td>Video clips — MiniMax H3 (quantised)</td><td class="n">41.0 GB</td><td class="flag">MiniMax H3 Community · ⚠ excludes European Union, United Kingdom, Republic of Korea, United States of America</td></tr>
+      <tr><td>Video clips — FastH3 (8 steps, experimental)</td><td class="n">42.1 GB</td><td class="flag">MiniMax H3 Community Licence (derived from H3) · ⚠ excludes European Union, United Kingdom, Republic of Korea, United States of America</td></tr>
       <tr><td>Video references — MiniMax H3 ref2va</td><td class="n">22.9 GB</td><td class="flag">MiniMax H3 Community · ⚠ excludes European Union, United Kingdom, Republic of Korea, United States of America</td></tr>
       <tr><td>Background removal — BiRefNet</td><td class="n">444 MB</td><td>MIT</td></tr>
       <tr><td>Images — Ideogram 4 (open 9B)</td><td class="n">25.2 GB</td><td class="flag">Ideogram Non-Commercial Model Agreement · ⚠ terms unread</td></tr>
@@ -554,6 +562,7 @@ npm run start:music</pre>
       <tr><td>Sound effects — Stable Audio 3 Small SFX</td><td class="n">3.5 GB</td><td>Stability AI Community License</td></tr>
       <tr><td>Images — Z-Image Turbo (Apache-2.0)</td><td class="n">14.6 GB</td><td>Apache-2.0</td></tr>
       <tr><td>Images — Qwen Image 2.1 (research licence)</td><td class="n">17.3 GB</td><td class="flag">Qwen Research License Agreement · ⚠ not for sale</td></tr>
+      <tr><td>Images — Fast draft for Qwen Image 2.1 (Viggle turbo LoRA)</td><td class="n">680 MB</td><td class="flag">Qwen Research License Agreement · ⚠ not for sale</td></tr>
       <tr><td>Images — Krea 2 Turbo (community licence)</td><td class="n">19.0 GB</td><td>Krea 2 Community License Agreement</td></tr>
       <tr><td>Images — Z-Image base (Apache-2.0)</td><td class="n">14.6 GB</td><td>Apache-2.0</td></tr>
       <tr><td>Images — Anima (non-commercial model, sellable pictures)</td><td class="n">1.4 GB</td><td>CircleStone Labs Non-Commercial v1.2</td></tr>
@@ -570,7 +579,7 @@ npm run start:music</pre>
       <tr><td>CLIP vision tower — ViT-H/14 (LAION-2B)</td><td class="n">2.5 GB</td><td>MIT</td></tr>
       <tr><td>3D mesh from a picture — TripoSG 1.5B</td><td class="n">7.9 GB</td><td>MIT</td></tr>
       <tr><td>Skeleton and skin for a mesh — UniRig</td><td class="n">5.8 GB</td><td>MIT</td></tr>
-      <tr><td>Timed lyrics — Whisper large-v3</td><td class="n">~3.1 GB</td><td>MIT · pip, not a download</td></tr>
+      <tr><td>Whisper: transcription and timed lyrics</td><td class="n">~3.1 GB</td><td>MIT · pip, not a download</td></tr>
       <tr><td>Smooth motion — RIFE 4.26</td><td class="n">22.7 MB</td><td>MIT</td></tr>
       <tr><td>Upscale — Real-ESRGAN 2x</td><td class="n">67.1 MB</td><td>BSD-3-Clause</td></tr>
     </tbody>
@@ -585,7 +594,7 @@ npm run start:music</pre>
     <tr><td>GPU</td><td class="n">16 GB VRAM <b>minimum</b> — either engine</td></tr>
     <tr><td>RAM</td><td class="n">32 GB minimum</td></tr>
     <!-- MODELS:BEGIN video-disk -->
-    <tr><td>Disk</td><td class="n">2.5 GB (TaoMate 3-step LoRA) or 2.3 GB (video-to-video control) or 182 MB (TaoMate 3-step, rank-19 average) or 42.9 GB (MiniMax H3) or 39.7 GB (LTX 2.5)</td></tr>
+    <tr><td>Disk</td><td class="n">2.5 GB (TaoMate 3-step LoRA) or 2.3 GB (video-to-video control) or 182 MB (Fast setting for H3) or 2.0 GB (4-step speed-up for H3) or 2.0 GB (8-step speed-up for H3) or 41.0 GB (MiniMax H3) or 42.1 GB (FastH3) or 39.7 GB (LTX 2.5)</td></tr>
     <!-- MODELS:END video-disk -->
     </tbody>
   </table>

@@ -12,6 +12,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { appVersion, versionLine, stamp, lineage } from "./version.js";
 import { PACKET_V } from "./collab/packet.js";
 import { checkUpdates, updateSentence } from "./updates.js";
@@ -56,6 +57,42 @@ test("a fork names the original it came from; the original carries no lineage bl
   assert.equal(lineage({ aiplay: {} }), null, "no block means the original");
 });
 
+test("a checkout of the ORIGINAL repository never carries a fork's lineage", () => {
+  /* ⚠ THE LANE ABOVE CANNOT SEE THIS, AND IT HAPPENED.
+   *
+   * It picks its side from the lineage block itself: a block means "I am a
+   * fork", no block means "I am the original". So when merging Bucky's fork
+   * into the original carried his `aiplay.lineage` over — letter B, name
+   * Bucky, repo bani4kaskashka/AIPLAY-Studio-Bucky-Fork — the lane concluded
+   * "fork", checked the fork's rules, and passed. The original then called
+   * itself Bucky on /api/version and the About screen, and worse, selfupdate.js
+   * reads its update source from that block, so a zip install of the ORIGINAL
+   * would have updated itself from the fork.
+   *
+   * Which side a checkout is on has to come from somewhere the merge cannot
+   * rewrite: the repository the checkout was cloned from. The fork's clone has
+   * its own origin and keeps its block; the original's clone has the original
+   * as origin and must not have one. A tree with no git (a zip) is not judged
+   * here — the gate always runs in a clone. */
+  let origin = null;
+  try {
+    origin = execFileSync("git", ["remote", "get-url", "origin"], {
+      cwd: new URL("..", import.meta.url), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch { /* no git, or no origin: nothing to judge from */ }
+  if (!origin) return;
+  const slug = origin.replace(/\.git$/i, "").replace(/^.*github\.com[/:]/i, "").toLowerCase();
+  if (slug !== "senzube4n/aiplay-studio") return;           // a fork's clone keeps its block
+  const pkg = JSON.parse(src("../package.json"));
+  assert.equal(pkg.aiplay?.lineage, undefined,
+    `this is a clone of the original (${origin}) and package.json carries a fork's lineage `
+    + `(${JSON.stringify(pkg.aiplay?.lineage?.name)} / ${pkg.aiplay?.lineage?.repo}). A merge from `
+    + "a fork brought it over. Delete the `aiplay` block: the original's identity is its absence, "
+    + "and selfupdate.js would otherwise update this build from the fork.");
+  assert.equal(appVersion().letter, "S", "and the original calls itself S");
+  assert.equal(appVersion().fork, false, "and not a fork");
+});
+
 test("the protocol is the packet's, not the build's, and only Collab compares it", () => {
   assert.equal(appVersion().protocol, PACKET_V);
   const packet = src("./collab/packet.js");
@@ -84,6 +121,20 @@ test("the update check asks GitHub about the base this build contains, and never
     assert.ok(seen.some((u) => /\/compare\/[0-9a-f]{7,}\.\.\.main/.test(u)), "compared against the commit this build contains");
     assert.equal(r.upstream.ahead, 3);
     assert.match(updateSentence(r), /3 commits on the original you do not have/);
+    /* Judged without the fork line: on a fork's checkout the fake GitHub answers
+     * the fork's own head too, and "Your own repository has ..." follows. */
+    assert.match(updateSentence({ ...r, fork: null }), /3 commits on the original you do not have[^]*\. Stop Studio, then press Update at the bottom of the launcher window\.$/,
+      "behind, the sentence says what to press, where");
+    // One if/else chain: only the behind case gets the launcher step, and the
+    // "not a commit GitHub knows" line is for a base GitHub could not compare.
+    assert.equal(updateSentence({ ok: true, upstream: { head: "abc1234", ahead: 0 } }, { fork: false }), "Up to date.",
+      "up to date says only that");
+    assert.equal(updateSentence({ ok: true, upstream: { head: "abc1234", ahead: 0 } }, { fork: true }), "Up to date with the original.");
+    assert.equal(updateSentence({ ok: true, upstream: { head: "abc1234", ahead: null } }, { fork: false }),
+      "The original is at abc1234; this build's base is not a commit GitHub knows.",
+      "an unknown base names the original's head and no Update step");
+    assert.equal(updateSentence({ ok: true, upstream: { head: "abc1234", ahead: 1, newest: "fix" } }, { fork: false }),
+      "1 commit on the original you do not have, newest: fix. Stop Studio, then press Update at the bottom of the launcher window.");
     assert.deepEqual(r.upstream.titles, ["three", "two", "one"], "newest first, one line each");
     const cached = await checkUpdates();
     assert.equal(cached.cached, true, "an hour's cache, so opening a screen costs nothing");

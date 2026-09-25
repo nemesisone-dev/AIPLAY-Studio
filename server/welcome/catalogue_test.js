@@ -28,7 +28,7 @@ import { CATALOG, MODEL_TO_CAPABILITY, isPictureModel } from "../models.js";
 /* The two sources the numeral census checks the prose against. Imported rather
  * than retyped, which is the whole point of the census. */
 import { LAYER_TYPES } from "../vfx/store.js";
-import { commitSigma } from "../videolab/catalog.js";
+import { commitSigma, COMPARE_CONFIGS } from "../videolab/catalog.js";
 
 let pass = 0;
 const failures = [];
@@ -147,12 +147,36 @@ for (const [id, eng] of Object.entries(config.video.engines)) {
     "an engine that grows a third schedule must not be described by a sentence that says two");
 }
 
+/* DERIVED — a fixed-schedule engine (FastH3) says its fixed count. It loads no
+ * turbo LoRA (turboMaxSteps 0), and "applies only below 0" was a sentence
+ * about nothing. */
+for (const [id, eng] of Object.entries(config.video.engines)) {
+  if (!eng.fixedSteps) continue;
+  const note = c.video.engines.find((e) => e.id === id).stepsNote;
+  ok(`${id}: "${eng.fixedSteps} fixed steps", not a turbo threshold`,
+    note.includes(`${eng.fixedSteps} fixed steps`) && !/applies only below/.test(note), note);
+}
+
 /* DERIVED — the sigma figures, which are arithmetic and not a remembered table.
  * Recomputed here from the same function the Video lab's panel uses, at the
  * shift config.js actually ships. */
 const h3cfg = config.video.engines.h3;
 const turboBody = c.video.quality.find((q) => /distillation is applied/.test(q.body))?.body ?? "";
-for (const n of [4, 8, h3cfg.steps]) {
+/* The bare model's count is the Video Lab's no-LoRA arm, not config's default:
+ * since 2026-09-23 that default is a turbo setting (8 or 4, by what is on
+ * disk), and the sentence must still reach the path with no LoRA on it. */
+const bareSteps = COMPARE_CONFIGS.find((x) => x.id === "h3_quality")?.steps;
+ok(`the no-LoRA arm is above the turbo threshold (${bareSteps} > ${h3cfg.turboMaxSteps})`,
+  bareSteps > h3cfg.turboMaxSteps && turboBody.includes(`the bare model's ${W[bareSteps]} at`));
+/* The two turbo counts are the files this disk resolved, not a literal 4 and
+ * 8: the sentence reads them off turboLora4 and turboLora, and on an install
+ * set up from the Models screen (4-step files only) turboLora IS the 4-step
+ * file, so a literal 8 failed there while the page was right. config.js's
+ * default is not listed on its own any more: the sentence is about the
+ * builds, and the no-LoRA arm above covers the path without one. (Imported
+ * here, not at the top, so the import block stays as it was.) */
+const { loraStepsOf } = await import("../config.js");
+for (const n of new Set([loraStepsOf(h3cfg.turboLora4) ?? 4, loraStepsOf(h3cfg.turboLora) ?? 8, bareSteps])) {
   const s = commitSigma(n, h3cfg.shiftVideo)?.toFixed(3);
   ok(`the commit point at ${n} steps is computed, not quoted (sigma ${s})`,
     turboBody.includes(s),
@@ -198,9 +222,21 @@ const MEASURED = [
   ["7.55% at native", /7\.55%/],
   ["591 s at 1792x1008", /591\.\d+ s/],
   ["721 s at 1920x1088", /721\.\d+ s/],
-  ["a 28% band across the legal clip lengths", /28% band/],
   ["a 2.7x cost span over the size ladder", /2\.7x range/],
-  ["56 to 209 frames", /56 to 209 frames/],
+  /* ⚠ THREE FIGURES LEFT THIS LIST ON 2026-09-10 AND THAT IS THE POINT. The
+   * page used to quote "16 to 21 GPU-hours", "a 28% band" and "56 to 209
+   * frames" as measured. RESOLUTION_FOR_FACES.md withdrew all three: every row
+   * of that sweep rendered 56 frames, and the band was the cost model run over
+   * lengths nothing here has rendered. They still appear in the document —
+   * inside the withdrawal, as the claim being retracted — so a check that only
+   * asked "is this number in the document?" went on passing while the page
+   * gave advice the document had taken back. What replaces them is the
+   * measurement that survived and the one that overturned it. */
+  ["149k latent tokens as the largest render behind these numbers", /149,184/],
+  ["331k latent tokens as the observed cliff", /~\*\*331,000\*\*|331,000/],
+  ["30% more frames costing 2.6x past it", /30% more frames cost 2\.6/],
+  ["158 logged renders in the replication", /158 logged H3 renders/],
+  ["437k tokens for the length the old card recommended", /437,472/],
 ];
 for (const [claim, re] of MEASURED) {
   const figure = /([\d.]+)/.exec(claim)[1];
@@ -209,19 +245,49 @@ for (const [claim, re] of MEASURED) {
     `docs/RESOLUTION_FOR_FACES.md: ${re.test(FACES) ? "has it" : "DOES NOT HAVE IT"}; `
       + `the page: ${qualityText.includes(figure) ? "shows it" : "does not show it"}`);
 }
-/* The one claim on the page that is ROUNDED rather than quoted. The document
- * measures 16.1–20.6 GPU-hours; the page says "16 to 21". So the check is not
- * "does this string appear" — it is arithmetic: the envelope must CONTAIN the
- * measurement and must not be widened past the nearest whole hour, which is
- * how a real span quietly becomes a rhetorical one. */
-const band = /([\d.]+)[–-]([\d.]+) GPU-hours/.exec(FACES);
-const claimed = /(\d+) to (\d+) GPU-hours/.exec(qualityText);
-const [lo, hi] = [Number(band?.[1]), Number(band?.[2])];
-ok(`"${claimed?.[0]}" is the document's own ${lo}–${hi}, rounded to whole hours`,
-  !!band && !!claimed
-    && Number(claimed[1]) === Math.floor(lo) && Number(claimed[2]) === Math.ceil(hi),
-  `docs/RESOLUTION_FOR_FACES.md measures ${lo}–${hi} GPU-hours; the page claims `
-    + `${claimed?.[1]} to ${claimed?.[2]} — an envelope must contain the measurement and stop there`);
+/* ── A WITHDRAWN CLAIM MUST NOT SURVIVE ANYWHERE A READER CAN FIND IT ───────
+ *
+ * This replaces an arithmetic check on the GPU-hour envelope, and the reason it
+ * replaces it is that the arithmetic was fine and the claim was not. The page
+ * said "16 to 21 GPU-hours"; the document said "16.1–20.6"; the check confirmed
+ * the rounding and passed for weeks after the document retracted the whole
+ * paragraph with a 🔴 WITHDRAWN heading two lines above the number it was
+ * reading. An envelope can contain its measurement perfectly and still be
+ * advice nobody stands behind any more.
+ *
+ * So the check is now about the RETRACTION, across every surface that carries
+ * it — the Welcome page, the Video Lab catalog and the MCP tool description —
+ * because a user meets this claim on whichever one they happen to open, and
+ * fixing one of three is the failure mode this exists to catch.
+ *
+ * The advice was "cut to the music, not to the budget": at 1792x1008 a
+ * three-minute delivery was said to cost the same whether you cut at 56 frames
+ * or at 209. 209 frames there is 437,472 latent tokens, and the cliff an
+ * outside replication measured sits at roughly 331,000 — so the old advice was
+ * precisely wrong at the end of the range it recommended most. */
+const WITHDRAWN = [
+  [/\d+(\.\d+)?\s*(to|-|–)\s*\d+(\.\d+)?\s*GPU-hours/i, "the withdrawn GPU-hour envelope"],
+  [/56 to 209 frames|56-209 frames/i, "the frame range nothing on this rig has rendered"],
+  [/cut to the music,? (not to the budget|and choose the size for the budget)/i,
+    "the retracted advice, verbatim"],
+  [/28% band/i, "the band that came from the cost model, not from a render"],
+  [/length is not (what costs you|the cost)/i, "the retracted headline"],
+];
+const SURFACES = [
+  ["the Welcome page's video cards", qualityText],
+  ["server/videolab/catalog.js", await readFile(path.join(REPO, "server", "videolab", "catalog.js"), "utf8")],
+  ["server/mcp-videolab.js", await readFile(path.join(REPO, "server", "mcp-videolab.js"), "utf8")],
+];
+for (const [where, text] of SURFACES) {
+  for (const [re, what] of WITHDRAWN) {
+    ok(`${where} does not repeat ${what}`, !re.test(text),
+      `docs/RESOLUTION_FOR_FACES.md withdrew this on 2026-09-10 under a 🔴 WITHDRAWN heading; `
+        + `${where} is still telling people it was measured`);
+  }
+  ok(`${where} names the cliff instead, so the reader knows where the answer stops`,
+    /331k|331,000/.test(text) && /2\.6x/.test(text),
+    "withdrawing advice without replacing it leaves the reader with the old advice");
+}
 
 /* ── EVERY NEED RESOLVES ────────────────────────────────────────────────────
  *
@@ -295,6 +361,67 @@ ok("no screen names a video engine by its capability id",
   namedVideoCap.join(", ")
     + " — reach it through the engine key so config.js decides which engines exist. "
     + "index.js's own comment: a third engine used to resolve silently to H3's row.");
+
+/* THE MUSIC NEED IS THE ENGINE THIS INSTALL PICKED. It was the catalogue's
+ * `required` row, always MiniMax Music 3, under "the one download that is not
+ * optional", while the Models screen badges the SELECTED engine: a YuE2
+ * install's Music panel named MiniMax as not optional beside no required chip
+ * and never mentioned YuE2. Resolved when asked, so a switch is seen at once,
+ * and through the same MODEL_TO_CAPABILITY map every engine need uses. */
+const musicNeedOf = (view) => resolveNeeds(screenFor(view))
+  .filter((n) => /one music engine/.test(String(n.for))).map((n) => n.capability);
+const shippedMusic = config.music.engine;
+try {
+  config.music.engine = "yue2";
+  for (const view of ["create", "musiclab", "overnight"]) {
+    ok(`${view}: with YuE2 selected the music need is YuE2's row, not MiniMax's`,
+      JSON.stringify(musicNeedOf(view)) === JSON.stringify([MODEL_TO_CAPABILITY.yue2]),
+      musicNeedOf(view).join(", ") || "no music need at all");
+  }
+  config.music.engine = "minimax-music3";
+  ok("...and with MiniMax Music 3 selected it is MiniMax's",
+    JSON.stringify(musicNeedOf("create")) === JSON.stringify(["engine"]), musicNeedOf("create").join(", "));
+  config.music.engine = "gone";
+  ok("...and a saved engine that maps to no row falls back to the catalogue's default, never to nothing",
+    JSON.stringify(musicNeedOf("create")) === JSON.stringify([CATALOG.find((c) => c.required).id]),
+    musicNeedOf("create").join(", "));
+} finally {
+  config.music.engine = shippedMusic;
+}
+ok("no need calls one music engine the download that is not optional",
+  TABS.every((t) => (t.needs || []).every((n) => !/\bnot optional\b/i.test(String(n.for)))));
+
+/* THE TOUR NAMES THE SAME ROW. catalogue() is what /api/welcome and the MCP
+ * tool studio_capabilities return, and it handed TABS out raw: once the music
+ * need became a placeholder resolved only in resolveNeeds(), agents reading
+ * the tour got {kind:"music", id:"selected"}, which is no capability id, where
+ * the same entry had named the real row. Resolved per call, into copies, so a
+ * switch of engine is seen by the next call and TABS itself is never rewritten
+ * (a rewrite would answer every later call with the first engine it saw). */
+const tourMusic = (doc) => doc.tabs.flatMap((t) => (t.needs || [])
+  .filter((n) => /one music engine/.test(String(n.for))).map((n) => `${t.id}:${n.kind}:${n.id}`));
+const leaked = (doc) => doc.tabs.flatMap((t) => (t.needs || [])
+  .filter((n) => n.kind === "music" || n.id === "selected").map((n) => `${t.id}: ${JSON.stringify(n)}`));
+try {
+  config.music.engine = "yue2";
+  const asYue = catalogue();
+  ok("catalogue(): no screen hands an agent the unresolved music placeholder",
+    leaked(asYue).length === 0, leaked(asYue).join("\n          "));
+  ok("catalogue(): with YuE2 selected, every music need is YuE2's row",
+    tourMusic(asYue).length === 3
+      && tourMusic(asYue).every((s) => s.endsWith(`:model:${MODEL_TO_CAPABILITY.yue2}`)),
+    tourMusic(asYue).join(", "));
+  config.music.engine = "minimax-music3";
+  ok("...and the next call follows a switch to MiniMax Music 3",
+    tourMusic(catalogue()).length === 3 && tourMusic(catalogue()).every((s) => s.endsWith(":model:engine")),
+    tourMusic(catalogue()).join(", "));
+  ok("...without rewriting TABS, which keeps the placeholder for the next call to resolve",
+    TABS.filter((t) => (t.needs || []).some((n) => n.kind === "music")).length === 3);
+  ok("...and every model need the tour hands out names a real catalogue row",
+    catalogue().tabs.every((t) => (t.needs || []).every((n) => n.kind !== "model" || CAP_IDS.has(n.id))));
+} finally {
+  config.music.engine = shippedMusic;
+}
 
 const imageNeeds = screenFor("images").needs.filter((n) => n.kind === "model").map((n) => n.id);
 /* THE THIRD COPY OF A RULE THAT IS NOW ONE RULE. This was the subtraction too

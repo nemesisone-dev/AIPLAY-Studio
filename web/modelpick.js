@@ -29,6 +29,9 @@ const VIDEO_ROWS = ["video", "videoLtx"];
  *  same job. `kind` "auto" takes the job from the asked-about row's section. */
 function rowsFor(caps, kind, focus) {
   const asked = caps.find((c) => c.id === focus);
+  /* An add-on (a LoRA on another row's model, `addonFor`): the others on the
+   * same model beside it, such as H3's 3-, 4- and 8-step speed-ups. */
+  if (kind === "auto" && asked?.addonFor) return caps.filter((c) => c.id === focus || c.addonFor === asked.addonFor);
   const job = kind === "auto" ? (asked?.group || "music") : kind;
   const same = job === "chat" ? (c) => c.group === "chat"
     : job === "music" ? (c) => MUSIC_ROWS.includes(c.id)
@@ -130,7 +133,9 @@ async function paint() {
   if (win.hidden) return;
 
   const states = d.fitStates || {};
-  const rank = (c) => (c.id === current.focus ? 0 : 1) * 10 + (c.ready ? 3 : ({ fits: 0, streams: 1 })[c.fit?.state] ?? 2);
+  /* The server's order (fitStates[state].rank, from fit.js), not a copy of it:
+   * installed rows last, a state this page has no rank for just before them. */
+  const rank = (c) => (c.id === current.focus ? 0 : 1) * 10 + (c.ready ? 9 : states[c.fit?.state]?.rank ?? 8);
   const rows = rowsFor(d.capabilities || [], current.kind, current.focus).sort((a, b) => rank(a) - rank(b));
 
   if (!rows.length) {
@@ -156,7 +161,8 @@ async function paint() {
       return `<div class="mp-row${c.id === current.focus ? " focus" : ""}">
         <div class="mp-name">
           <b>${esc(c.label)}</b>
-          ${fit ? `<span class="mp-fit ${esc(fit.tone || "")}" title="${esc(fit.line || "")}">${esc(fit.chip)}</span>` : ""}
+          ${fit ? `<span class="mp-fit ${esc(fit.tone || "")}" title="${esc(c.fit?.why || fit.line || "")}">${esc(fit.chip)}${c.fit?.short ? ` · ${esc(c.fit.short)}` : ""}</span>` : ""}
+          ${c.fit?.warning ? `<span class="mp-warn">⚠ ${esc(c.fit.warning)}</span>` : ""}
           ${c.why ? `<span class="mp-why">${esc(c.why)}</span>` : ""}
           ${c.downloading ? `<span class="mp-bar2"><i style="width:${pct}%"></i></span>` : ""}
           ${c.region && !c.ready ? `<label class="mp-region"><input type="checkbox" data-ack="${esc(c.id)}">

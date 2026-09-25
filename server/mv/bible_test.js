@@ -298,5 +298,142 @@ const find = (d, kind) => undeclaredRecurring(d).filter((u) => u.kind === kind);
   }
 }
 
+/* ── the board flag that reaches the renderer ────────────────────────────
+ *
+ * generate.js freezes the song under an H3 render when
+ *
+ *     engine === "ltx" || !useRefs || Boolean(board?.lipSync)
+ *       || brief.songConditioning === "always"
+ *
+ * and on the reference path the first two are false. The third clause was DEAD:
+ * `lipSync` was read there and written nowhere, because commitBible did not
+ * carry it onto the board it builds. So the per-scene opt-in could never be
+ * true, and the only working lever was the all-or-nothing brief flag.
+ *
+ * MEASURED, not theorised: the first cut of Bewitching rendered all 50 scenes
+ * with NO audio input node in the graph at all - MiniMaxH3ReferenceToVideo and
+ * LoadImage only - so every close-up mouthed something unrelated to the lyric.
+ * A clause nothing can satisfy looks exactly like a clause that works, which is
+ * why it survived this long and why it gets a pin rather than a comment.
+ *
+ * The granularity is the point: 23 of those 50 scenes sing, and freezing a song
+ * under a shot of her hands buys a mouth that is not in frame. */
+console.log("\n  the lipSync flag survives commitBible");
+{
+  const bsrc = readFileSync(new URL("./bible.js", import.meta.url), "utf8");
+  const gsrc = readFileSync(new URL("./generate.js", import.meta.url), "utf8");
+  ok("commitBible writes lipSync onto the board it builds", /lipSync:\s*!!b\.lipSync/.test(bsrc));
+  ok("...and generate.js is still the reader that needs it", /Boolean\(board\?\.lipSync\)/.test(gsrc));
+  ok("...and audioTrack is still gated on that same decision",
+    /audioTrack:\s*\(doc\.song\?\.file && songConditioned\)/.test(gsrc));
+  ok("...and songConditioned still names the board flag as one of its ways in",
+    /songConditioned\s*=[\s\S]{0,160}board\?\.lipSync/.test(gsrc));
+
+  /* ⚠ AND THE SECOND WRITER, WHICH THESE FOUR CHECKS DID NOT SEE.
+   *
+   * The four above pin commitBible — the whole-bible commit, which an LLM uses
+   * once. upsertBoard is the OTHER door: it is what `set_board` calls, what the
+   * board editor posts to, and what every per-scene change in a real build goes
+   * through. It had no `lipSync` key at all, so `set_board { lipSync: true }`
+   * answered ok and returned a board without it, and the clause generate.js
+   * reads stayed exactly as dead as before through the path anybody actually
+   * films with. Fixing one of two writers is not fixing the flag, and a source
+   * check aimed at the writer you happened to think of will say it is.
+   *
+   * So this counts the BUILDERS instead of naming one. Every board object in
+   * bible.js declares `characterRefs:`; every one of them has to declare
+   * `lipSync:` too, and a third door added later is caught by arithmetic
+   * rather than by somebody remembering to extend a regex. */
+  const builders = (bsrc.match(/^\s*characterRefs: /gm) || []).length;
+  const flags = (bsrc.match(/^\s*lipSync: /gm) || []).length;
+  ok(`every board builder in bible.js carries lipSync (${flags} of ${builders})`,
+    builders >= 2 && flags === builders,
+    "a writer that omits it returns ok and hands back a board the renderer reads as silent");
+  ok("...and upsertBoard PRESERVES it when the caller does not mention it",
+    /lipSync: board\.lipSync === undefined \? !!old\?\.lipSync : !!board\.lipSync/.test(bsrc),
+    "the board editor sends no lipSync key, so an unconditional !! turns singing off on every Save");
+}
+
+/* ── KEEP THE CHARACTER, in the lint (the REWIND A/B, 2026-09-24) ─────────
+ *
+ * From words alone the lead came back with another hair colour, another mask
+ * and another coat from shot to shot; with his pictures he matched in all
+ * four. So the lint says, per board, when the words name a character the board
+ * does not tick, with a fix that ticks it (set_shot, keeping the board's other
+ * references); says when the brief will not send the ticked cast's pictures;
+ * and, on an "auto" project, says when the words sing and no song goes under
+ * the clip. Props and backgrounds keep their per-asset line (the metronome case
+ * above is unchanged). */
+console.log("\n  the lint keeps the character");
+{
+  const { lintProject } = await import("./bible.js");
+  const { applyShotEdit } = await import("./shot.js");
+  const seg = (i, kind = "lyrical") => ({ id: `s_${i}`, index: i, startSec: i * 4, endSec: i * 4 + 4, durationSec: 4,
+    kind, mode: "generate", thesisLine: "I miss her" });
+  const project = (over = {}) => ({
+    styleBible: "Anime night", lookBible: "cold cyan", story: { logline: "a thief runs" },
+    brief: { videoEngine: null, songConditioning: "always" }, song: { file: "song.flac" },
+    characters: [{ id: "c1", name: "Senzu", imageFile: "senzu.png" }, { id: "c2", name: "Rin", imageFile: "rin.png" }],
+    backgrounds: [{ id: "g1", name: "Harbour", imageFile: "harbour.png" }],
+    props: [{ id: "p1", name: "The Metronome", imageFile: "m.png" }],
+    segments: [seg(0), seg(1)],
+    boards: [
+      board(0, { refs: { characterRefs: ["Rin"], backgroundRefs: ["Harbour"] },
+        shots: [{ action: "Senzu vaults the rail while Rin watches from the dock" }] }),
+      board(1, { refs: { characterRefs: ["Senzu"] }, shots: [{ action: "Senzu turns to camera under the lamp" }] }),
+    ],
+    clips: [], ...over,
+  });
+  const d = project();
+  const tick = lintProject(d).filter((i) => i.fix?.action === "set_shot");
+  ok("a character named in a board's words and not ticked: one line for that board, with a fix",
+    tick.length === 1 && tick[0].where === "scene 1"
+      && /^Names Senzu in its words but does not tick Senzu as cast, so the clip gets no picture of Senzu and invents them from the words/.test(tick[0].msg),
+    JSON.stringify(tick));
+  ok("...the fix ticks the name and keeps the board's other references",
+    JSON.stringify(tick[0]?.fix) === JSON.stringify({ label: "Tick Senzu", action: "set_shot", segmentId: "s_0", refs: ["Rin", "Harbour", "Senzu"] }),
+    JSON.stringify(tick[0]?.fix));
+  applyShotEdit(d, tick[0].fix.segmentId, { refs: tick[0].fix.refs });
+  ok("...and applying it clears the line", !lintProject(d).some((i) => i.fix?.action === "set_shot"));
+  const noSheet = project({ characters: [{ id: "c1", name: "Senzu", imageFile: null }, { id: "c2", name: "Rin", imageFile: "rin.png" }] });
+  ok("...and says when the character has no sheet yet either",
+    lintProject(noSheet).some((i) => i.fix?.action === "set_shot" && / Senzu has no rendered sheet yet either\.$/.test(i.msg)));
+  ok("a prop keeps its one per-asset line (no fix)",
+    lintProject(project({ boards: [board(0, { refs: { characterRefs: ["Senzu"] }, shots: [{ action: "Senzu winds the metronome on the desk" }] })] }))
+      .some((i) => i.where === "The Metronome" && /^Named in the text of 1 board/.test(i.msg) && !i.fix));
+
+  const off = (brief) => lintProject(project({ brief: { songConditioning: "always", ...brief } })).find((i) => i.where === "brief" && i.fix?.action === "set_brief");
+  const ltx = off({ videoEngine: "ltx" });
+  ok("ticked cast on an LTX project: the pictures will not be sent, said once, with the fix and its trade",
+    /^2 board\(s\) tick cast, but the engine is set to LTX, which takes no pictures, so no clip is given their pictures/.test(ltx?.msg || "")
+      && / Switching to hybrid renders those scenes on MiniMax H3: about 7x slower than LTX, and H3's licence grants no rights in its excluded territories \(studio_status\)\. Where that applies, keep LTX\.$/.test(ltx?.msg || "")
+      && JSON.stringify(ltx?.fix) === JSON.stringify({ label: "Render cast scenes on H3 (hybrid)", action: "set_brief", brief: { videoEngine: "hybrid" } }),
+    JSON.stringify(ltx));
+  const refsOff = off({ castRefs: false });
+  ok("...and with cast pictures switched off", /but cast pictures are switched off,/.test(refsOff?.msg || "")
+    && JSON.stringify(refsOff?.fix?.brief) === JSON.stringify({ castRefs: true }), JSON.stringify(refsOff));
+  ok("...and not on the default brief, which sends them", !off({}));
+
+  const sung = (brief) => lintProject(project({ brief, boards: [
+    board(0, { refs: { characterRefs: ["Senzu", "Rin"] }, shots: [{ action: "Senzu sings the line to Rin" }] }),
+    board(1, { refs: { characterRefs: ["Senzu"] }, shots: [{ action: "Senzu turns to camera under the lamp" }] }),
+  ] })).filter((i) => i.fix?.brief?.songConditioning === "always");
+  const auto = sung({ songConditioning: "auto" });
+  ok("an auto project whose board sings with no song under the clip: said on that scene, with the fix",
+    auto.length === 1 && auto[0].where === "scene 1"
+      && auto[0].msg === "The words say someone sings, but Song under the clip is auto and this board is not marked as sung: no song goes under the clip, so the mouth will not follow the words."
+      && auto[0].fix.label === "Put the song under every scene" && auto[0].fix.action === "set_brief", JSON.stringify(auto));
+  ok("...an older project with no value reads as auto", sung({}).length === 1);
+  ok("...a board marked as sung has the song under it", lintProject(project({ brief: { songConditioning: "auto" }, segments: [seg(0)],
+    boards: [{ ...board(0, { refs: { characterRefs: ["Senzu"] }, shots: [{ action: "Senzu sings" }] }), lipSync: true }] }))
+    .every((i) => i.fix?.brief?.songConditioning !== "always"));
+  /* A lyrical scene with no board sings by construction ("sings the line"). */
+  ok("...and a lyrical scene with no board, on auto, is said too", lintProject(project({ brief: { songConditioning: "auto" }, segments: [seg(0), seg(1)],
+    boards: [{ ...board(0, { refs: { characterRefs: ["Senzu"] }, shots: [{ action: "Senzu sings" }] }), lipSync: true }] }))
+    .some((i) => i.where === "scene 2" && i.fix?.brief?.songConditioning === "always"));
+  ok("...and an \"always\" project (new projects) gives neither the sung line nor the pictures line",
+    sung({ songConditioning: "always" }).length === 0 && !off({}));
+}
+
 console.log(`\n  ${pass} passed, ${failures.length} failed\n`);
 process.exit(failures.length ? 1 : 0);

@@ -6,6 +6,11 @@
  * Always dark — there is no light mode, same as the site and every DAW.
  */
 :root {
+  /* Tells the browser too. Without it every native control this sheet does not
+   * restyle (inputs, buttons, <audio> players, scrollbars, date pickers) paints
+   * in the white light-mode default on the dark panels. There is no light mode
+   * to follow, so it is fixed. Pinned in server/ui-kit_test.js. */
+  color-scheme: dark;
   --bg:        linear-gradient(135deg, hsl(0,0%,3%) 0%, hsl(220,15%,6%) 100%);
   --rail:      hsla(0,0%,2%,.9);
   --panel:     hsla(220,12%,8%,.8);
@@ -55,24 +60,77 @@ body {
 }
 
 .shell {
+  /* The transport bar's height, in one place: the full player and the song
+     panel both stop above it, and both were hard-coded to 64px — which was
+     wrong the moment the bar changed size, and wrong the whole time the bar
+     was closed. It is 0 when there is no bar. */
+  --playerh: 0px;
   height: 100vh;
   display: grid;
-  grid-template-columns: 220px var(--colw, minmax(340px, 420px)) minmax(0, 1fr);
+  grid-template-columns: var(--railw, 248px) var(--colw, minmax(340px, 420px)) minmax(0, 1fr);
   transition: grid-template-columns .28s cubic-bezier(.22,.8,.24,1);
   grid-template-rows: minmax(0, 1fr) auto;
-  grid-template-areas: "rail create stage" "player player player";
+  /* ⚠ THE RAIL SPANS BOTH ROWS, so the player stops at its wall. The bar
+     used to run "player player player" underneath the rail as well: it cut
+     across the bottom of the quick-access menu, and because the rail then
+     had only the first row to live in, everything in it was pushed up. */
+  grid-template-areas: "rail create stage" "rail player player";
 }
 /* Community, Overnight and Settings are not places you write a song, so the
    Create column goes away entirely and they get the full width. Collapsing the
    grid column rather than just hiding the panel — a hidden element in a sized
    track leaves a 400px hole. */
 .shell.solo {
-  grid-template-columns: 220px minmax(0, 1fr);
-  grid-template-areas: "rail stage" "player player";
+  grid-template-columns: var(--railw, 248px) minmax(0, 1fr);
+  grid-template-areas: "rail stage" "rail player";
 }
 .shell.solo .create { display: none; }
 
+/* ⚠ A LICENCE CONDITION ABOVE THE MARK. MiniMax-Music3 §3.1 and MiniMax H3
+   §IV.2 ask for the model's name shown prominently in the interface of a
+   product using it; the top of the window is as prominent as this gets. It is
+   a button because a name with no explanation invites the question, and the
+   answer is one press away (app.js). Quiet, but not hidden: it has to be
+   readable to count. */
+/* ⚠ THE NAME AND NOTHING ELSE. "Powered by" was two thirds of the line and
+   said nothing the licence asks for: §3.1 wants the NAME shown prominently.
+   The small ? is the explanation, which is where "Powered by" was trying to
+   go. One 18px row at the top of the rail. */
+.poweredby {
+  display: flex; align-items: center; gap: 5px; width: 100%; margin: 0 0 8px; padding: 2px 6px;
+  font: inherit; font-family: var(--mono); font-size: 9.5px; letter-spacing: .02em;
+  text-align: left; color: var(--ink); background: none; cursor: pointer;
+  border: 1px solid transparent; border-radius: 6px;
+  transition: border-color .12s, background-color .12s;
+}
+.poweredby b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.poweredby i {
+  flex: 0 0 auto; display: grid; place-items: center; width: 12px; height: 12px;
+  font-style: normal; font-size: 8.5px; color: var(--ghost);
+  border: 1px solid var(--edge); border-radius: 50%;
+}
+.poweredby:hover, .poweredby:focus-visible { border-color: var(--edge); background: var(--raise); }
+.poweredby:hover i { color: var(--primary); border-color: var(--primary); }
+.shell.railmini .poweredby { display: none; }
+
 /* ── rail ─────────────────────────────────────────────── */
+/* ⚠ ITS WIDTH IS A VARIABLE, and it is 240px rather than 220px because the
+   meters pair two to a row: at 220 each cell was 93px and the disk and CPU
+   figures were cut off on a 1080p screen. The grip on the right edge sets
+   --railw and app.js remembers it; a double-click puts it back. */
+.railgrip {
+  position: absolute; top: 0; bottom: 0; right: -3px; width: 7px; z-index: 12;
+  cursor: col-resize; background: none; border: 0; padding: 0;
+}
+.railgrip::after {
+  content: ""; position: absolute; inset: 0 3px; border-radius: 2px;
+  background: var(--primary); opacity: 0; transition: opacity .12s;
+}
+.railgrip:hover::after, .railgrip:focus-visible::after, .shell.raildrag .railgrip::after { opacity: .55; }
+/* While dragging, nothing else takes the pointer or highlights under it. */
+.shell.raildrag { user-select: none; }
+.shell.raildrag * { cursor: col-resize !important; }
+.shell.railmini .railgrip { display: none; }
 .rail {
   grid-area: rail;
   background: var(--rail);
@@ -247,12 +305,14 @@ input.line {
 }
 input.line:focus { outline: none; border-color: var(--primary); }
 input.line::placeholder { color: var(--ghost); }
+/* The timed-lyrics verdict ends with install commands, one per line. */
+#whisperPyNote { white-space: pre-line; }
 input[type=range] { accent-color: var(--primary); width: 100%; }
-.scaffold {
-  margin: 0; font-family: var(--mono); font-size: 10.5px; line-height: 1.5;
-  color: var(--faint); background: var(--rail); border: 1px solid var(--edge);
-  border-radius: 8px; padding: 9px 11px; max-height: 132px; overflow-y: auto; white-space: pre-wrap;
-}
+/* The section structure is written in the same box the words would be, and it
+   is a textarea like that one: it was a <pre> on the rail colour with a mono
+   face, which matched nothing else on the form and read as output rather than
+   as the editable text it always was. */
+#scaffold { font-family: var(--mono); font-size: 11.5px; }
 /* ── waveform editor ──────────────────────────────────── */
 .wavewrap {
   position: relative; height: 96px; border-radius: 8px; overflow: hidden;
@@ -443,7 +503,10 @@ details.adv[open] summary::before { content: "▾"; }
  */
 .ctawrap {
   position: sticky; bottom: -16px; z-index: 4;
-  margin-top: auto; padding: 14px 0 12px;
+  /* Tighter than it was (14px/12px): the note that used to sit under the
+     button is a drop-up now, so the gutter it needed went with it and the
+     button sits where your hand already is. */
+  margin-top: auto; padding: 10px 0 6px;
   /* Fade measured in PIXELS, not percent. A percentage stop scales with the
    * wrapper, so 42% reached well into the buttons and the last row of style
    * chips showed through the Preview button. Pinning the fade to the 14px of top
@@ -460,7 +523,51 @@ details.adv[open] summary::before { content: "▾"; }
 .btn:disabled { opacity: .45; cursor: not-allowed; filter: none; }
 .btn.ghost { flex: 0 0 96px; background: none; border: 1px solid var(--edge); color: var(--dim); }
 .btn.ghost:hover { border-color: var(--primary); color: var(--primary); filter: none; }
-.ctanote { font-family: var(--mono); font-size: 10px; color: var(--ghost); text-align: center; margin: 0; }
+/* THE NOTE UNDER THE BUTTON STAYS VISIBLE (UI_PLAN C2). It was a drop-up that
+   showed only under the pointer, and the estimate is what a newcomer needs
+   before pressing, not after hovering. The receipt line (web/receipt.js)
+   carries the estimate now, so the note steps aside while it does
+   (.rc-took below); any other message, and every warning, stays in place.
+   An empty note draws nothing at all. */
+.ctanote, #imgPanel .ctawrap > .hint {
+  position: static; margin: 0; padding: 4px 0 0;
+  font-family: var(--mono); font-size: 10px; line-height: 1.45; text-align: center;
+  color: var(--dim);
+}
+.ctanote:empty, #imgPanel .ctawrap > .hint:empty { display: none; }
+.ctawrap > .ctanote.rc-took:not(.stick) { display: none; }
+/* THE RECEIPT: "YuE2 3B · 32 steps · up to 2:30 · about 4:00 · Change". Each
+   field is a button to the control that owns it (web/receipt.js RECEIPTS). */
+.receipt { margin: 6px 0 0; font-size: 12px; line-height: 1.5; color: var(--dim); text-align: center; }
+.receipt p { margin: 0; }
+.receipt .rcf { font: inherit; background: none; border: 0; padding: 0; color: inherit; cursor: pointer; }
+.receipt button.rcf:hover { color: var(--primary); text-decoration: underline; }
+.receipt .rcsep { opacity: .45; margin: 0 5px; }
+.receipt .rcchange { font: inherit; background: none; border: 0; padding: 0; color: var(--primary); text-decoration: underline; cursor: pointer; }
+.receipt .rcfail { color: var(--warn); margin-top: 2px; }
+/* The note's qualifiers after the estimate ("re-rolls ~3× faster"). */
+.receipt .rctail { opacity: .8; font-style: italic; }
+.rc-hi { outline: 2px solid var(--primary); outline-offset: 3px; border-radius: 6px; }
+/* One writing model is a name, not a menu (web/chat.js writerExtras). */
+.mpick1 { font-size: 12px; margin-left: 6px; color: var(--dim); }
+.mpick1 b { font-weight: 500; color: var(--ink); margin-right: 8px; }
+/* "Show every file" is an Advanced thing (UI_PLAN B2): not beside the Simple
+   writers (Music Simple, the Images and Video assist bars). */
+.simple-model .mpick1 [data-every] { display: none; }
+/* Settings: what Studio picked for this PC, and what you chose. */
+.deflist { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 13px; }
+.deflist li.off span { color: var(--warn); }
+/* Kept from settings an older Studio saved on its own: said, not claimed. */
+.deflist li.kept span { font-style: italic; }
+/* ⚠ BUT A WARNING OR A FAILURE STAYS IN PLACE. "⚠ 'X' failed", "⚠ no build
+   for 7 steps on this disk", "That render failed." are not a cost to read
+   once: a note that shows only under the pointer is a failure nobody sees.
+   app.js adds .stick where it writes one and takes it off with the next
+   estimate. */
+.ctawrap > .ctanote.stick, #imgPanel .ctawrap > .hint.stick {
+  position: static; opacity: 1; transform: none; pointer-events: auto;
+  box-shadow: none; background: none; border: 0; padding: 4px 0 0;
+}
 
 /* ── stage ────────────────────────────────────────────── */
 .stage { grid-area: stage; padding: 16px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; min-width: 0; }
@@ -625,7 +732,7 @@ details.adv[open] summary::before { content: "▾"; }
 .expand:hover { color: var(--primary); border-color: var(--primary); }
 
 .fullplayer {
-  position: fixed; inset: 0 0 64px 0; z-index: 45;
+  position: fixed; inset: 0 0 var(--playerh, 0px) 0; z-index: 45;
   background: var(--bg); display: grid; place-items: center; padding: 32px;
   animation: fpin .18s ease-out;
 }
@@ -890,17 +997,26 @@ details.adv[open] summary::before { content: "▾"; }
 /* The grid tile has no room for it beside a wrapped title. */
 .rows.grid .rpen { display: none; }
 
+/* Each meter is a fill bar and a figure: the number is exact, the bar is the
+   glance.
+
+   ⚠ NO DIVIDER BETWEEN THEM. Every one of these used to carry its own
+   `border-top: 1px solid var(--edge)`, and --edge is a translucent BLUE — so
+   four meters drew four blue rules across the foot of the rail, in among their
+   four fill bars, and the eye could not tell a separator from a reading. They
+   are one block with one hairline above the whole thing. */
+/* ⚠ TWO TO A ROW. Four stacked meters were four rows of a rail that is
+   already a long list, for four numbers nobody reads continuously. Paired,
+   they cost two rows and read the same. */
+.meters { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px;
+  border-top: 1px solid var(--edge); padding-top: 8px; }
 .gpu {
-  display: flex; flex-direction: column; gap: 4px; cursor: help;
+  display: flex; flex-direction: column; gap: 3px; cursor: help; min-width: 0;
   font-family: var(--mono); font-size: 9px; color: var(--ghost);
-  border-top: 1px solid var(--edge); padding-top: 9px;
 }
+.gpu span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gpubar { height: 3px; border-radius: 2px; background: var(--raise); overflow: hidden; }
 .gpubar i { display: block; height: 100%; background: var(--primary); transition: width .4s; }
-/* The two meters read as one block: only the first carries the divider, and the
-   second sits tight beneath it rather than looking like a separate section. */
-#ramBox { border-top: 0; padding-top: 5px; }
-#ramFill { background: var(--secondary); }
 
 /* Library row overflow menu.
  *
@@ -1098,7 +1214,6 @@ details.adv[open] summary::before { content: "▾"; }
 .cc.near { color: var(--warn); }
 .cc.over { color: var(--danger, #e5484d); }
 /* Editable scaffold: it is a starting point, not a fixed menu. */
-.scaffold[contenteditable="true"]:focus { outline: 1px solid var(--primary); border-radius: 6px; }
 
 /* ── library toolbar, rows, grid ────────────────────────────────────────*/
 .libbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -1195,18 +1310,14 @@ details.adv[open] summary::before { content: "▾"; }
 .vz.vztop::after { top: -1px; }
 .vz.vzbot::after { bottom: -1px; }
 
-/* Scrollbars, quietened and wired to the same signal.
-   The platform default is a heavy grey slab that fights the palette. Thin,
-   trackless, and tinted toward the primary — and since `--vz-all` carries the
-   overall level, the thumb brightens with the music like the divider rules do.
-   It falls back to a calm static tint whenever nothing is playing. */
+/* Scrollbars, quietened. The platform default is a heavy grey slab that fights
+   the palette: thin, trackless, tinted toward the primary. Static: they used
+   to brighten with the music, on every scroll area at once. */
 * { scrollbar-width: thin; scrollbar-color: var(--edge-s) transparent; }
 ::-webkit-scrollbar { width: 7px; height: 7px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb,
-    var(--primary) calc(22% + var(--vz-all, 0) * 55%),
-    transparent);
+  background: color-mix(in srgb, var(--primary) 22%, transparent);
   border-radius: 99px;
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--primary); }
@@ -1219,7 +1330,7 @@ details.adv[open] summary::before { content: "▾"; }
    behind it, so working down a list of takes is one click each rather than
    open-read-close-open. */
 .side {
-  position: fixed; top: 0; right: 0; bottom: 64px; z-index: 35;
+  position: fixed; top: 0; right: 0; bottom: var(--playerh, 0px); z-index: 35;
   width: min(380px, 92vw); overflow-y: auto;
   background: var(--panel); border-left: 1px solid var(--edge-s);
   padding: 18px; display: flex; flex-direction: column; gap: 14px;
@@ -1358,7 +1469,9 @@ details.adv[open] summary::before { content: "▾"; }
 .submit:hover { border-color: var(--secondary); color: var(--secondary); }
 
 @media (max-width: 1000px) {
-  .shell { grid-template-columns: 60px minmax(0,1fr); grid-template-areas: "rail create" "rail stage" "player player"; }
+  .shell { grid-template-columns: 60px minmax(0,1fr); grid-template-areas: "rail create" "rail stage" "rail player"; }
+  /* .shell.solo outranks the line above, so it needs its own narrow rail. */
+  .shell.solo { grid-template-columns: 60px minmax(0,1fr); }
   .brand span, .nav a span { display: none; }
 }
 
@@ -1693,6 +1806,21 @@ details.adv[open] summary::before { content: "▾"; }
   transition: width .2s;
 }
 .apibar span.hot { background: var(--warn); }
+
+/* "No strong graphics card?": two numbered steps, the friend first. The
+   Hosted engine's key field sits inside step 2 before its switch, so the
+   .apibody rule above loses its top rule there. */
+.cloudstep { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--hair); }
+.cloudstep h4 { display: flex; align-items: center; gap: 8px; margin-top: 0; color: var(--ink); font-size: 13px; }
+.cloudnum {
+  display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%;
+  font-size: 11px; font-weight: 700; background: var(--primary); color: var(--on);
+}
+.cloudsvc { margin: 14px 0 4px; font-size: 12px; font-weight: 600; }
+.cloudsvc em { color: var(--ghost); font-style: normal; font-weight: 400; margin-left: 6px; }
+.cloudstep .apibody { margin-top: 6px; padding-top: 0; border-top: 0; }
+.cloudstep .pv { display: flex; align-items: center; gap: 6px; }
+.cloudstep .pv .line { flex: 1 1 auto; min-width: 0; }
 
 /* A control that is off because the chosen engine cannot do it — not because
    something failed. Dimmed, still readable, reason in the summary. */
@@ -2554,7 +2682,29 @@ details.adv[open] summary::before { content: "▾"; }
 
 /* waypoint thumbnails on the Video page */
 .midprev{display:flex;gap:.4rem;flex-wrap:wrap;margin:.4rem 0}
+/* The reference drop box itself is web/picdrop.js and web/ui.css — the dashed
+   zone, the empty state and the thumbnail grid all live there. Two comments
+   describing rules for a second copy of it survived a merge here after the
+   rules themselves went; they are gone.
+   The thumbnails are draggable out of the library and into it, so the cursor
+   should say so on the way past. */
+#imgGrid .imtile img{cursor:grab}
+/* The full picture, over everything, and never under the pointer: a preview
+   that can be hovered is a preview that flickers. */
+#imgRefHover{position:fixed;z-index:60;pointer-events:none;
+  background:var(--panel);border:1px solid var(--edge);border-radius:10px;
+  padding:6px;box-shadow:0 12px 34px rgba(0,0,0,.55);max-width:330px}
+#imgRefHover img{display:block;max-width:318px;max-height:318px;
+  border-radius:6px;background-color:hsl(0,0%,13%);
+  background-image:repeating-conic-gradient(hsla(0,0%,72%,.30) 0% 25%,transparent 0% 50%);
+  background-size:14px 14px}
+#imgRefHover span{display:block;margin-top:5px;font-size:11px;color:var(--dim);
+  max-width:318px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .midthumb{margin:0;width:88px}
+/* Keep my character's strip: a saved character's picture uploaded on Pictures
+ * has no library route, so its place shows the character's name. */
+.midthumb .keepph{width:88px;height:50px;border-radius:6px;display:flex;align-items:center;justify-content:center;
+  background:var(--raise);font-size:.75rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .midthumb img{width:88px;height:50px;object-fit:cover;border-radius:6px;
   border:1px solid var(--edge);display:block}
 .midthumb figcaption{display:flex;align-items:center;justify-content:space-between;
@@ -3080,6 +3230,10 @@ details.adv[open] summary::before { content: "▾"; }
    without this it lands under the model name and reads as part of it. Its own
    full-width row, the way the territory warning already gets one. */
 .thanksrow .rights{grid-column:1/-1}
+/* The song panel (under the title) and the Models card (under the name and
+   licence): the chip on its own line, so the opened detail gets the width. */
+.sprights{margin:.35rem 0 .15rem}
+.sprights .rights,.modelcard .mhead .rights{display:block;flex-basis:100%}
 /* (The row is one column at every width now, so the old narrow-window override
    for it has nothing left to do.) */
 
@@ -3163,12 +3317,6 @@ details.adv[open] summary::before { content: "▾"; }
 .wfchapters{max-height:340px;overflow-y:auto}
 .wftable tr.dim{opacity:.45}
 
-/* Mini queue in the rail foot. Three quiet lines: now / next / tally. */
-.miniq{margin-top:6px;padding:6px 8px;background:var(--panel);border:1px solid var(--edge);
-  border-radius:8px;font-size:10.5px;line-height:1.5;color:var(--ghost)}
-.miniqNow{color:var(--ink)}
-.miniqNext{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.miniqTally{color:var(--accent);font-family:var(--mono);font-size:10px}
 /* The attribution stays on the main window (licence condition), one quiet line. */
 .attrib.slim{font-size:9.5px;letter-spacing:.02em;line-height:1.5;opacity:.75}
 .attrib.slim b{font-weight:600}
@@ -3612,28 +3760,63 @@ details.adv[open] summary::before { content: "▾"; }
 .ovidea .s code{font-size:.66rem;opacity:.85}
 
 /* ── everything that is coming ──────────────────────────────────────────── */
-.queuebox{margin:.5rem .6rem;padding:.45rem .5rem;border:1px solid var(--line,#2a2a2a);
-  border-radius:5px;font-size:.66rem;background:hsla(0,0%,100%,.02)}
-/* The stop button. Full width under the rows rather than a small icon in the
- * header: it is destructive, it is reached in a hurry, and a 24px target in a
- * sidebar is how you cancel the wrong thing. Red only on hover/focus so a
- * permanently alarming sidebar does not become wallpaper. */
-.queuebox .qstop{display:block;flex:1;margin:0;padding:.22rem .4rem;
-  font:inherit;font-size:.64rem;letter-spacing:.02em;cursor:pointer;
-  color:var(--danger,#e5484d);background:transparent;
-  border:1px solid var(--danger,#e5484d);border-radius:.3rem;opacity:.75;
-  transition:background .12s,color .12s,opacity .12s}
-.queuebox .qstop:hover,.queuebox .qstop:focus-visible{
-  background:var(--danger,#e5484d);color:#fff;opacity:1}
-.queuebox .qstop[disabled]{opacity:.35;cursor:default;background:transparent;color:var(--danger,#e5484d)}
-.queuebox .qhead{display:flex;justify-content:space-between;align-items:baseline;gap:.4rem;margin-bottom:.25rem}
-.queuebox .qhead b{font-size:.72rem}
-.queuebox .qhead span{opacity:.65}
-.queuebox .qrows{display:flex;flex-direction:column;gap:.12rem;max-height:9rem;overflow:auto}
-.queuebox .qrow{display:flex;justify-content:space-between;gap:.5rem;opacity:.8}
-.queuebox .qrow.now{opacity:1;color:var(--accent)}
-.queuebox .qrow span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.queuebox .qrow b{font-variant-numeric:tabular-nums;font-weight:500;opacity:.75}
+/* ── what is being made: a strip, and a drop-up over the rail ───────────── */
+.workbox{position:relative;margin:0;font-size:.66rem}
+/* The one line you see without opening anything. A button, so it is reachable
+   from the keyboard and says what it does; the caret turns when it is open. */
+.workbox .wbstrip{display:flex;align-items:center;gap:.4rem;width:100%;
+  padding:.3rem .45rem;font:inherit;font-size:.66rem;text-align:left;
+  color:var(--dim);background:hsla(0,0%,100%,.02);
+  border:1px solid var(--line,#2a2a2a);border-radius:5px;cursor:pointer;
+  transition:border-color .12s,color .12s}
+.workbox .wbstrip:hover,.workbox .wbstrip:focus-visible{color:var(--ink);border-color:var(--edge-s,var(--edge))}
+.workbox #wbLine{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.workbox .wbcaret{flex:none;opacity:.5;transition:transform .16s}
+.workbox[open-up] .wbcaret,.workbox .wbstrip[aria-expanded="true"] .wbcaret{transform:rotate(180deg);opacity:1}
+/* A dot rather than a word: grey at rest, and the app's own colour, pulsing,
+   while something is rendering. */
+.workbox .wbdot{flex:none;width:7px;height:7px;border-radius:50%;background:var(--ghost)}
+.workbox.busy .wbdot{background:var(--primary);animation:wbpulse 1.8s ease-in-out infinite}
+@keyframes wbpulse{0%,100%{opacity:1}50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.workbox.busy .wbdot{animation:none}}
+
+/* ⚠ THE PANEL OPENS UPWARD AND OVER THE RAIL. This sits at the foot of the
+   window, so a panel that pushed its siblings down would have nowhere to go
+   and one that opened downward would open off the screen. Absolute, above the
+   strip, and it does not move anything around it. */
+/* ⚠ FIXED, NOT ABSOLUTE, and placed by app.js. `.rail` is overflow:hidden —
+   it has to be, it is a scrolling column — so an absolutely positioned panel
+   is CLIPPED BY IT. At full width that was invisible because the panel is
+   narrower than the rail; collapsed to 64px the panel was sliced down the
+   middle. Fixed takes it out of the rail's overflow entirely, and
+   wbPlacePanel() puts it against the strip. */
+.workbox .wbpanel{position:fixed;width:210px;z-index:60;
+  padding:.45rem .5rem;border:1px solid var(--edge);border-radius:8px;
+  background:var(--panel);box-shadow:0 14px 34px hsla(0,0%,0%,.55);
+  opacity:0;visibility:hidden;transform:translateY(4px);
+  transition:opacity .14s,transform .14s,visibility .14s}
+/* Hover, focus or a click: a glance is the point, so hovering is enough, and
+   the panel stays while the pointer is on the panel itself. */
+.workbox:hover .wbpanel,.workbox:focus-within .wbpanel,.workbox.open .wbpanel{
+  opacity:1;visibility:visible;transform:none}
+/* The open panel is clickable, and says so. */
+.workbox .wbpanel,.workbox .wbpanel *{cursor:default}
+.workbox .wbpanel .qstop,.workbox .wbpanel .qmore,.workbox .wbpanel .wbnow{cursor:pointer}
+@media (prefers-reduced-motion:reduce){.workbox .wbpanel{transition:none}}
+
+/* Two lines and no list. What is being made is one line; what is behind it
+ * and what is already done is the quieter line under it. The old panel drew a
+ * row per queued job, which is why it ran out of room in a narrow rail the
+ * moment anything queued. */
+.workbox .wbnow{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
+.workbox .wbnow:hover{color:var(--primary)}
+.workbox .wbrest{margin-top:.1rem;font-size:.62rem;line-height:1.4;color:var(--ghost)}
+/* Idle: no Stop, because there is nothing to stop. "all jobs" stays — it is
+   the whole reason to open the panel when nothing is rendering. */
+.workbox.resting .qstop{display:none}
+.workbox.resting .wbfoot{justify-content:flex-end}
+.workbox .wbnow{cursor:pointer}
+.workbox .wbnow:hover{color:var(--primary)}
 
 /* The image check. The state chip is deliberately loud when nothing has been
    checked: unchecked is the default and must never read as approval. */
@@ -3709,14 +3892,15 @@ details.adv[open] summary::before { content: "▾"; }
 .jobout{opacity:.55;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.68rem}
 .jobms,.jobat{font-variant-numeric:tabular-nums;opacity:.6;text-align:right;font-size:.7rem}
 .joberr{color:var(--danger,#e5484d);font-size:.7rem}
+/* A job somebody stopped is not a failure: quiet, not red. */
+.jobstopped{font-size:.7rem;opacity:.7}
 .jobgo{font-size:.7rem;opacity:.75;text-decoration:none;color:var(--accent,#7c5cff)}
 .jobgo:hover{opacity:1;text-decoration:underline}
 
 /* The way in, under the queue rows. */
-.queuebox .qmore{display:block;margin-top:.35rem;font-size:.68rem;opacity:.6;
+.workbox .qmore{display:block;margin-top:.35rem;font-size:.68rem;opacity:.6;
   text-decoration:none;color:inherit;text-align:center}
-.queuebox .qmore:hover{opacity:1;text-decoration:underline}
-.miniq{cursor:pointer}
+.workbox .qmore:hover{opacity:1;text-decoration:underline}
 
 @media (max-width:900px){
   .jobrow{grid-template-columns:4.5rem minmax(0,1fr) 4rem 5rem;}
@@ -3740,6 +3924,9 @@ details.adv[open] summary::before { content: "▾"; }
   border:1px solid var(--line,#2a2a2a);border-radius:.35rem;
   background:rgba(255,255,255,.02)}
 .qjob.running{border-color:var(--accent,#7c5cff);background:rgba(124,92,255,.08)}
+.qjob.stopping{opacity:.7}
+/* "12% · model 2 of 4 · 1m 20s" can outgrow its column: cut, with the whole in its title. */
+.qjob .jobms{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .qbar{height:4px;border-radius:2px;background:rgba(255,255,255,.08);overflow:hidden}
 .qbar i{display:block;height:100%;background:var(--accent,#7c5cff)}
 .qkill{font:inherit;font-size:.7rem;line-height:1;padding:.2rem .4rem;cursor:pointer;
@@ -3787,15 +3974,13 @@ details.adv[open] summary::before { content: "▾"; }
  * stop button and the jobs link share one line now, and the rows above them
  * lost the padding they did not need — Senzu had the panel running out of room
  * the moment a job started, which is exactly when it matters most. */
-.queuebox{padding:.35rem .4rem}
-.queuebox .qhead{margin-bottom:.15rem}
-.queuebox .qhead b{font-size:.68rem}
-.queuebox .qhead span{font-size:.62rem}
-.queuebox .qrows{font-size:.64rem;line-height:1.25}
-.queuebox .qrow{padding:.08rem 0}
+.workbox .wbhead{margin-bottom:.15rem}
+.workbox .wbhead b{font-size:.68rem}
+.workbox .wbhead span{font-size:.62rem}
+.workbox .wbnow{font-size:.64rem;line-height:1.3}
 /* One row for both controls. */
-.queuebox .qfoot{display:flex;align-items:center;gap:.3rem;margin-top:.3rem}
-.queuebox .qmore{margin-top:0;white-space:nowrap;font-size:.62rem;opacity:.55}
+.workbox .wbfoot{display:flex;align-items:center;gap:.3rem;margin-top:.3rem}
+.workbox .qmore{margin-top:0;white-space:nowrap;font-size:.62rem;opacity:.55}
 
 /* ── the rail, tightened ──────────────────────────────────
  *
@@ -3823,7 +4008,7 @@ details.adv[open] summary::before { content: "▾"; }
  * thing you are looking for when a render is running, which is exactly when
  * space is tightest. */
 @media (max-height:840px){
-  .railfoot .gpu{display:none}
+  .railfoot .meters{display:none}
 }
 
 /* ── the plan card ────────────────────────────────────────
@@ -3930,8 +4115,17 @@ details.adv[open] summary::before { content: "▾"; }
    More Options as rounded collapsible cards, Title last. Layout only: every
    control keeps the id app.js paints. */
 .create .mtop { flex-direction: column; align-items: stretch; gap: 8px; }
-.create .mbar { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
-.create .mload { display: inline-flex; gap: 4px; }
+/* The About button sits absolutely over this row's left edge (see
+   .infobtn.infoloose), so the row keeps that space free; the model name
+   shortens with an ellipsis instead of pushing Load under About. */
+.create .mbar { display: flex; align-items: center; justify-content: flex-end; gap: 6px; padding-left: 84px; min-width: 0; }
+.create:has(> #musicEngineRow[hidden]) .mbar { padding-left: 0; }
+.create .mload { display: inline-flex; gap: 4px; flex: none; }
+.create .mload .btn.sm { margin-left: 0; padding: 7px 14px; }
+.create .mload .btn:disabled { opacity: .4; }
+.create .mbar .mpill { min-width: 0; flex: 0 1 auto; }
+.create .mbar .mpill b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.create .mbar .minfobtn { flex: none; }
 .create .mpill {
   position: relative; display: inline-flex; align-items: center; gap: 6px;
   padding: 7px 14px; border-radius: 999px; background: var(--raise);
@@ -4151,7 +4345,7 @@ details.adv[open] summary::before { content: "▾"; }
    Bigger, readable entries; named groups; Agent/Settings/About/Thanks pinned
    to the bottom; ❮ collapses the rail sideways to icons (.shell.railmini).
    The VRAM/RAM meters stay visible when collapsed. */
-.rail { padding: 16px 12px; gap: 14px; overflow: hidden; min-width: 0; }
+.rail { position: relative; padding: 16px 12px; gap: 14px; overflow: hidden; min-width: 0; }
 .brand { position: relative; min-height: 34px; padding-left: 6px; }
 .wordmark { white-space: nowrap; overflow: hidden; }
 .wordmark b { font-size: 17px; }
@@ -4167,6 +4361,8 @@ details.adv[open] summary::before { content: "▾"; }
 }
 .nav a i { width: 20px; flex: none; font-size: 16px; }
 .nav a .lbl { overflow: hidden; text-overflow: ellipsis; transition: opacity .18s; }
+/* Full-width views keep the expanded rail at narrow desktop sizes too. */
+.shell.solo:not(.railmini) .nav a .lbl { display: block; }
 .navmain { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; gap: 2px; }
 .navgroup { display: flex; flex-direction: column; gap: 2px; margin-top: 10px; }
 .navhead {
@@ -4196,14 +4392,15 @@ details.adv[open] summary::before { content: "▾"; }
 .shell.railmini .nav a { position: relative; }
 .shell.railmini .navhead { height: 1px; padding: 0; margin: 4px 12px; background: var(--hair); }
 .shell.railmini .navhead .lbl { display: none; }
-.shell.railmini .railfoot > :not(.gpu) { display: none; }
-.shell.railmini .gpu { padding-top: 7px; gap: 3px; }
-.shell.railmini .gpu span { display: none; }
-.shell.railmini #gpuBox::before, .shell.railmini #ramBox::before {
-  font-size: 8.5px; letter-spacing: .06em; color: var(--ghost); text-align: center;
-}
-.shell.railmini #gpuBox::before { content: "VRAM"; }
-.shell.railmini #ramBox::before { content: "RAM"; }
+/* Collapsed: the work strip is the one thing worth 64px of a narrow rail, and
+   the one thing you might need to press. Its dot is the whole strip there. */
+.shell.railmini .railfoot > :not(.workbox) { display: none; }
+.shell.railmini .workbox #wbLine, .shell.railmini .workbox .wbcaret { display: none; }
+.shell.railmini .workbox .wbstrip { justify-content: center; padding: .35rem 0; }
+/* Collapsed, the meters were a stack of bars with their text hidden. With the
+   bars gone there is nothing left that fits 64px, so they go with the rest of
+   the footer and come back when the rail does. */
+.shell.railmini .meters { display: none; }
 
 /* Bigger song thumbnails and a touch larger library text. */
 .row { grid-template-columns: 60px minmax(0,1fr) auto; gap: 14px; padding: 8px; }
@@ -4222,15 +4419,27 @@ details.adv[open] summary::before { content: "▾"; }
 
 /* ── Player: hidden until a song plays, taller, easier to seek ─────────── */
 .shell:not(.hasplayer) .player { display: none; }
+.shell.hasplayer { --playerh: 55px; }
 .shell.hasplayer .player { animation: playerIn .34s cubic-bezier(.22,.8,.24,1); }
 @keyframes playerIn { from { transform: translateY(100%); opacity: 0; } to { transform: none; opacity: 1; } }
-.player { padding: 14px 18px; gap: 18px; }
-.player .np { width: 270px; gap: 12px; }
-.player .np .art { width: 48px; height: 48px; border-radius: 7px; }
-.npmeta .t { font-size: 14px; }
-.npmeta .s { font-size: 11.5px; }
-.pp { width: 40px; height: 40px; font-size: 14px; }
-.tbtn { font-size: 15px; }
+.player { padding: 8px 14px; gap: 14px; }
+.player .np { width: 252px; gap: 11px; }
+.player .np .art { width: 38px; height: 38px; border-radius: 6px; }
+.npmeta .t { font-size: 13px; }
+.npmeta .s { font-size: 11px; }
+.pp { width: 32px; height: 32px; font-size: 12px; }
+.tbtn { font-size: 14px; }
+
+/* The two buttons that resize the bar sit at its two ends, away from the
+   transport in the middle: ✕ closes it, ⌃ opens the full player. */
+.pclose {
+  font: inherit; font-size: 12px; line-height: 1; flex: none; order: -1;
+  background: none; border: 1px solid var(--edge); border-radius: 50%;
+  width: 22px; height: 22px; color: var(--ghost); cursor: pointer;
+  display: grid; place-items: center; padding: 0;
+}
+.pclose:hover { color: #fff; background: var(--err); border-color: transparent; }
+.player > .expand { margin-left: 2px; }
 .scrub .tm { font-size: 11.5px; }
 .scrub .track {
   position: relative; height: 6px; border-radius: 3px; touch-action: none;
@@ -5086,6 +5295,63 @@ button, input, select, textarea { font-family: inherit; }
 .rows.grid .row { position: relative; }
 .rows.grid .row > .rsel { position: absolute; top: 8px; left: 8px; z-index: 2; width: 22px; height: 22px;
   border-radius: 6px; background: rgba(0,0,0,.45); }
+/* ── the library heading, which stays while the library scrolls ──────────
+   Search, the toolbars and the tick bar are what you reach for WHILE looking
+   at the grid; in a library of a few hundred they were several screens behind
+   you the moment you started looking.
+
+   `.stage` is the scroller (overflow-y:auto) and has 16px of padding, so the
+   background is widened by that much on each side: without it the grid would
+   be visible sliding through the strip beside the heading.
+
+   NO `display` HERE ON PURPOSE. In Images and Video the wrapped children space
+   themselves with their own margins, and a flex column with a gap would add to
+   those rather than replace them. Only Music needs the gap back — see
+   `.libhead.spaced` — because its children were flex items of `.stage` and
+   wrapping three of them into one item loses the 12px between them.
+
+   ⚠ `background-attachment:fixed` IS NOT DECORATION. `--bg` is a gradient,
+   not a colour, so `background:var(--bg)` sets a background-IMAGE — and an
+   unpositioned gradient is sized to its own box, which would run the full
+   8,8,8 → 13,15,18 sweep across the header alone while the page runs it across
+   the viewport. body paints it fixed; so does this, and then it is the same
+   gradient rather than a second one that nearly matches. */
+.libhead{position:sticky;top:0;z-index:6;
+  background:var(--bg);background-attachment:fixed;
+  padding:8px 16px 2px;margin:-8px -16px 0}
+/* ⚠ AND `top:0` IS NOT THE TOP OF THE PANE. A sticky element is held inside
+   the scrollport, which is the scroll container's PADDING box — `.stage` has
+   16px of it, so a header stuck at `top:0` sits at y=16 and the grid scrolls
+   through the strip above it. Measured at headerTop-6 with the grid scrolled
+   1500px: DIV.masonry on Images, IMG.cthumb on Video. Same fixed gradient, so
+   it continues the page rather than patching over it — which is why it is
+   also invisible at rest. */
+.libhead::before{content:"";position:absolute;left:0;right:0;bottom:100%;height:16px;
+  background:var(--bg);background-attachment:fixed}
+/* Music only: its header elements were flex children of .stage (gap 12px), and
+   one wrapper is one flex item. */
+.libhead.spaced{display:flex;flex-direction:column;gap:12px}
+/* A hairline once it is actually stuck, so the heading reads as a surface the
+   grid passes under rather than as part of the grid. */
+.libhead::after{content:"";position:absolute;left:0;right:0;bottom:0;height:1px;
+  background:var(--edge);opacity:.55}
+/* ⚠ AND IT STOPS BEING STICKY WHEN THERE IS NO ROOM FOR IT. A heading that
+   fills the window is a wall — there is no library left to look at. What decides
+   that is its SHARE of the window, so the guard needs both dimensions, which one
+   measurement would not have shown. Measured:
+
+     1500×950   music 151px 16%   images 200px 21%   video 180px 19%
+      760×700   music 151px 22%   images 209px 30%   video 180px 26%
+      460×700   music 274px 39%   images 275px 39%   video 218px 31%
+      350×397   music 374px 94%   images 316px 79%   video 247px 62%
+
+   Narrow alone is survivable (39% is a big heading, not a wall) and so is short
+   (36% at 1500×560). It takes both — a plain `max-width: 900px` would have
+   switched the feature off on every half-screen window that was using it fine. */
+@media (max-width: 760px) and (max-height: 620px) {
+  .libhead { position: static; }
+  .libhead::before { content: none; }
+}
 .batchbar { display: flex; align-items: center; gap: 10px; margin: 8px 0 2px; padding: 5px 7px;
   border: 1px solid var(--edge); border-radius: 9px; min-height: 36px; }
 .batchbar.on { border-color: color-mix(in srgb, var(--primary) 45%, transparent); }
@@ -5100,12 +5366,24 @@ button, input, select, textarea { font-family: inherit; }
 .grphead-row { display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--edge); }
 .grphead-row .rsel { margin-left: 7px; }
 .grphead-row .grphead { border-bottom: 0; }
-/* MiniMax's Instrumental lives in the Lyrics box: a switch in its top-right corner. */
-.create details.sbox > summary .lyrswap { margin-left: auto; height: 26px; padding: 0 10px; border-radius: 13px;
-  border: 1px solid var(--edge); background: transparent; color: var(--dim); cursor: pointer;
-  font-family: var(--sans); font-size: 12px; font-weight: 500; }
-.create details.sbox > summary .lyrswap:hover, .create details.sbox > summary .lyrswap:focus-visible { border-color: var(--secondary); color: var(--secondary); }
-.create details.sbox > summary .lyrswap[aria-pressed="true"] { border-color: var(--primary); color: var(--primary); }
+/* How this box gets filled: write the words, or have a structure written.
+   A two-sided switch, so which side you are on is visible without pressing it
+   — the single button it replaced could only show the side you were NOT on. */
+.create details.sbox > summary .lyrswap { margin-left: auto; display: inline-flex; padding: 2px;
+  border: 1px solid var(--edge); border-radius: 13px; background: var(--raise); }
+.create details.sbox > summary .lyrswap > button { height: 22px; padding: 0 11px; border: 0; border-radius: 11px;
+  background: transparent; color: var(--dim); cursor: pointer;
+  font-family: var(--sans); font-size: 11.5px; font-weight: 600; line-height: 1;
+  transition: background-color .14s, color .14s; }
+.create details.sbox > summary .lyrswap > button:hover { color: var(--ink); }
+.create details.sbox > summary .lyrswap > button.on { background: var(--primary); color: var(--on); }
+
+/* The structure picker sits exactly where the tag strip does, so the two ways
+   of filling the box occupy the same row rather than stacking. */
+.create .structbar { display: flex; align-items: center; gap: 8px; min-width: 0; margin-bottom: 6px; }
+.create .structbar > select { flex: 1 1 auto; min-width: 0; max-width: 200px; }
+.create .structbar > input[type=range] { flex: 1 1 70px; min-width: 60px; width: auto; }
+.create .structbar > .meta { flex: 0 0 auto; white-space: nowrap; }
 
 /* The library column is a shrinking flex stack: keep the bar at its full height. */
 .batchbar { flex: none; }
@@ -5145,7 +5423,7 @@ button, input, select, textarea { font-family: inherit; }
 .create.simplemode #lyricsBox .tagbar, .create.simplemode #lyricsBox .fieldfoot, .create.simplemode #lyricsSwap,
 .create.simplemode #stylesBox label.flabel[for="caption"], .create.simplemode #capGuide,
 .create.simplemode #stylesBox .fieldfoot, .create.simplemode #stylesBox .chipbar,
-.create.simplemode #instrField > :not(.scaffold) { display: none !important; }
+.create.simplemode #instrField { display: none !important; }
 
 /* Simple mode, one solid block (Suno's layout): chips in a row on top, the
  * writing space under them at a fixed height (chips push it down, never
@@ -5184,7 +5462,7 @@ button, input, select, textarea { font-family: inherit; }
  * line of the box's outer border, outside the writing space. Its grab zone is
  * a small strip around that line and it shows only while the pointer is in
  * it (or it is being dragged or has keyboard focus). */
-#simpleText, #lyrics, #caption { resize: none; }
+#simpleText, #lyrics, #scaffold, #caption { resize: none; }
 .create #simplePanel, .create #lyricsBox, .create #stylesBox { position: relative; }
 .growbar { position: absolute; left: 50%; bottom: -8px; transform: translateX(-50%); z-index: 3;
   width: 120px; height: 16px; display: flex; align-items: center; justify-content: center;
@@ -5245,8 +5523,13 @@ button, input, select, textarea { font-family: inherit; }
 .asmode.seg.modebar button[data-m="simple"][aria-pressed="true"] {
   background: linear-gradient(135deg, hsla(195,100%,60%,.22), hsla(320,100%,70%,.18));
 }
-/* Simple: the Advanced form steps aside; the Make button and its progress stay. */
-.assist-on > :not(.stagehead):not(.ovhead):not(.asmode):not(.assist):not(#imgGo):not(#imgProg):not(#imgNote):not(.ctawrap):not(.infopanel) { display: none !important; }
+/* Simple: the Advanced form steps aside; the Make button and its progress stay,
+ * and so do Video's Keep my character and Song under the clip: a person's
+ * identity and lip-sync are what a newcomer cannot recover afterwards (the
+ * REWIND A/B, 2026-09-24, DIRECTING.md §2). The RunPod box stays too: in
+ * the launcher's RunPod GPU mode it holds the Pod's model and the connection,
+ * and anywhere else it is `hidden` from the markup. */
+.assist-on > :not(.stagehead):not(.ovhead):not(.asmode):not(.assist):not(#imgGo):not(#imgProg):not(#imgNote):not(#vidFromField):not(#imgRefWrap):not(#vidTierRow):not(#vidKeepField):not(#vidSndWrap):not(#imgRunPodBlock):not(#vidRunPodBlock):not(.ctawrap):not(.infopanel) { display: none !important; }
 .assist {
   flex: none; display: flex; flex-direction: column; gap: 4px; padding: 3px; margin-bottom: 10px;
   background: var(--raise); border: 1px solid var(--hair); border-radius: 18px;
@@ -5367,7 +5650,6 @@ button, input, select, textarea { font-family: inherit; }
 /* Images' column fills its height so the pinned Make button sits at the foot. */
 #imgPanel .vidform { flex: 1 0 auto; }
 #imgPanel .ctawrap .btn { width: 100%; }
-#imgPanel .ctawrap .hint:empty { display: none; }
 /* ONE FORM LOOK for Images and Video. Settings rows sit open on the column,
  * split by hairlines, as Video's always did (Images boxed them in a bordered
  * panel, which is what made that column feel cramped); every label is the
@@ -5384,8 +5666,8 @@ button, input, select, textarea { font-family: inherit; }
 /* Video: the note about the button ("switch video on in Settings first", the
  * estimate) reads above Render clip, not under it. */
 #vidPanel .ctawrap { display: flex; flex-direction: column; gap: 8px; }
-#vidPanel .ctawrap > .ctanote { order: -1; }
-#vidPanel .ctawrap > .ctanote:empty { display: none; }
+/* Video's note used to be ordered above Render clip with flex; every screen's
+   note rises above its button now, so there is nothing left to order. */
 /* Music's "Describe your idea" set like Images' and Video's: 13px, regular
  * weight, the same room above it (it was 12px semibold and sat tighter). */
 .create .simple .simple-label { font-size: var(--fs-md); font-weight: 500; margin: 7px 6px 1px 10px; line-height: 20px; }
@@ -5858,19 +6140,14 @@ button, input, select, textarea { font-family: inherit; }
 .bdrawer .bd-acts .btn { margin: 0; flex: 0 0 auto; }
 @media (prefers-reduced-motion: reduce) { .bdrawer, .bdrawer-wrap { transition: none; } }
 
-/* RunPod as a render target inside the normal Images and Video forms. */
-.runpod-inline{border:1px solid color-mix(in srgb,var(--accent,#9aa8ff) 34%,transparent);border-radius:10px;padding:12px;background:color-mix(in srgb,var(--panel,#171821) 88%,#7387ff 12%)}
-.runpod-options{margin-top:10px;padding-top:10px;border-top:1px solid rgba(180,188,230,.2)}
-.runpod-summary,.runpod-connect-actions{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
-.runpod-summary .edtool{margin-left:auto}.runpod-sheet{max-width:620px}.runpod-sheet form{display:grid;gap:9px}.runpod-connect-actions{margin-top:10px}.runpod-connect-actions a{text-decoration:none}
-.runpod-fields{display:grid;grid-template-columns:minmax(105px,auto) minmax(0,1fr);align-items:center;gap:8px;margin:10px 0}
-.runpod-fields .flabel{margin:0}.runpod-fields .sel2{min-width:0}
-.runpod-target #imgQwenStatus,.runpod-target #imgQwenOptions,.runpod-target #imgQwenOptionsNote{display:none!important}
-.runpod-target #vidModelRow,.runpod-target #vidLoraRow,.runpod-target #vidQualityRow{display:none!important}
-.runpod-account{margin-top:16px;border-top:1px solid var(--edge);padding-top:12px}.runpod-account>summary{cursor:pointer;font-weight:700}
-.runpod-balance{margin:10px 0;font-family:var(--mono);font-size:.78rem}.runpod-pods{display:grid;gap:8px;margin:10px 0 16px}
-.runpod-pod{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 10px;align-items:center;padding:9px;border:1px solid var(--edge);border-radius:8px}
-.runpod-pod small{color:var(--ghost)}.runpod-pod-actions{display:flex;gap:6px;grid-row:1/3;grid-column:2}
-.runpod-review{margin-top:10px;padding:10px;border:1px solid color-mix(in srgb,var(--accent) 45%,var(--edge));border-radius:8px;display:grid;gap:8px}
-.runpod-review[hidden]{display:none}.runpod-review .btn{justify-self:start}
-.runpod-bootstrap{margin-top:12px}.runpod-bootstrap textarea{width:100%;box-sizing:border-box;font-family:var(--mono);font-size:.72rem;resize:vertical}
+/* The Video screen follows the card (web/vidfit.js): the size chips wrap on a
+ * narrow column, the chip lit when the size list sits on it, and a failed
+ * render's sentence with the engine's own text folded under Details. */
+#vidTierChips { flex-wrap: wrap; }
+#vidTierChips button { padding: 5px 10px; }
+#vidTierChips button[data-experimental] { font-style: italic; }
+.vidfail { font-size: var(--fs-sm); color: var(--err); line-height: 1.45; }
+.vidfail details { margin-top: 4px; color: var(--faint); }
+.vidfail pre { white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow: auto; margin: 4px 0 0; font-size: var(--fs-xs); }
+.vlab-mirror { font-size: 12px; color: var(--faint); }
+.vlab-mirror b { color: var(--ink); font-weight: 600; }

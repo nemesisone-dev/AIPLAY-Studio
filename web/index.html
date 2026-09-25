@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AIPLAY Studio</title>
 <link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="ui.css">
+<link rel="stylesheet" href="router.css">
+<link rel="stylesheet" href="avatar-shell.css">
+<link rel="stylesheet" href="galleries.css">
 <link rel="stylesheet" href="music-input.css">
 <link rel="stylesheet" href="music-workflows.css">
 <link rel="stylesheet" href="music-artifacts.css">
@@ -28,6 +32,8 @@
        Same bargain again: not one colour is spelled in it, and
        server/modelfit_test.js fails the commit if one appears. -->
   <link rel="stylesheet" href="modelfit.css">
+  <!-- RunPod GPU mode (web/runpod-integrated.js). -->
+  <link rel="stylesheet" href="runpod-integrated.css">
   <!-- The ⓘ in every screen's header and the panel it opens. AFTER modelfit.css,
        because the verdict chips inside that panel ARE modelfit's `.fitbadge` —
        one badge, one palette, so the Models screen and this panel cannot show
@@ -41,6 +47,11 @@
   <link rel="stylesheet" href="chat.css">
   <!-- The Agent page (cloud models + MCP). -->
   <link rel="stylesheet" href="agent.css">
+  <!-- The shell: the rail's "More tools" fold, the Simple level's switches,
+       the Home first-run lines and the phone layout (UI_PLAN B1, B3, B5, B6,
+       E1). LAST, because it re-lays the grid the sheets above set up; it
+       spells no colour of its own (server/welcome/level_test.js). -->
+  <link rel="stylesheet" href="shell.css">
 </head>
 <body>
 
@@ -48,81 +59,137 @@
 
   <!-- ───────────────── rail ───────────────── -->
   <nav class="rail">
+    <!-- Drag the right edge to widen it; double-click puts it back. The
+         meters pair two to a row, so how much of their text fits is the
+         owner's call rather than one number baked in at one screen size. -->
+    <button class="railgrip" type="button" id="railGrip" tabindex="-1"
+      aria-label="Drag to resize the menu, double-click to reset"
+      title="Drag to resize · double-click to reset"></button>
     <!-- Drop the real AI PLAY mark at web/assets/aiplay-logo.png and it replaces
          the wordmark automatically. The manifest icon in the March export turned
          out to be the old Midnight Tée branding, so this is a placeholder. -->
+    <!-- ⚠ A LICENCE CONDITION, ABOVE EVERYTHING ELSE IN THE WINDOW.
+         MiniMax-Music3 §3.1 and MiniMax H3 §IV.2 ask for the model's name
+         shown prominently in the interface of a product that uses it, which is
+         why it is here rather than on a credits page — an About box is exactly
+         what the requirement exists to avoid. It is a button: a name with no
+         explanation invites "why is this here", and the answer is one dialog
+         away instead of nowhere. Painted by musicEnginePaint() in app.js. -->
+    <button class="poweredby" type="button" id="attrib" hidden
+      title="Why this name is here"><b id="poweredName">MiniMax-Music3</b><i aria-hidden="true">?</i></button>
     <div class="brand">
       <img id="logo" src="assets/aiplay-logo.png?v=1" alt="AI PLAY" hidden>
       <div class="wordmark"><b>AI PLAY</b><span>STUDIO</span></div>
       <button class="railtoggle" type="button" id="railToggle" title="Collapse the menu" aria-label="Collapse the menu" aria-expanded="true">&#10094;</button>
     </div>
-    <!-- Suno-style rail: the two things most people come for on top, the rest in
-         named groups, and the housekeeping pinned to the bottom. ❮ collapses it
-         to icons only. setView() still finds every entry through ".nav a". -->
+    <!-- MAKE FIRST, THE REST FOLDED (UI_PLAN B1). The five things a newcomer
+         comes for sit on top; every other screen is one click away under
+         "More tools", a <details> whose open or folded state web/rail.js
+         remembers in this browser. Models and Settings are pinned in the
+         bottom block so they are never below the fold. Only labels changed:
+         every data-view is the one it was, so setView(), INFO_HOSTS and the
+         catalogue find every entry through ".nav a" exactly as before.
+         ❮ collapses the rail to icons only. -->
     <div class="nav navmain">
-      <a href="#" class="on" data-view="home" title="Welcome"><i>&#8962;</i><span class="lbl">Welcome</span></a>
-      <div class="navgroup"><div class="navhead"><span class="lbl">Create</span></div>
-      <a href="#" data-view="chat" title="Chat"><i>&#9687;</i><span class="lbl">Chat</span></a>
+      <a href="#" class="on" data-view="home" title="Home"><i>&#8962;</i><span class="lbl">Home</span></a>
+      <div class="navgroup navmake"><div class="navhead"><span class="lbl">Make</span></div>
       <a href="#" data-view="create" title="Music"><i>♪</i><span class="lbl">Music</span></a>
-      <a href="#" data-view="images" title="Images"><i>▣</i><span class="lbl">Images</span></a>
+      <!-- Shown only in the launcher's "Use Comfy API" mode (web/app.js applyStatus),
+           where the rest of the rail is hidden; it sits in Make so that mode
+           never has to open a fold to reach its only page. -->
+      <a href="#" data-view="router" title="Comfy API" hidden><i>&#9729;</i><span class="lbl">Comfy API</span></a>
+      <a href="#" data-view="images" title="Pictures"><i>▣</i><span class="lbl">Pictures</span></a>
       <a href="#" data-view="video" title="Video"><i>▷</i><span class="lbl">Video</span></a>
-      <a href="#" data-view="vfx" title="VFX"><i>◈</i><span class="lbl">VFX</span></a>
-      <a href="avatars.html" data-page="avatars" title="Avatars"><i>◇</i><span class="lbl">Avatars</span></a>
+      <a href="#" data-view="workflow" title="Music video"><i>❖</i><span class="lbl">Music video</span></a>
       </div>
-      <div class="navgroup"><div class="navhead"><span class="lbl">Edit</span></div>
-      <a href="#" data-view="workflow" title="Workflow"><i>❖</i><span class="lbl">Workflow</span></a>
+      <details class="navgroup navmore" id="navMore">
+        <summary class="navhead navmorehead" title="More tools"><i aria-hidden="true">&#8943;</i><span class="lbl">More tools</span><b class="navcaret" aria-hidden="true">&#9662;</b></summary>
+      <a href="#" data-view="chat" title="Chat"><i>&#9687;</i><span class="lbl">Chat</span></a>
+      <a href="#" data-view="musiclab" title="Music Lab"><i>♫</i><span class="lbl">Music Lab</span></a>
+      <a href="#" data-view="vfx" title="VFX"><i>◈</i><span class="lbl">VFX</span></a>
+      <a href="#" data-view="avatars" title="3D"><i>◇</i><span class="lbl">3D</span></a>
       <a href="#" data-view="studio" title="Studio"><i>✂</i><span class="lbl">Studio</span></a>
       <a href="daw.html" data-page="daw" title="DAW"><i>&#9645;</i><span class="lbl">DAW</span></a>
-      </div>
-      <div class="navgroup"><div class="navhead"><span class="lbl">Automate</span></div>
       <a href="#" data-view="reactive" title="Reactive"><i>◉</i><span class="lbl">Reactive</span><span class="pip" id="reactPip" hidden></span></a>
       <a href="#" data-view="training" title="Training"><i>⚙</i><span class="lbl">Training</span></a>
       <a href="#" data-view="collab" title="Collab"><i>&#9901;</i><span class="lbl">Collab</span></a>
       <a href="#" data-view="overnight" title="Overnight"><i>☾</i><span class="lbl">Overnight</span><span class="pip run" id="ovPip" hidden></span></a>
-      </div>
-      <div class="navgroup"><div class="navhead"><span class="lbl">Explore</span></div>
       <a href="#" data-view="community" title="Community"><i>◎</i><span class="lbl">Community</span><span class="pip" id="commPip" hidden></span></a>
       <a href="#" data-view="radio" title="Radio"><i>&#8767;</i><span class="lbl">Radio</span></a>
       <a href="#" data-view="blog" title="Blog"><i>&#9998;</i><span class="lbl">Blog</span></a>
       <a href="#" data-view="games" title="Games"><i>⚄</i><span class="lbl">Games</span></a>
-      </div>
-      <div class="navgroup"><div class="navhead"><span class="lbl">System</span></div>
-      <a href="#" data-view="models" title="Models"><i>▤</i><span class="lbl">Models</span><span class="pip" id="modelPip" hidden></span></a>
       <a href="#" data-view="engine" title="Engine"><i>⌁</i><span class="lbl">Engine</span></a>
-      <a href="/runpod.html" title="RunPod remote rendering"><i>☁</i><span class="lbl">RunPod</span></a>
-      </div>
+      </details>
     </div>
     <div class="nav navbottom">
+      <a href="#" data-view="models" title="Models"><i>▤</i><span class="lbl">Models</span><span class="pip" id="modelPip" hidden></span></a>
       <a href="#" data-view="mcp" title="Agent"><i>&#9670;</i><span class="lbl">Agent</span></a>
       <a href="#" data-view="settings" title="Settings"><i>⚙</i><span class="lbl">Settings</span></a>
       <a href="#" data-view="about" title="About"><i>&#10022;</i><span class="lbl">About</span></a>
       <a href="#" data-view="thanks" title="Thanks"><i>&#9829;</i><span class="lbl">Thanks</span></a>
     </div>
     <div class="railfoot">
-      <!-- EVERYTHING THAT IS COMING, in one place that survives a tab switch.
-           The Songs screen already showed what was rendering, but only while you
-           were looking at it — and the number that matters when you are deciding
-           whether to go to bed is the SUM, not the current job. -->
-      <div class="queuebox" id="queueBox" hidden>
-        <div class="qhead"><b id="qTotal"></b><span id="qEta"></span></div>
-        <div class="qrows" id="qRows"></div>
-        <!-- Stops whatever is generating, of any kind. Until this existed the
-             only cancel in the app was for the SONG job, so a 28-minute clip
-             queued by mistake had to be waited out and a queue of boards could
-             only be cleared by restarting the server. -->
-        <!-- One row for both: the rail is 150px wide and these were taking a
-             line each, which is what pushed the panel out of space. -->
-        <div class="qfoot">
-          <button type="button" class="qstop" id="qStop" title="Stop everything that is generating">Stop</button>
-          <a href="#" class="qmore" data-go="jobs" title="Every job this session, with timings">all jobs &rsaquo;</a>
+      <!-- ⚠ ONE BOX FOR WHAT IS BEING MADE, and it is the only one.
+           There were two, eight inches apart, saying the same thing in
+           different words: a "working / <title> / Stop / all jobs" panel and a
+           "▶ song · <title> · ~4m / 1 job remaining · eta ≈ 4m" panel. Two
+           panels counting the same queue is two chances to disagree, and it
+           read as two queues.
+
+           IT IS A DROP-UP. The strip is one line — what is being made, and
+           how long it has left — and the rest opens UPWARD over the rail on
+           hover: the panel is at the foot of the window, so a menu that opened
+           downward would open off the screen. Hover rather than click because
+           the whole point is a glance. Counts and ETAs come from what THIS
+           session measured, so a budget-video night and a native-video night
+           estimate differently. -->
+      <div class="workbox" id="workBox" hidden>
+        <!-- The panel, above the strip: what is being made, what is waiting
+             behind it, what has been finished today, and the two things you
+             might do about it. -->
+        <div class="wbpanel" id="wbPanel">
+          <div class="wbhead"><b id="wbState">working</b><span id="wbEta"></span></div>
+          <!-- The line is the way in: a click opens the jobs page, idle or not.
+               Without it the idle panel was a dead end — its Stop button is
+               hidden when there is nothing to stop, so nothing in it led
+               anywhere. -->
+          <div class="wbnow" id="wbNow" data-go="jobs" title="See every job this session"></div>
+          <div class="wbrest" id="wbRest" hidden></div>
+          <!-- Stops whatever is generating, of any kind. Until this existed the
+               only cancel in the app was for the SONG job, so a 28-minute clip
+               queued by mistake had to be waited out and a queue of boards could
+               only be cleared by restarting the server.
+               One row for both: the rail is narrow and a line each is what
+               pushed the old panel out of space. -->
+          <div class="wbfoot">
+            <button type="button" class="qstop" id="qStop" title="Stop everything that is generating">Stop</button>
+            <a href="#" class="qmore" data-go="jobs" title="Every job this session, with timings">all jobs &rsaquo;</a>
+          </div>
         </div>
+        <button type="button" class="wbstrip" id="wbStrip" aria-expanded="false"
+          aria-controls="wbPanel" title="What is being made. Open for the queue and the controls.">
+          <i class="wbdot" aria-hidden="true"></i><span id="wbLine">idle</span><span class="wbcaret" aria-hidden="true">&#9652;</span>
+        </button>
       </div>
+      <!-- The way out of Simple, at the foot of every screen (UI_PLAN E1). Shown
+           by web/level.js only while the saved level is Simple; it saves
+           Advanced through /api/welcome {action:"level"}, the same door
+           Settings' switch and studio_welcome use. -->
+      <button type="button" class="levelfoot" id="levelFoot" hidden>Show every setting</button>
       <a class="kofi" href="https://ko-fi.com/therealsenzu" target="_blank" rel="noopener">♥ Support on Ko-fi</a>
-      <!-- Licence requirement: MiniMax-Music3 shown prominently, not in an About box. -->
-      <!-- VRAM and system RAM together. They are coupled on this engine: every
-           low-VRAM tier works by streaming weights from system memory, so a
-           machine short on RAM is slow for a different reason than one short on
-           card — and the VRAM bar alone cannot tell those two apart. -->
+      <!-- WHAT RUNS OUT, all four of them. VRAM and system RAM are coupled on
+           this engine: every low-VRAM tier streams weights from system memory,
+           so a machine short on RAM is slow for a different reason than one
+           short on card, and the VRAM bar alone cannot tell those apart. Disk
+           is the one that runs out QUIETLY — a download stops and nothing had
+           been counting. The CPU is the only meter that means anything at all
+           on the CPU builds. -->
+      <!-- Each has its own fill bar: the number is exact and the bar is the
+           glance. ⚠ NO DIVIDERS BETWEEN THEM. Every meter used to carry a
+           border-top, and --edge is a translucent blue, so four meters drew
+           four blue rules across the foot of the rail on top of their four
+           fill bars. They are one block with one line above it. -->
+      <div class="meters">
       <div class="gpu" id="gpuBox" hidden>
         <div class="gpubar"><i id="gpuFill"></i></div>
         <span id="gpuText"></span>
@@ -131,20 +198,16 @@
         <div class="gpubar"><i id="ramFill"></i></div>
         <span id="ramText"></span>
       </div>
-      <!-- The mini queue: what is rendering, what is next, how much is left.
-           Counts and ETAs come from what THIS session actually measured, so a
-           budget-video night and a native-video night estimate differently. -->
-      <div class="miniq" id="miniQ" hidden data-go="jobs" title="See every job this session">
-        <div class="miniqNow" id="miniqNow"></div>
-        <div class="miniqNext" id="miniqNext" hidden></div>
-        <div class="miniqTally" id="miniqTally"></div>
+      <div class="gpu" id="diskBox" hidden>
+        <div class="gpubar"><i id="diskFill"></i></div>
+        <span id="diskText"></span>
       </div>
-      <!-- Slimmed, not removed: the MiniMax-Music3 credit on the main window is
-           a licence condition (settled 2026-08-19) — the Models page listing is
-           in ADDITION to it, not instead of it. -->
-      <div class="attrib slim">
-        Powered by <b id="poweredName">MiniMax-Music3</b><span id="poweredEngine"></span> · <span id="engineLine">starting…</span>
+      <div class="gpu" id="cpuBox" hidden>
+        <div class="gpubar"><i id="cpuFill"></i></div>
+        <span id="cpuText"></span>
       </div>
+      </div><!-- /.meters -->
+      <div class="attrib slim" id="engineLineWrap" hidden><span id="engineLine"></span></div>
     </div>
   </nav>
 
@@ -152,7 +215,6 @@
 
   <!-- ───────────────── create ───────────────── -->
   <section class="create">
-    <button class="btn ghost" id="musicWorkflowsOpen" type="button" aria-haspopup="dialog">Music workflows · references, themes & listening lab</button>
     <!-- WHICH MODEL WRITES THE SONG. Painted from config.music.engines via
          /api/status rather than listed here, for the reason the video selector
          records: a screen that keeps its own copy of engine facts goes stale the
@@ -174,9 +236,16 @@
              `loadedModel` in /api/status (the job runner's own record — ComfyUI
              lists no loaded models). Nothing here has to be touched: the first
              song loads the model and a different model unloads the old one. -->
+        <!-- ⚠ ONE BUTTON, AND IT IS ALWAYS THERE. Unload frees whatever
+             ComfyUI is holding, so it is shown for every engine rather than a
+             list of three, and it is DISABLED rather than absent when there
+             is nothing on the card: a control that comes and goes teaches
+             nobody where it lives. Load is kept hidden, not deleted — the
+             route and the handler are still wired and the first song loads
+             the model anyway. -->
         <span class="mload" id="modelLoad" hidden>
           <button class="btn sm ghost" type="button" id="btnModelLoad" hidden>Load</button>
-          <button class="btn sm ghost" type="button" id="btnModelUnload" hidden>Unload</button>
+          <button class="btn sm ghost" type="button" id="btnModelUnload">Unload</button>
         </span>
         <label class="mpill" title="Choose the music model">
           <b id="musicPillName">Model</b><span class="caret">▾</span>
@@ -203,12 +272,16 @@
           <p class="hint" id="ggufSetupMessage" role="status" aria-live="polite">Checking local setup…</p>
           <progress id="ggufSetupProgress" max="100" hidden aria-label="Native setup download progress"></progress>
           <label class="chk ggufaccept"><input type="checkbox" id="ggufSetupAccept">
-            <span>I accept the YuE2 model terms (<a href="https://creativecommons.org/licenses/by-nc/4.0/" target="_blank" rel="noopener">CC BY-NC 4.0, attribution required</a>)<span id="ggufCudaTerms" hidden> and the native runtime's <a href="https://docs.nvidia.com/cuda/eula/index.html" target="_blank" rel="noopener">NVIDIA CUDA licence</a></span>.</span>
+            <span>I accept the YuE2 model terms (<a href="https://creativecommons.org/licenses/by-nc/4.0/" target="_blank" rel="noopener">licence file CC BY-NC 4.0, attribution required</a>)<span id="ggufCudaTerms" hidden> and the native runtime's <a href="https://docs.nvidia.com/cuda/eula/index.html" target="_blank" rel="noopener">NVIDIA CUDA licence</a></span>.</span>
           </label>
           <!-- What the authors themselves said about commercial use — a sourced,
                dated discussion comment, shown beside the licence rather than in
-               place of it. The Models card quotes it in full (YUE2_PUBLISHER). -->
-          <p class="hint" id="ggufOwnerNote">The model's authors have said that individual creators may use the model and what it makes commercially, and that only companies need a licence — a discussion comment of 15 September 2026, not the licence file, which still reads CC BY-NC. The Models card quotes it in full; Studio keeps its not-for-sale label until the licence changes.</p>
+               place of it. Studio's label follows it since 2026-09-24 (the
+               owner's decision); the licence file has not changed. The chip
+               words are the catalogue's (outputRights.chip, server/models.js):
+               paintGgufSetup() writes them into #ggufOwnerChip, and this text
+               is only what shows before the catalogue has been read. -->
+          <p class="hint" id="ggufOwnerNote">Studio's label: <b id="ggufOwnerChip">Sellable by individuals (YuE2 authors' statement, 15 Sep 2026) · companies need a commercial licence</b>. The authors said so in a <a href="https://huggingface.co/m-a-p/YuE2-3B/discussions/5" target="_blank" rel="noopener">discussion comment</a> of 15 September 2026; the licence file shipped with the weights still reads CC BY-NC 4.0. The Models card quotes both.</p>
           <p class="hint"><span id="ggufSetupReq">Requires a CUDA 13.3-compatible NVIDIA driver and <a href="https://aka.ms/vc14/vc_redist.x64.exe">Microsoft Visual C++ v14 x64 Redistributable</a>; setup does not install them.</span> Q4_0 was tested on one 16 GB card; Q8_0 is not benchmarked. 6, 8 and 12 GB cards remain unverified. Song duration is not guaranteed.</p>
           <div class="frow">
             <button class="btn sm" type="button" id="ggufSetupInstall" disabled>Install runtime and weights</button>
@@ -238,6 +311,11 @@
       <button type="button" id="modeSimple" aria-pressed="false" title="Describe the song and let the assistant write it">Simple</button>
       <button type="button" id="modeSong" aria-pressed="true">Song</button>
       <button type="button" id="modeInstr" aria-pressed="false">Instrumental</button>
+      <!-- Shown only while Simple is on (web/shell.css), where Song and
+           Instrumental step aside: the bar then reads Simple | Advanced, as
+           Pictures and Video do. Its tooltip is the server's "Advanced adds"
+           line (web/level.js). -->
+      <button type="button" id="modeAdv" aria-pressed="false" title="Advanced: every setting">Advanced</button>
     </div>
 
     <!-- SIMPLE MODE. The Chat tab's assistant, narrowed to this panel: it can
@@ -251,7 +329,7 @@
       <div class="simple-status" id="simpleStatus" hidden><i></i><span id="simpleStatusText">Thinking…</span></div>
       <div class="simple-confirm" id="simpleConfirm" hidden>
         <span>Ready to make this song?</span>
-        <button class="btn sm" type="button" id="simpleYes">Generate</button>
+        <button class="btn sm" type="button" id="simpleYes">Make song</button>
         <button class="btn sm ghost" type="button" id="simpleNo">Not yet</button>
       </div>
       <label class="flabel simple-label" for="simpleText">Describe your idea</label>
@@ -280,7 +358,7 @@
             <button type="button" class="simple-new" id="simpleNew" title="Start a new conversation">＋ New</button>
           </div>
           <div class="ptools" data-gallery="simple" data-target="simpleText" data-label="ideas"></div>
-          <button class="simple-send" type="submit" id="simpleSend" aria-label="Send">↑</button>
+          <button class="simple-send" type="submit" id="simpleSend" aria-label="Make song">Make song</button>
         </div>
       </form>
     </section>
@@ -348,35 +426,53 @@
          back open on Song. -->
     <div class="slide" id="lyricsSlide"><div class="slidein">
     <details class="sbox" id="lyricsBox" open>
-      <summary>Lyrics<button class="lyrswap" type="button" id="lyricsSwap" hidden
-        title="Switch between your lyrics and an instrumental structure">🎼 Instrumental</button></summary>
+      <!-- ⚠ A SWITCH BETWEEN TWO WAYS TO FILL THIS BOX, not between two kinds
+           of song. It used to be one button reading "🎼 Instrumental" / "✎
+           Lyrics", which made no sense: both sides are the lyrics field, and
+           what actually changes is whether you write the words yourself or
+           have a section structure written for you. The right-hand side is
+           still what the engine calls an instrumental (bare section tags and
+           no words) — that is just not what the control is FOR. -->
+      <summary>Lyrics<span class="lyrswap" id="lyricsSwap" hidden role="group"
+        aria-label="What goes in this box"><button type="button" data-lyrmode="song"
+        aria-pressed="true">Write</button><button type="button" data-lyrmode="instrumental"
+        aria-pressed="false">Structure</button></span></summary>
     <div class="field" id="lyricsField">
       <div class="tagbar" id="lyricTags"></div>
+      <!-- STRUCTURE MODE lives in the same field, with its picker exactly where
+           the tag strip is: pick a shape, drag for how many sections, and the
+           text appears in the box below in the same place your words would.
+           Instrumentals stop after ~30 s with no lyrics, because the model has
+           nothing to pace itself against; section tags with no words fix it
+           (measured 32.5 s -> 157.2 s), which is what this writes. -->
+      <div class="structbar" id="instrField" hidden>
+        <select id="structure" class="sel2 sm" aria-label="Structure">
+          <option value="electronic">Electronic / dance</option>
+          <option value="orchestral">Orchestral / cinematic</option>
+          <option value="band">Rock / band</option>
+          <option value="ambient">Ambient / drone</option>
+          <option value="jazz">Jazz / small group</option>
+          <option value="lofi">Lo-fi / beats</option>
+        </select>
+        <input id="sections" type="range" min="2" max="20" step="1" value="8"
+          aria-label="How many sections">
+        <span class="sp meta" id="sectionsV">8 sections</span>
+      </div>
       <!-- 7 rows, not 9. It still shows a verse and a chorus at once, resizes by
            drag, and scrolls past that — while giving ~50px back to the panel. -->
       <textarea id="lyrics" rows="7" spellcheck="false"
         placeholder="[Verse]&#10;Sodium light on the ring road again…"></textarea>
+      <!-- ⚠ A TEXTAREA, and writable on purpose. It was a <pre> in a black box
+           that matched nothing else on the screen, and it was contenteditable
+           anyway — so it looked like output you could not touch while being
+           input you could. Same box as the lyrics above it; edit the structure
+           it writes for you, or write one from scratch. -->
+      <textarea id="scaffold" rows="7" spellcheck="false" hidden
+        aria-label="Section structure"></textarea>
       <!-- Kept to ONE line. The longer wording wrapped to two at this column
            width, costing 16px on every render to say the same thing. -->
       <div class="fieldfoot"><p class="hint cnt"><span class="cc" id="lyricsCount"></span></p>
         <div class="ptools" data-field="lyrics" data-gallery="lyrics" data-label="lyrics"></div></div>
-    </div>
-
-    <!-- Instrumentals stop after ~30 s with no lyrics, because the model has
-         nothing to pace itself against. Section tags with no words fix it:
-         measured 32.5 s -> 157.2 s. This control writes that scaffold. -->
-    <div class="field" id="instrField" hidden>
-      <label class="flabel" for="structure">Structure <span class="sp meta" id="sectionsV">8 sections</span></label>
-      <select id="structure" class="sel2">
-        <option value="electronic">Electronic / dance</option>
-        <option value="orchestral">Orchestral / cinematic</option>
-        <option value="band">Rock / band</option>
-        <option value="ambient">Ambient / drone</option>
-        <option value="jazz">Jazz / small group</option>
-        <option value="lofi">Lo-fi / beats</option>
-      </select>
-      <input id="sections" type="range" min="2" max="20" step="1" value="8">
-      <pre class="scaffold" id="scaffold" contenteditable="true" spellcheck="false"></pre>
     </div>
     </details>
     </div></div>
@@ -429,11 +525,23 @@
     <details class="adv sbox">
       <summary>More Options</summary>
 
+    <!-- WHERE THE MELODY IS, on the engines that cannot take one. A tester on
+         MiniMax looked here for a way to make a song follow her hum and found
+         nothing, because the box that does it (#yMusicPlan, "Melody & score")
+         is YuE2's and was simply absent. musicEnginePaint() shows this line
+         exactly when that box is hidden; the button switches to a YuE2 build
+         that is ready, or opens the model window when none is. -->
+    <p class="hint" id="melodyPointer" hidden>Want a song to follow a melody you hum? That is YuE2: <button type="button" class="edtool" id="melodyUseYue">Use YuE2</button></p>
+
     <!-- Audio reference. Collapsed by default: it is the most powerful control
          in the panel and also the one most people will never touch, so it must
          not push the Create button off screen for everyone else. -->
     <details class="field aref" id="arefField">
       <summary>Audio reference <span class="sp meta" id="arefState">off</span></summary>
+      <!-- Not a melody control, said where people look for one: the recording
+           seeds the decoder and is re-noised (server/workflow.js), so its
+           sound survives and its tune does not. -->
+      <p class="hint" id="arefWhat">Borrows the sound of a recording, not its tune. To follow your melody, use YuE2 → Melody &amp; score.</p>
       <div class="arefrow">
         <input type="file" id="arefFile" accept="audio/*,.flac,.mp3,.wav,.ogg,.opus,.m4a">
         <button class="btn sm ghost" type="button" id="arefClear" hidden>Remove</button>
@@ -455,11 +563,16 @@
       <div data-music-input></div>
     </details>
 
+      <!-- RANDOM BY DEFAULT. The seed used to arrive locked on a fixed number,
+           so the same words gave the identical song every time and a second
+           Create looked like it had done nothing. app.js rolls the starting
+           number at boot and paintSeed() keeps these two buttons in step; the
+           state that ships here is the one they will be in. -->
       <div class="seedrow">
         <span class="sk">Seed</span>
-        <input class="sv" id="seed" inputmode="numeric" value="418923">
-        <button class="seedbtn on" type="button" id="seedLock">locked</button>
-        <button class="seedbtn" type="button" id="seedRand">random</button>
+        <input class="sv" id="seed" inputmode="numeric" placeholder="random">
+        <button class="seedbtn" type="button" id="seedLock">lock</button>
+        <button class="seedbtn on" type="button" id="seedRand">random</button>
       </div>
       <p class="seednote" id="seedNote"></p>
 
@@ -491,7 +604,7 @@
         <span class="pv" data-engine="minimax"><select id="qTier" class="sel2"></select></span>
 
         <span class="pk">Visualiser</span>
-        <span class="pv"><label class="edtool tog"><input type="checkbox" id="qVis" checked> react the divider lines to the music</label></span>
+        <span class="pv"><label class="edtool tog"><input type="checkbox" id="qVis" checked> move the player with the music</label></span>
 
         <label for="qModel" data-engine="minimax">Precision</label>
         <span class="pv" data-engine="minimax"><select id="qModel" class="sel2">
@@ -516,8 +629,11 @@
           <option value="off">Off</option>
         </select></span>
 
-        <label for="yCfg" data-engine="yue2" hidden>Guidance</label>
-        <span class="pv" data-engine="yue2" hidden><input id="yCfg" class="sv" inputmode="decimal" placeholder="Default" title="cfg_scale, 0 to 20. Empty keeps the model's own default (1.0; 1.01 with the chain of thought off)."></span>
+        <!-- Not on the ComfyUI build: its graph samples at cfg 1 and the
+             YuE2 nodes take no guidance input (server/workflow.js
+             buildYue2ComfyGraph), so a value here would be dropped. -->
+        <label for="yCfg" data-engine="yue2" data-no-comfy-yue hidden>Guidance</label>
+        <span class="pv" data-engine="yue2" data-no-comfy-yue hidden><input id="yCfg" class="sv" inputmode="decimal" placeholder="Default" title="cfg_scale, 0 to 20. Empty keeps the model's own default (1.0; 1.01 with the chain of thought off)."></span>
 
         <label for="yPrecision" data-engine="yue2" data-python-yue hidden>Precision</label>
         <span class="pv" data-engine="yue2" data-python-yue hidden><select id="yPrecision" class="sel2">
@@ -538,13 +654,18 @@
              −14 dB) and is not offered. -->
         <!-- Key, tempo, meter: an OPEN seed score of headers the planner
              continues (server/music/seed.js), so the song is planned in them.
-             Blank means the model decides. Ignored when a score is supplied. -->
-        <label for="yKey" data-engine="yue2" hidden>Key</label>
-        <span class="pv" data-engine="yue2" hidden><input id="yKey" class="sv" placeholder="Auto · e.g. Em" title="ABC key: a letter A–G, optional b or #, optional m for minor. Blank leaves it to the model."></span>
-        <label for="yBpm" data-engine="yue2" hidden>Tempo</label>
-        <span class="pv" data-engine="yue2" hidden><input id="yBpm" class="sv" type="number" min="40" max="240" placeholder="Auto · 40–240" title="Quarter-note BPM for the seed score."></span>
-        <label for="yMeter" data-engine="yue2" hidden>Meter</label>
-        <span class="pv" data-engine="yue2" hidden><select id="yMeter" class="sel2">
+             Blank means the model decides. Ignored when a score is supplied.
+             ONLY THE PYTHON KIT TAKES THEM (data-python-yue): the native GGUF
+             runtime has no open-score option and the ComfyUI nodes cannot seed
+             one, so on those two builds the rows are absent rather than sent
+             and dropped (or refused). server/music-engine-rows_test.js holds
+             every visible YuE2 row against what each build's door accepts. -->
+        <label for="yKey" data-engine="yue2" data-python-yue hidden>Key</label>
+        <span class="pv" data-engine="yue2" data-python-yue hidden><input id="yKey" class="sv" placeholder="Auto · e.g. Em" title="ABC key: a letter A–G, optional b or #, optional m for minor. Blank leaves it to the model."></span>
+        <label for="yBpm" data-engine="yue2" data-python-yue hidden>Tempo</label>
+        <span class="pv" data-engine="yue2" data-python-yue hidden><input id="yBpm" class="sv" type="number" min="40" max="240" placeholder="Auto · 40–240" title="Quarter-note BPM for the seed score."></span>
+        <label for="yMeter" data-engine="yue2" data-python-yue hidden>Meter</label>
+        <span class="pv" data-engine="yue2" data-python-yue hidden><select id="yMeter" class="sel2">
           <option value="">Auto</option><option>4/4</option><option>3/4</option><option>6/8</option><option>2/4</option>
         </select></span>
         <!-- The sampler's own dials (protocol.py Sampling), vendor defaults
@@ -553,7 +674,7 @@
         <label for="yTemp" data-engine="yue2" hidden>Performance</label>
         <span class="pv" data-engine="yue2" hidden><input id="yTemp" class="sv" type="number" min="0" max="5" step="0.05" placeholder="Temp 1.0" title="The performance sampler's temperature. Lower = steadier, higher = wilder. Vendor default 1.0."> <input id="yTopP" class="sv" type="number" min="0.01" max="1" step="0.01" placeholder="Top-p 0.95" title="Nucleus sampling for the performance. Vendor default 0.95."></span>
         <label for="yPlanTemp" data-engine="yue2" hidden>Planner</label>
-        <span class="pv" data-engine="yue2" hidden><input id="yPlanTemp" class="sv" type="number" min="0" max="5" step="0.05" placeholder="Temp 0.7" title="The score planner's temperature — the composer's creativity. Vendor default 0.7."></span>
+        <span class="pv" data-engine="yue2" hidden><input id="yPlanTemp" class="sv" type="number" min="0" max="5" step="0.05" placeholder="Temp 0.7" title="The score planner's temperature — the composer's creativity. Vendor default 0.7."> <span class="meta" id="yPlanTempNote" hidden></span></span>
         <label for="ySteps" data-engine="yue2" hidden>Steps</label>
         <span class="pv" data-engine="yue2" hidden><select id="ySteps" class="sel2">
           <option value="32">32 (default)</option>
@@ -601,23 +722,18 @@
         <button type="button" class="edtool" id="aCoverClear" hidden>✕ Clear</button>
         <span class="sp meta" id="aCoverState"></span>
       </div>
-      <p class="hint">The song you give becomes the one ACE-Step re-performs in your style and lyrics (ComfyUI's "Set Reference Audio", marked experimental there). The planner is off for a cover. A LoRA carries its own licence; some forbid commercial use.</p>
+      <p class="hint" id="aCoverHint">The song you give becomes a timbre and style reference (experimental: ComfyUI's "Set Reference Audio"), rendered in your style and lyrics; how closely it keeps the melody has not been measured here. The planner is off for a cover. A LoRA carries its own licence; some forbid commercial use.</p>
     </details>
 
+    <!-- MELODY & SCORE (renamed 2026-09-24 from a second "Advanced"). The Music screen's words are
+         one set: "Advanced" is the level switch (#modeAdv, the shell), "More
+         Options" the fold under the form, and this box is named for what it
+         holds, so nobody looks for a melody under a word that means "more
+         settings". It shows for YuE2 only (the one engine that takes a
+         melody); on the others #melodyPointer at the top of More Options
+         says where it is. -->
     <details class="adv sbox" data-engine="yue2" hidden id="yMusicPlan">
-      <summary>Advanced Options</summary>
-      <!-- LoRA, for YuE2 through ComfyUI only (the Python kit and the native
-           GGUF have no loader). The list is /api/loras judged against the
-           chosen checkpoint, so a file trained for another model is shown
-           disabled with its base named rather than hidden. -->
-      <b class="subhead" id="subLora" data-comfy-yue hidden>LoRA</b>
-      <div class="params" data-comfy-yue hidden>
-        <label for="yLora">Audio LoRA</label><span class="pv"><select id="yLora" class="sel2"><option value="">none</option></select></span>
-        <label for="yLoraStrength">Strength</label><span class="pv"><input id="yLoraStrength" type="range" min="0" max="200" step="5" value="100"><b id="yLoraStrengthValue">1.00</b></span>
-        <label for="yLoraClip">Planner LoRA</label><span class="pv"><select id="yLoraClip" class="sel2"><option value="">none</option></select></span>
-        <label for="yLoraClipStrength">Strength</label><span class="pv"><input id="yLoraClipStrength" type="range" min="0" max="200" step="5" value="100"><b id="yLoraClipStrengthValue">1.00</b></span>
-      </div>
-      <p class="hint tipsrc" id="yLoraNote" data-comfy-yue hidden>Audio LoRA patches the audio model; Planner LoRA patches the composer (the half that writes the score and the tokens) — the instrumental planner LoRA from the Models screen goes there, and an Instrumental take picks it by itself. <span id="yLoraShelf"></span></p>
+      <summary>Melody &amp; score</summary>
       <!-- Hum a melody. The recording goes to /api/hum, a pitch tracker in the
            engine's python writes the two-voice score, and it lands in the ABC
            box below with "Use this score" ticked. "Let the planner continue it"
@@ -634,39 +750,59 @@
           <option value="full">Melody and chords</option>
         </select></span>
         <!-- THE COVER CASE: a song already in the Library. Picking one and
-             pressing Transcribe needs no recording and no file; "Voice only"
-             then reads its separated vocal stem (the Studio's own demucs). -->
+             pressing Transcribe needs no recording and no file; "Read the
+             tune from" then says which of it is read (its separated voice
+             needs the Studio's own demucs; the whole mix does not). -->
         <label for="humSong" data-humsong hidden>Library song</label><span class="pv" data-humsong hidden><select id="humSong" class="sel2"><option value="">Pick a song to cover…</option></select> <button type="button" class="edtool" id="humGo" hidden>Transcribe</button></span>
         <!-- THE PRIME. The score above says what the song IS; this says how
              much of how it SOUNDED the model hears before it starts. The
              recording is read into YuE2's own tokens to do it (the Models
              screen's real-audio tokenizer), and none of its audio reaches the
              render. 0 is the score alone, which is the recipe that existed
-             before the tokenizer did. -->
-        <label for="covPrime" data-humsong hidden>Start from the original</label><span class="pv" data-humsong hidden><input id="covPrime" type="range" min="0" max="30" step="1" value="8"><b id="covPrimeValue">8s</b></span>
-        <label for="covStem" data-humsong hidden>Start from its</label><span class="pv" data-humsong hidden><select id="covStem" class="sel2"><option value="">whole mix</option><option value="drums">drums only</option><option value="bass">bass only</option><option value="vocals">voice only</option><option value="other">everything else</option></select></span>
-        <label for="humStem" data-humsong hidden>Voice only</label><span class="pv" data-humsong hidden><label class="check"><input type="checkbox" id="humStem" checked> transcribe the separated vocal stem (a library song; demucs runs first if needed)</label></span>
+             before the tokenizer did. The Python kit only (data-python-yue):
+             the GGUF and ComfyUI builds cannot hear a prime. -->
+        <label for="covPrime" data-humsong data-python-yue hidden>Start from the original</label><span class="pv" data-humsong data-python-yue hidden><input id="covPrime" type="range" min="0" max="30" step="1" value="8"><b id="covPrimeValue">8s</b></span>
+        <label for="covStem" data-humsong data-python-yue data-covstem hidden>Let YuE2 hear the original's first <span id="covStemSecs">8 s</span>, from its</label><span class="pv" data-humsong data-python-yue data-covstem hidden><select id="covStem" class="sel2"><option value="">whole mix</option><option value="drums">drums only</option><option value="bass">bass only</option><option value="vocals">voice only</option><option value="other">everything else</option></select></span>
+        <!-- OFF UNTIL STEM SEPARATION IS SET UP (paintHumStem): ticked by
+             default it queued a demucs split on a machine that could not run
+             one, and the transcription waited on it. -->
+        <label for="humStem" data-humsong hidden>Read the tune from</label><span class="pv" data-humsong hidden><label class="check"><input type="checkbox" id="humStem"> its separated voice (untick for the whole mix; Studio separates the voice first if needed)</label></span>
       </div>
+      <p class="hint" id="humStemNote" data-humsong hidden></p>
       <div class="chips">
         <button type="button" class="edtool" id="humRec">● Record</button>
         <button type="button" class="edtool" id="humStop" hidden>■ Stop</button>
         <label class="edtool" for="humFile">Choose a file…</label>
         <input type="file" id="humFile" accept="audio/*" hidden>
+        <!-- Stops a transcription in flight (humSendSource): the page stops
+             waiting; for a whole song the separation is stopped or dropped by
+             itself, and SheetSage2 through /api/cancel after a question that
+             names anything else that would stop (humStopPlan). The pitch
+             tracker for a hum ends by itself within seconds. -->
+        <button type="button" class="edtool" id="humCancel" hidden title="Stop reading the notes">■ Stop</button>
         <span class="sp meta" id="humState"></span>
       </div>
+      <p class="hint" id="humHint">Hum: seconds. Whole song: a minute or more, and longer the first time its voice is separated.</p>
       <p class="hint" id="humNote" role="status" aria-live="polite"></p>
-      <p class="hint tipsrc" id="covPrimeNote" data-humsong hidden>How many seconds of the original performance YuE2 hears before it starts — it hears the Studio's reading of them, not the recording, and none of the original audio is in the result. Longer is not better: past a few seconds it re-performs the original's own arrangement instead of yours. 0 uses the score alone. Starting from one layer — its drums for the groove, its voice for the phrasing — sends that layer instead of the mix.</p>
-      <label class="edtool tog" id="yAbcOpenLabel"><input type="checkbox" id="yAbcOpen"> Let the planner continue this score</label>
+      <p class="hint tipsrc" id="covPrimeNote" data-humsong data-python-yue hidden>How many seconds of the original performance YuE2 hears before it starts — it hears the Studio's reading of them, not the recording, and none of the original audio is in the result. Longer is not better: past a few seconds it re-performs the original's own arrangement instead of yours. 0 uses the score alone. Starting from one layer — its drums for the groove, its voice for the phrasing — sends that layer instead of the mix.</p>
+      <label class="edtool tog" id="yAbcOpenLabel" data-python-yue hidden><input type="checkbox" id="yAbcOpen"> Let the planner continue this score</label>
       <b class="subhead" id="subScore">Your own score</b>
+      <!-- Three plain lines, because the box below used to say only "Paste a
+           reviewed YuE2 two-voice ABC score here" and a tester never found
+           out that humming fills it. -->
+      <p class="hint" id="yAbcHow">Easiest: with Transcriber on Hum, press ● Record above, hum, press Stop, and the notes land in this box, ticked for Create.<br>
+        Or paste ABC with two voices: <code>V: Vocal</code> (the sung line) and <code>V: Ins</code> (rests are fine). "Load an example" shows the layout.<br>
+        YuE2 sings a score the way a singer would: the pitches follow it, the timing is looser.</p>
       <div class="params">
         <label for="yPlanBpm">Quarter-note BPM</label><span class="pv"><input class="sv" type="number" id="yPlanBpm" min="20" max="400" value="120"></span>
         <label for="yPlanMeter">Outline meter</label><span class="pv"><select id="yPlanMeter" class="sel2"><option>4/4</option><option>3/4</option><option>6/8</option><option>2/4</option></select></span>
         <label for="yPlanLength">Target notation length</label><span class="pv"><input id="yPlanLength" type="range" min="5" max="600" step="5" value="180"><b id="yPlanLengthValue">3:00</b></span>
       </div>
       <label class="flabel" for="yAbc">ABC score (optional)</label>
-      <textarea id="yAbc" rows="6" spellcheck="false" maxlength="65536" placeholder="Paste a reviewed YuE2 two-voice ABC score here"></textarea>
+      <textarea id="yAbc" rows="6" spellcheck="false" maxlength="65536" placeholder="Paste a reviewed YuE2 two-voice ABC score here, or hum one with ● Record"></textarea>
       <input type="file" id="yAbcFile" accept=".abc,.txt,text/plain" hidden>
       <div class="chips">
+        <button type="button" class="edtool" id="yAbcExample" title="Put a 4-bar two-voice score in the box (it does not tick Use this score)">Load an example</button>
         <label class="edtool" for="yAbcFile">Load file…</label>
         <button class="edtool" type="button" id="yPlanOutline">Estimate bars</button>
         <button type="button" class="edtool" id="yPlanCheck">Check score</button>
@@ -676,6 +812,20 @@
       </div>
       <p class="hint" id="yPlanResult" role="status" aria-live="polite"></p>
       <label class="edtool tog" id="yAbcUseLabel"><input type="checkbox" id="yAbcUse"> Use this score with Create</label>
+      <!-- LoRA, for YuE2 through ComfyUI only (the Python kit and the native
+           GGUF have no loader). The list is /api/loras judged against the
+           chosen checkpoint, so a file trained for another model is shown
+           disabled with its base named rather than hidden. Last in the box:
+           the box is named for the melody, and a ComfyUI user opening it
+           should meet the melody first. -->
+      <b class="subhead" id="subLora" data-comfy-yue hidden>LoRA</b>
+      <div class="params" data-comfy-yue hidden>
+        <label for="yLora">Audio LoRA</label><span class="pv"><select id="yLora" class="sel2"><option value="">none</option></select></span>
+        <label for="yLoraStrength">Strength</label><span class="pv"><input id="yLoraStrength" type="range" min="0" max="200" step="5" value="100"><b id="yLoraStrengthValue">1.00</b></span>
+        <label for="yLoraClip">Planner LoRA</label><span class="pv"><select id="yLoraClip" class="sel2"><option value="">none</option></select></span>
+        <label for="yLoraClipStrength">Strength</label><span class="pv"><input id="yLoraClipStrength" type="range" min="0" max="200" step="5" value="100"><b id="yLoraClipStrengthValue">1.00</b></span>
+      </div>
+      <p class="hint tipsrc" id="yLoraNote" data-comfy-yue hidden>Audio LoRA patches the audio model; Planner LoRA patches the composer (the half that writes the score and the tokens) — the instrumental planner LoRA from the Models screen goes there, and an Instrumental take picks it by itself. <span id="yLoraShelf"></span></p>
     </details>
 
     <!-- Title last, as on Suno. Metadata only. -->
@@ -772,8 +922,21 @@
          reachable without scrolling at ANY size, on any content. -->
     <div class="ctawrap">
       <div class="cta">
-        <button class="btn ghost" type="button" id="btnPreview">Preview</button>
-        <button class="btn" type="button" id="btnCreate">Create</button>
+        <!-- ONE BUTTON, with the other way to render folded into it. Preview
+             used to sit beside Create as an equal, which it is not: it is the
+             cheap pass you take now and then. It is behind the arrow at
+             Create's right end, in a drawer that pops upward, and the arrow
+             is not there at all on the engines that have no cheap pass. -->
+        <div class="ctasplit solo" id="ctaSplit">
+          <button class="btn" type="button" id="btnCreate">Create</button>
+          <button class="btn ctamore" type="button" id="ctaMore" hidden
+            aria-expanded="false" aria-haspopup="true"
+            title="Other ways to render this">&#9652;</button>
+          <div class="ctadrawer" id="ctaDrawer" hidden>
+            <button class="btn ghost" type="button" id="btnPreview">Preview</button>
+            <span class="hint">A short, cheap pass to hear the idea.</span>
+          </div>
+        </div>
       </div>
       <p class="ctanote" id="ctaNote">—</p>
     </div>
@@ -808,10 +971,10 @@
       <div class="ovideas" id="ovIdeas"></div>
       <div class="edbar">
         <button class="btn sm" type="button" id="ovAdd">+ Add what's in Create</button>
-        <!-- The Images screen already holds an engine, a model, a size, steps,
+        <!-- The Pictures screen already holds an engine, a model, a size, steps,
              cfg and a prompt. Re-typing them here would be a second place for
              them to drift, so the button takes what is on that screen. -->
-        <button class="btn sm" type="button" id="ovAddImage" hidden>+ Add what's on the Images tab</button>
+        <button class="btn sm" type="button" id="ovAddImage" hidden>+ Add what's on the Pictures screen</button>
         <button class="edtool" type="button" id="ovClear">Clear</button>
       </div>
     </div>
@@ -871,9 +1034,11 @@
     <div class="ovhead"><h2>Video</h2></div>
     <p class="hint" id="vidIntro">Short looping clips with MiniMax H3.</p>
 
-    <div class="field runpod-inline">
-      <label class="flabel" for="vidRenderWhere">Render on</label>
-      <select id="vidRenderWhere" class="sel2">
+    <!-- RUNPOD, the launcher's "RunPod GPU" mode only (web/runpod-integrated.js unhides
+         these when /api/status says remoteOnly). Contributed by nemesisone-dev. -->
+    <div class="field runpod-inline" id="vidRunPodBlock" hidden>
+      <label class="flabel" for="vidRenderWhere" hidden>Render on</label>
+      <select id="vidRenderWhere" class="sel2" hidden>
         <option value="local">This PC</option>
         <option value="runpod">RunPod GPU</option>
       </select>
@@ -895,17 +1060,36 @@
       </div>
     </div>
 
+
     <div class="field">
       <label class="flabel" for="vidEngine">Engine</label>
       <select id="vidEngine" class="sel2"></select>
       <p class="hint" id="vidEngineNote"></p>
+      <!-- The old "More motion" switch for FastH3, retired 2026-09-25 and
+           kept hidden: FastH3 is in the engine list by name (web/vidfit.js). -->
+      <label class="ovstage" id="vidMoreMotionRow" hidden>
+        <input type="checkbox" id="vidMoreMotion"><span id="vidMoreMotionL"></span>
+      </label>
     </div>
+
+    <!-- ENGINE SETTINGS — the files the engine loads, and COLLAPSED BY DEFAULT.
+         "auto" is the right answer until you have a model of your own, and four
+         dropdowns plus a LoRA stack held open above the prompt push the box you
+         came here to type in off the screen. -->
+    <details class="adv sbox" id="vidEngineBox">
+      <summary>Engine settings<span class="sp meta" id="vidEngineBoxNote"></span></summary>
 
     <!-- YOUR OWN VIDEO MODEL. The engine above normally loads the files the
          catalogue fetched for it; a community model of the same family is that
          architecture re-trained, so the same graph drives it with one name
          changed. Auto everywhere is the engine’s own — web/app.js
-         vidModelShape(). -->
+         vidModelShape().
+
+         ONLY WHAT FITS IS LISTED. What is left out is counted under the row
+         rather than shown greyed: the reason to list a refused file was that a
+         misplaced one should not vanish silently, and a number says that in one
+         line instead of eleven rows. Anything the server could not judge counts
+         as fitting and stays. -->
     <div class="field" id="vidModelRow" hidden>
       <label class="flabel" for="vidModel">Model file</label>
       <select id="vidModel" class="sel2"></select>
@@ -917,6 +1101,7 @@
       <span id="vidAudioVaeW"><select id="vidAudioVae" class="sel2"></select></span>
       <p class="hint">Files from models/diffusion_models, models/text_encoders and models/vae.
         Leave these on auto unless you have a model of your own.</p>
+      <p class="hint" id="vidShelfNote"></p>
     </div>
 
     <!-- YOUR OWN LoRAs for the video engine on the screen. Same stack as the
@@ -929,6 +1114,7 @@
       <div id="vidLoras" class="lorastack"></div>
       <p class="hint" id="vidLoraNote"></p>
     </div>
+    </details>
 
     <div class="field">
       <label class="flabel" for="vidPrompt">What should it show</label>
@@ -938,17 +1124,39 @@
         camera move — H3 holds a simple shot far better than a busy one.</p>
     </div>
 
-    <!-- THE SIMPLE WAY. Three words instead of a step count: Fast is the
-         distilled path (3 steps on the TaoMate build when it is installed,
-         else 8), Standard the 8-step build, Best the bare model at 20. The
-         slider under More controls is the same number, for people who want
-         it; the chips light up when the slider sits on their value. -->
+    <!-- KEEP MY CHARACTER (the REWIND A/B, 2026-09-24): pictures of the person, the reference build's
+         own step count, and the song under the clip for a singer. One list of pictures with References
+         below (state.refImages); a saved character is resolved and bound by the server (persona).
+         Every sentence here is the server's (video-plain.js character), written by web/vidfit.js. -->
+    <div class="field" id="vidKeepField" hidden>
+      <label class="flabel" for="vidCharacter">Keep my character <span class="sp meta">optional</span></label>
+      <select id="vidCharacter" class="sel2" data-receipt=""><option value="">No saved character</option></select>
+      <div id="vidKeepDrop"></div>
+      <div class="midprev" id="vidKeepPrev" hidden></div>
+      <p class="hint" id="vidKeepNote" hidden></p>
+    </div>
+
+    <!-- THE SIMPLE WAY. Three words instead of a step count, and every count
+         is the server's (/api/status stepDefaults, resolved by config.js from
+         what is on disk): Fast is 3 on the TaoMate build where it is
+         installed, else the 4-step build; Standard is the 8-step build where
+         both 8-step files are on disk, else the 4-step one (the Models screen
+         fetches only those); Best the bare model at 20. app.js
+         vidQualitySteps writes each chip's label and title from them, so the
+         numbers typed below are only what shows before the first status:
+         vidQualitySteps' own fallbacks, which server/mcp-steer_test.js holds
+         them to. The slider under More controls is the same number, for
+         people who want it; the chips light up when the slider sits on their
+         value. Best's title claims only the time (660 s against 308 s in
+         config.js's cost note, 45 min against 19 in arm H vs C). That A/B,
+         the only one of the bare 20 against today's 8-step turbo, saw no
+         visible gain. -->
     <div class="params" id="vidQualityRow">
       <label>quality</label>
       <span class="pv chips">
-        <button type="button" class="edtool" data-vq="fast" id="vidQFast" title="The distilled path: 3 steps on the TaoMate build">Fast<small>3 steps</small></button>
-        <button type="button" class="edtool" data-vq="standard" title="The 8-step build">Standard<small>8 steps</small></button>
-        <button type="button" class="edtool" data-vq="best" title="The bare model at 20 steps: measurably smoother, several times slower">Best<small>20 steps</small></button>
+        <button type="button" class="edtool" data-vq="fast" id="vidQFast" hidden title="The 4-step turbo build">Fast<small>4 steps</small></button>
+        <button type="button" class="edtool" data-vq="standard" title="The 4-step turbo build">Standard<small>4 steps</small></button>
+        <button type="button" class="edtool" data-vq="best" title="The bare model at 20 steps: over twice as long as Standard">Best<small>20 steps</small></button>
         <span class="tipsrc" id="vidQualityNote"></span>
       </span>
     </div>
@@ -956,8 +1164,31 @@
     <div class="params">
       <label for="vidSecs">length</label>
       <span class="pv"><input id="vidSecs" type="range" min="1" max="15" step="1" value="5"><b id="vidSecsV">5s</b></span>
+      <!-- Opens on Standard, which app.js sets once from /api/status
+           (stepDefaults.standard, the same number as config.js's H3 default:
+           8 where both 8-step turbo files are on disk, else 4). Not on Best:
+           docs/H3_REFERENCE_BLEED.md, arm H vs C, the bare model at 20 steps
+           bought nothing visible over the 8-step turbo, at 2.4x the time. One
+           shot, on the reference path, so Best stays a click away. The 4
+           typed here shows only until that status lands; it is matched on
+           every disk that has any H3 turbo file. -->
       <label for="vidSteps">steps</label>
-      <span class="pv"><input id="vidSteps" type="range" min="3" max="28" step="1" value="20"><b id="vidStepsV">20</b></span>
+      <span class="pv"><input id="vidSteps" type="range" min="3" max="28" step="1" value="4"><b id="vidStepsV">4</b></span>
+      <!-- FastH3's dense attention backend (web/app.js vidPaint shows it only
+           for an engine that has the choice). Kitchen is Comfy Kitchen's INT8
+           attention; ComfyUI uses PyTorch where Kitchen is missing. -->
+      <label for="vidAttn" id="vidAttnL" hidden>attention</label>
+      <span class="pv" id="vidAttnW" hidden><select id="vidAttn" class="sel2"
+          title="Kitchen INT8 is faster where its kernels exist; ComfyUI falls back to PyTorch elsewhere.">
+        <option value="pytorch">PyTorch</option>
+        <option value="kitchen">Kitchen INT8</option>
+      </select></span>
+      <!-- H3's sparse attention on the Fast setting (sol-attn or off): the
+           options, the saved value and the tooltip's numbers are the server's
+           (config.js solAttn); changing it saves video_settings'
+           sparse_attention. web/vidfit.js. -->
+      <label for="vidSparse" id="vidSparseL" hidden>sparse attention</label>
+      <span class="pv" id="vidSparseW" hidden><select id="vidSparse" class="sel2"></select></span>
       <label for="vidSize">size</label>
       <span class="pv"><!-- Populated per engine: H3 native 1344x768 is not a legal LTX size,
            and LTX quantises to a 32px latent grid after halving. -->
@@ -983,6 +1214,21 @@
     </div>
     <p class="hint">H3 always renders sound whether or not you want it, so keeping
       it is free. Clips made under a song discard it — that song is the audio.</p>
+    <!-- "This size needs about X GB free; you have Y" and what the render will
+         change, from POST /api/video check (server/video-plain.js). Advanced
+         only: Simple hides it with the rest of the form. web/vidfit.js. -->
+    <p class="hint" id="vidFitNote" hidden></p>
+
+    <!-- THE CARD'S SIZE (the H3 lab's #5). This card's tier and the smaller
+         ones as plain chips that write the size and length above, starting on
+         the tier; the list under "size" keeps every other size. Where H3 is not
+         offered, the server's one sentence instead: a friend first, your own
+         key second. Shown in Simple too (styles.css). web/vidfit.js. -->
+    <div class="field" id="vidTierRow" hidden>
+      <label class="flabel">Size for this card</label>
+      <div class="seg" id="vidTierChips" role="group" aria-label="Size for this card"></div>
+      <p class="hint" id="vidTierNote" hidden></p>
+    </div>
 
     <!-- ─── FRAMES ─── pictures pinned AT a moment of the clip. One field per
          input, each dropdown sharing its row with its "Use a file…" button;
@@ -995,7 +1241,8 @@
     <div class="field" id="vidFromField">
       <label class="flabel" for="vidFrom">Starting frame
         <span class="sp meta">optional</span></label>
-      <div class="pickrow">
+      <div id="vidFromDrop"></div>
+      <div class="pickrow" hidden>
         <select id="vidFrom" class="sel2"><option value="">Start from nothing</option></select>
         <button class="edtool" type="button" id="vidFromPick">Use a file…</button>
         <input type="file" id="vidFromFile" accept="image/png,image/jpeg,image/webp" hidden>
@@ -1022,7 +1269,8 @@
     <div class="field" id="vidToRow" hidden>
       <label class="flabel" for="vidTo">Closing frame
         <span class="sp meta">optional</span></label>
-      <div class="pickrow">
+      <div id="vidToDrop"></div>
+      <div class="pickrow" hidden>
         <select id="vidTo" class="sel2"><option value="">Let it end wherever it goes</option></select>
         <button class="edtool" type="button" id="vidToPick">Use a file…</button>
         <input type="file" id="vidToFile" accept="image/png,image/jpeg,image/webp" hidden>
@@ -1041,9 +1289,10 @@
     <div class="field" id="vidMidRow" hidden>
       <label class="flabel">Pass through
         <span class="sp meta">up to 4 &middot; optional</span></label>
+      <div id="vidMidDrop"></div>
       <div class="framepick">
-        <button class="edtool" type="button" id="vidMidPick">Add a picture&hellip;</button>
-        <button class="edtool" type="button" id="vidMidClear" hidden>Clear</button>
+        <button class="edtool" type="button" id="vidMidPick" hidden>Add a picture&hellip;</button>
+        <button class="edtool" type="button" id="vidMidClear" hidden>Clear all</button>
         <input type="file" id="vidMidFile" accept="image/png,image/jpeg,image/webp" hidden multiple>
       </div>
       <div class="midprev" id="vidMidPrev" hidden></div>
@@ -1059,15 +1308,16 @@
          order shown. Clicking a reference inserts its tag at the caret. -->
     <div class="field" id="vidRefWrap" hidden>
       <label class="flabel">References
-        <span class="sp meta">up to 9 pictures + 3 sounds &middot; optional</span></label>
-      <p class="hint">Show the model pictures and sounds, then call them by name in the
-        description: &ldquo;the figure from <b>&lt;Picture&nbsp;1&gt;</b> performs the song from
-        <b>&lt;Audio&nbsp;1&gt;</b> on a rooftop at night&rdquo;. A reference is not pinned to any
-        frame &mdash; the clip recasts it wherever the words put it. Click one to drop its
-        tag into the description.</p>
+        <span class="sp meta">pictures + sounds &middot; optional</span></label>
+      <!-- The server's sentence when the engine ignores references (FastH3,
+           LTX): the slots stay in view while anything is attached, and Render
+           is refused rather than dropping them. web/vidfit.js. -->
+      <p class="hint warnhint" id="vidRefIgnored" hidden></p>
+      <p class="hint">Pictures: the model recasts what they show wherever the words put it. Name each one (&ldquo;<b>&lt;Picture&nbsp;1&gt;</b> is Mira.&rdquo;) and then use the name (&ldquo;Mira runs&hellip;&rdquo;). For one character, 1&ndash;3 tight pictures on a plain dark background (face; body + face; body + side + face). Sounds (<b>&lt;Audio&nbsp;1&gt;</b>) shape the clip's own sound and are re-sung; for lip-sync to your song use Song under the clip. Click one to insert its tag.</p>
+      <div id="vidRefDrop"></div>
       <div class="framepick">
-        <button class="edtool" type="button" id="vidRefImgPick">Add a picture&hellip;</button>
-        <button class="edtool" type="button" id="vidRefClear" hidden>Clear</button>
+        <button class="edtool" type="button" id="vidRefImgPick" hidden>Add a picture&hellip;</button>
+        <button class="edtool" type="button" id="vidRefClear" hidden>Clear all</button>
         <input type="file" id="vidRefImgFile" accept="image/png,image/jpeg,image/webp" hidden multiple>
       </div>
       <!-- The audio people actually want to reference is usually already in the
@@ -1075,30 +1325,34 @@
            library files itself. -->
       <div class="pickrow">
         <select id="vidRefSong" class="sel2">
-          <option value="">Add a song from the library&hellip;</option>
+          <option value="">Add a sound reference (re-sung)&hellip;</option>
         </select>
         <button class="edtool" type="button" id="vidRefAudPick">Add audio&hellip;</button>
         <input type="file" id="vidRefAudFile" accept="audio/*,.flac,.wav,.mp3,.ogg,.m4a" hidden>
       </div>
       <div class="midprev" id="vidRefImgPrev" hidden></div>
       <div id="vidRefAudPrev" hidden></div>
-      <p class="hint" id="vidRefCostNote" hidden>References ride through every sampling
-        step, so expect the render noticeably slower. Only ten seconds of each audio
-        reference are used &mdash; set where that window starts.</p>
+      <p class="hint" id="vidRefCostNote" hidden>References make the render slower: up to three
+        pictures, each extra one adds about 9 s at 8 steps (fitted on four clips on a 16 GB card).
+        Only ten seconds of each sound reference are used; set where that window starts.</p>
       <p class="hint warnhint" id="vidRefTagNote" hidden></p>
     </div>
 
-    <!-- ─── Soundtrack — LTX's frozen-audio path (the vendor's ia2v flow). ───
+    <!-- ─── Song under the clip — the frozen-audio path, both engines. ───
          The audio latent is pinned with a zero noise mask, so the finished
          clip PLAYS this exact segment and the picture is generated against it.
          Measured: output audio == the VAE round trip of the segment
-         (mel r=0.995). Hidden under H3, which invents its own audio. -->
+         (mel r=0.995). On H3 it is also anchored at frame 0, so the model
+         hears the vocal: it is the lip-sync door (the REWIND A/B, 2026-09-24).
+         A sound reference (<Audio n>, References) is a different input and
+         is re-sung. Simple shows it. The words beside the label and under the
+         picker are the server's per engine (video-plain.js songUnderSay,
+         written by web/vidfit.js): mouths do not follow the song on LTX. -->
     <div class="field" id="vidSndWrap" hidden>
-      <label class="flabel" for="vidSndSong">Soundtrack
-        <span class="sp meta">optional</span></label>
+      <label class="flabel" for="vidSndSong">Song under the clip <span class="sp meta" id="vidSndMeta">optional</span></label>
       <div class="pickrow">
         <select id="vidSndSong" class="sel2">
-          <option value="">No soundtrack &mdash; the engine makes its own</option>
+          <option value="">No song: the engine makes its own sound</option>
         </select>
         <button class="edtool" type="button" id="vidSndPick">Use a file&hellip;</button>
         <input type="file" id="vidSndFile" accept="audio/*,.flac,.wav,.mp3,.ogg,.m4a" hidden>
@@ -1108,9 +1362,8 @@
           value="0" id="vidSndStart"> s</label>
         <span class="who" id="vidSndWho"></span>
       </div>
-      <p class="hint">The finished file plays this exact stretch of the song &mdash;
-        the picture is invented to fit it. Describe someone or something making the
-        sound: a singer at a microphone, hands on a piano, a band on stage.</p>
+      <p class="hint" id="vidSndHint">The finished clip plays this stretch of the song. Set
+        &ldquo;start at&rdquo; to where the sung line begins.</p>
     </div>
 
     <div class="vsec">Fine tuning</div>
@@ -1152,8 +1405,15 @@
     <div class="ctawrap">
       <div class="cta">
         <button class="btn" type="button" id="vidCreate">Render clip</button>
+        <button class="btn2" type="button" id="vidRecipeClear" hidden title="Return to this machine's normal conditioning-bridge settings; keep the form values.">Clear recipe mode</button>
+        <button class="btn2" type="button" id="vidAskFriend" title="Prepare a text-only recipe for a friend using their default models. To send reference pictures, use Music video → Video clips → Ask friend, which carries them.">Ask friend</button>
       </div>
       <p class="ctanote" id="vidEst"></p>
+      <!-- At render time: the RAM warning under 32 GB (server/h3tier.js), and
+           the last failed render in words with the engine's text behind
+           Details (server/video-plain.js). web/vidfit.js. -->
+      <p class="hint warnhint" id="vidRamNote" hidden></p>
+      <div class="vidfail" id="vidFail" hidden></div>
     </div>
 
   </section>
@@ -1163,16 +1423,18 @@
        the stage. Its controls keep their ids; only the column moved. -->
   <section class="ovcol" id="imgPanel" hidden>
     <div class="vidform">
-      <div class="ovhead"><h2>Images</h2></div>
+      <div class="ovhead"><h2>Pictures</h2></div>
       <!-- The engine's own description. Four hundred characters of it on
            some engines, which is a paragraph nobody reads above a form —
            so it is the "!" beside the engine row now (web/tips.js reads
            this element live) and `tipsrc` keeps it off the screen. -->
       <p class="hint tipsrc" id="imgModelNote"></p>
 
-      <div class="field runpod-inline">
-        <label class="flabel" for="imgRenderWhere">Render on</label>
-        <select id="imgRenderWhere" class="sel2">
+      <!-- RUNPOD, the launcher's "RunPod GPU" mode only (web/runpod-integrated.js unhides
+           these when /api/status says remoteOnly). Contributed by nemesisone-dev. -->
+      <div class="field runpod-inline" id="imgRunPodBlock" hidden>
+        <label class="flabel" for="imgRenderWhere" hidden>Render on</label>
+        <select id="imgRenderWhere" class="sel2" hidden>
           <option value="local">This PC</option>
           <option value="runpod">RunPod GPU</option>
         </select>
@@ -1188,6 +1450,7 @@
           <p class="hint">Uses the prompt, size, steps, count and seed below. References remain on this PC.</p>
         </div>
       </div>
+
 
       <label class="lbl" for="imgPrompt">What should it show</label>
       <textarea id="imgPrompt" rows="5" placeholder="a lone payphone on a wet neon street at night, cinematic, shallow depth of field"></textarea>
@@ -1205,14 +1468,25 @@
 
       <div class="params">
         <label for="imgEngine">engine</label>
-        <span class="pv"><select id="imgEngine" class="sel2">
-          <option value="qwen-image-2.1" selected>Qwen Image 2.1 — generation &amp; editing</option>
-          <option value="flux2">FLUX.2 klein — fast, takes refs</option>
-          <option value="zimage">Z-Image Turbo — 8 steps, Apache-2.0</option>
-          <option value="zimage-base">Z-Image base — 25 steps, real negatives</option>
-          <option value="anima">Anima — anime &amp; illustration</option>
-          <option value="krea2">Krea 2 Turbo — 8 steps, frontier look</option>
-          <option value="ideogram4">Ideogram 4 — non-commercial</option>
+        <!-- The Qwen Image 2.1 readiness light sits where the dropdown's arrow
+             is (imgQwenPaint in app.js): an orange spinner while checking, a
+             slow green pulse when ready that then steps aside for the arrow,
+             red when it cannot run (the details pop out beside the field).
+             Hovering it says what it is doing; clicking it opens the dropdown
+             (or, when red, the details). -->
+        <!-- This list is also Settings' covers engine list: loadArtPrefs copies
+             it, taking data-cover where an option has one. Covers take no
+             references, do no editing and have no negative field, so an option
+             whose label here names one of those carries a covers label that
+             does not (server/ui-kit_test.js holds that). -->
+        <span class="pv qwenpv"><span class="qdot" id="imgQwenDot" hidden><i></i></span><select id="imgEngine" class="sel2">
+          <option value="qwen-image-2.1" selected data-cover="Qwen Image 2.1">Qwen Image 2.1: generation &amp; editing</option>
+          <option value="flux2" data-cover="FLUX.2 klein: fast, Apache-2.0">FLUX.2 klein: fast, takes refs</option>
+          <option value="zimage">Z-Image Turbo: 8 steps, Apache-2.0</option>
+          <option value="zimage-base" data-cover="Z-Image base: 25 steps, Apache-2.0">Z-Image base: 25 steps, real negatives</option>
+          <option value="anima">Anima: anime &amp; illustration</option>
+          <option value="krea2">Krea 2 Turbo: 8 steps, frontier look</option>
+          <option value="ideogram4">Ideogram 4: non-commercial</option>
           <option value="checkpoint">Your own model file</option>
         </select></span>
 
@@ -1338,24 +1612,27 @@
         </span>
       </div>
 
-      <div class="field" id="imgQwenStatus" hidden>
-        <b>Qwen Image 2.1 readiness</b>
-        <p class="hint" id="imgQwenStatusNote" role="status">Checking model files and ComfyUI support…</p>
-        <div class="framepick">
-          <button class="edtool" type="button" id="imgQwenRefresh">Check again</button>
-          <button class="edtool" type="button" id="imgQwenModels">Open Models</button>
+      <!-- Qwen Image 2.1: one status chip, and details only when something is
+           wrong. Painted by imgQwenCheck() in app.js. -->
+      <div class="qpop" id="imgQwenStatus" hidden role="alert">
+        <button class="qpopx" type="button" id="imgQwenPopClose" title="Close">&#10005;</button>
+        <b id="imgQwenChip">Qwen Image 2.1 is not ready</b>
+        <p id="imgQwenStatusNote"></p>
+        <div class="qpopacts">
+          <button class="btn2" type="button" id="imgQwenRefresh">&#8635; Check again</button>
+          <button class="btn2" type="button" id="imgQwenModels" hidden>Open Models</button>
         </div>
       </div>
       <div class="params" id="imgQwenOptions" hidden>
-        <label for="imgRefSizing">edit canvas</label>
-        <span class="pv"><select id="imgRefSizing" class="sel2">
+        <label for="imgRefSizing">canvas</label>
+        <span class="pv"><select id="imgRefSizing" class="sel2"
+          title="With references: match the first picture's shape (at 1024), or use the size set above.">
           <option value="reference" selected>Match first reference</option>
-          <option value="custom">Use requested size above</option>
+          <option value="custom">Use the size above</option>
         </select></span>
-        <label for="imgTransparent">output</label>
-        <span class="pv"><label><input id="imgTransparent" type="checkbox"> Request transparent PNG</label></span>
+        <label for="imgTransparent">background</label>
+        <span class="pv"><label class="tog"><input id="imgTransparent" type="checkbox"> Transparent</label></span>
       </div>
-      <p class="hint" id="imgQwenOptionsNote" hidden>With references, Match first reference uses the first image's aspect at a 1024 reference resolution. Use requested size applies the width and height above. Transparency is a model request.</p>
 
       <!-- ─── Reference images — Qwen Image 2.1 and FLUX.2 editing. ───
            The Video screen's reference block, in the shape the owner asked
@@ -1373,26 +1650,32 @@
            cannot be used. -->
       <div class="field" id="imgRefWrap">
         <label class="flabel" for="imgRefPick">Reference images
-          <span class="sp meta" id="imgRefLimit">up to 10 &middot; Qwen Image 2.1 / FLUX.2 &middot; optional</span></label>
+          <span class="sp meta" id="imgRefLimit">optional</span></label>
         <!-- ─── Personas ───
              A saved character is references-plus-a-description, remembered.
              It sits with the reference block because that is what it IS:
              not training, not a LoRA, just the in-context path with a name
              on it. Available on image engines that accept references. -->
-        <div class="framepick">
-          <select id="imgPersona" class="sel2"><option value="">No character&hellip;</option></select>
+        <!-- One toolbar: character, save, and the drop box's Library / Upload
+             (web/picdrop.js puts those two here). -->
+        <div class="refbar" id="imgRefBar">
+          <select id="imgPersona" class="sel2" title="A saved character: its references and description"><option value="">Character&hellip;</option></select>
           <button class="edtool" type="button" id="imgPersonaSave"
-            title="Save the references above as a reusable character">Save as character&hellip;</button>
+            title="Save these references as a reusable character">Save</button>
           <button class="edtool" type="button" id="imgPersonaDel" hidden>Forget</button>
         </div>
         <p class="hint" id="imgPersonaNote" hidden></p>
 
-        <div class="framepick">
+        <!-- The drop box: the pictures live inside it (#imgRefPrev and its Clear
+             are moved in by app.js). The select and upload button stay hidden
+             because app.js keeps its state there. -->
+        <div id="imgRefDrop"></div>
+        <div hidden>
           <select id="imgRefPick" class="sel2"><option value="">Add a reference&hellip;</option></select>
           <button class="edtool" type="button" id="imgRefUpload">Use a file&hellip;</button>
-          <button class="edtool" type="button" id="imgRefClear" hidden>Clear</button>
-          <input type="file" id="imgRefFile" accept="image/png,image/jpeg,image/webp" hidden multiple>
+          <input type="file" id="imgRefFile" accept="image/png,image/jpeg,image/webp" multiple>
         </div>
+        <button class="linkbtn" type="button" id="imgRefClear" hidden>Clear all</button>
         <div class="midprev imgrefs" id="imgRefPrev" hidden></div>
         <p class="hint" id="imgRefCostNote" hidden></p>
         <p class="hint warnhint" id="imgRefTagNote" hidden></p>
@@ -1404,6 +1687,43 @@
       <div class="ctawrap">
       <div class="cta">
         <button class="btn primary wide" type="button" id="imgGo">Make image</button>
+      </div>
+      <!-- PRIVATE: the render happens and is recorded; the WORDS are not kept.
+           ⚠ IT IS A PROPERTY OF THE RENDER, so it lives with the button that
+           starts one. It arrived inside #imgRefWrap, between the character
+           toolbar and the drop box: it read as something to do with references,
+           it pushed the drop box further down a column that already scrolls,
+           and it applies to every engine on this screen whether there are
+           references or not. It also came with a three-line paragraph under it;
+           the label already says exactly what it drops, and the rest — what is
+           kept, and that it cannot be applied afterwards — is the tooltip. It
+           says "don't record the prompt" rather than "private" for the reason
+           that paragraph was written: "private" on its own reads as
+           untraceable, and the picture is still filed and still marked AI.
+           The .ctawrap is one of the few things Simple mode keeps, so this
+           stays reachable there too. -->
+      <label class="tog ctatog" for="imgPrivate"
+        title="Dropped: the prompt, the negative, every text node, the prompt hash and the label stay out of the ledger, no graph is filed, and the engine's own metadata chunk is stripped from the PNG. Kept: the picture, its seed, model and date, and its AI-generated mark. New renders only: it cannot be applied to pictures already made."><input
+        id="imgPrivate" type="checkbox"> Don&rsquo;t record the prompt</label>
+
+      <!-- FAST DRAFT (Qwen Image 2.1): Viggle's turbo LoRA, 5 steps instead of
+           25. A plain chip beside the other render toggle, so Simple mode keeps
+           it (.ctawrap is one of the things Simple keeps) and the Simple
+           assistant can set it (it reads every checkbox in the form). Shown
+           only on Qwen Image 2.1: with its LoRA on disk the chip, without it
+           "Get Fast draft", which opens that Models row. The chip's own words
+           carry the trade, visible without hovering (touch screens and Simple
+           never see a tooltip). A base-only choice greys it with the reason
+           (web/app.js imgDraftPaint). The numbers are Advanced only
+           (#imgDraftNums; hidden under .assist-on). -->
+      <div class="draftrow" id="imgDraftRow" hidden>
+        <label class="tog ctatog draftchip" for="imgDraft" id="imgDraftChip"
+          title="About 3&times; quicker in a run of drafts (a new prompt is about 2&times;); may garble small text and add extra faces or fingers. For drafts, boards and ideas; not for finals, lettering or two-reference style edits."><input
+          id="imgDraft" type="checkbox"> Fast draft &middot; about 3&times; quicker &middot; may garble small text</label>
+        <button class="linkbtn" type="button" id="imgDraftGet" hidden
+          title="A 0.68 GB add-on for Qwen Image 2.1: about 3&times; quicker drafts. Opens its row in Models.">Get Fast draft (0.68 GB)</button>
+        <span class="hint dim" id="imgDraftNums" hidden>Fast draft: turbo LoRA 1.0 &middot; 5 steps on its own schedule &middot; euler &middot; CFG 1 &middot; measured up to 1920 &times; 1088</span>
+        <span class="hint warnhint" id="imgDraftWhy" hidden></span>
       </div>
 
       <!-- WHAT IS ACTUALLY HAPPENING, and a way out of it.
@@ -1454,6 +1774,18 @@
       </div>
     </div>
 
+    <!-- The controls you reach for WHILE looking at the grid. One wrapper
+         rather than four sticky siblings: sticky elements do not stack, so
+         stacking them by hand would hard-code each height into the next
+         one’s `top` — and those heights change when the tick bar wraps or
+         the window narrows. -->
+    <!-- ⚠ IT HAS AN ID BECAUSE IT IS HIDDEN AS A UNIT. These controls sit
+         directly in `.stage` — the scroller every view shares — as siblings
+         of #imagesview and #videoclips, not inside a Music page of their own,
+         and setView used to hide the three of them separately. Wrapping them
+         without moving that to the wrapper left the wrapper’s own padding and
+         hairline as a 10px bar across the top of every other screen. -->
+    <div class="libhead spaced" id="musicHead">
     <div class="stagehead">
       <h2 id="listTitle">Library</h2>
       <select id="plSelect" class="sel2 sm"><option value="">All tracks</option></select>
@@ -1516,6 +1848,7 @@
         <button class="bbtn" type="button" data-batch="clear" title="Clear the selection">✕</button>
       </div>
     </div>
+    </div><!-- /.libhead -->
 
     <div id="pinned" hidden>
       <div class="subhead">📌 Pinned</div>
@@ -1538,6 +1871,10 @@
       </div>
       <h3 class="sidetitle" id="spTitle">—</h3>
       <div class="sidesub" id="spSub"></div>
+      <!-- Whether this song may be sold: the chip for the model that made it
+           (and any add-on that made it stricter), from the library row's
+           `rights`; the chip opens the licence's own words. paintSongRights(). -->
+      <div class="sprights" id="spRights" hidden></div>
       <div class="generation-warnings" id="spWarnings" hidden></div>
 
       <div class="sideact">
@@ -1681,8 +2018,10 @@
          sent, and the network is whichever one you already use to send them
          things. The three things it deliberately will not do are written on
          the screen rather than left as absences: it will not verify a friend
-         for you, it will not lend your card without a number you type, and it
-         will not render what arrives without you reading it first. -->
+         for you, it will not lend your card past the minutes a day you give
+         each friend without asking you first (accept checks them; "Accept
+         anyway" is a question, never a default), and it will not render what
+         arrives without you reading it first. -->
     <div id="collab" hidden>
       <style>
         #collab .cbworkgrid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; margin-top:14px; }
@@ -1778,16 +2117,17 @@
               <button class="btn sm primary" type="button" id="cbAcceptYes" hidden>Yes &mdash; take the job</button>
             </div>
             <pre id="cbOrderPrompt" class="cbopened" hidden></pre>
-            <p class="hint"><b>Read it first.</b> An order carries the sentence your machine will be asked to draw, and the pictures it will draw from. Saying yes turns it into a project here with a plan that is <b>proposed</b> &mdash; nothing renders until you approve it on the <b>Plan</b> screen.</p>
+            <p class="hint"><b>Read it first.</b> An order carries the sentence your machine will be asked to draw, and the pictures it will draw from. Saying yes turns it into a project here with a plan that is <b>proposed</b> &mdash; nothing renders until you approve it: <b data-screen="workflow">Workflow</b> &rarr; the &ldquo;Order &hellip; from <i>their name</i>&rdquo; project &rarr; the <b>Plan</b> card (<b>Open its plan in <span data-screen="workflow">Workflow</span></b> below takes you there). If your card is busy or their minutes for today are used, pressing <b>Yes &mdash; take the job</b> asks you first, and <b>Accept anyway</b> is your answer.</p>
           </div>
 
           <div id="cbReturnFace" hidden>
             <b class="subhead" id="cbReturnWho">A finished scene has come back</b>
             <div class="chips"><button class="btn sm primary" type="button" id="cbReceiveBtn">Check it against what I asked for</button></div>
-            <p class="hint">This machine measures the file itself and checks it against the order you sent &mdash; the seed, the steps, the size and the length. It waits in quarantine until you keep it.</p>
+            <p class="hint">This machine measures the file itself and checks it against the order you sent &mdash; the seed, the steps, the size and the length the engine really renders. It waits in quarantine until you keep it; one that fails a check can be watched and kept anyway.</p>
           </div>
 
           <div id="cbReadFace" hidden>
+            <button class="btn2" type="button" id="cbUseVideo" hidden title="Load the reviewed recipe into Video. Rendering is a separate action.">Use video recipe</button>
             <b class="subhead" id="cbReadWho">A friend sent you something to look at</b>
             <pre id="cbOpened" class="cbopened" hidden></pre>
             <div class="chips"><button class="btn sm primary" type="button" id="cbSaveResources" hidden>Save hardware card to friend</button></div>
@@ -1804,7 +2144,7 @@
         <div id="cbTakesWrap" hidden>
           <b class="subhead">Finished scenes waiting for you to keep or throw away</b>
           <div id="cbTakes" class="cblist"></div>
-          <p class="hint">Keeping one files it as a take <b>nobody has picked</b>, carrying their model and their licence rather than yours.</p>
+          <p class="hint">Keeping one files it as a take <b>nobody has picked</b>, carrying their model and their licence rather than yours &mdash; on its scene even if you never rendered that scene here. Choose it in <b data-screen="workflow">Workflow</b> &rarr; <b>Video clips</b> &rarr; <b>Inspect&hellip;</b>. Watch a take before you keep it (nothing is loaded until you press play); <b>Keep anyway&hellip;</b> is for one that failed a check and is still what you wanted, or one this browser cannot play, kept unseen after you say so.</p>
         </div>
 
         <details class="adv">
@@ -1866,6 +2206,7 @@
               <option value="project">project document + asset manifest (no media)</option>
               <option value="resources">what this Studio can do</option>
               <option value="order">one scene for them to RENDER, and send back</option>
+              <option value="video-recipe">video recipe (from Video)</option>
             </select></span>
           </div>
           <div class="params" id="cbSegmentRow">
@@ -2160,8 +2501,14 @@
     <div id="imagesview" hidden>
       <div class="vidwrap">
         <div class="vidlib">
+          <!-- The controls you reach for WHILE looking at the grid. One wrapper
+               rather than four sticky siblings: sticky elements do not stack, so
+               stacking them by hand would hard-code each height into the next
+               one’s `top` — and those heights change when the tick bar wraps or
+               the window narrows. -->
+          <div class="libhead">
           <div class="stagehead">
-            <h2>Images</h2>
+            <h2>Pictures</h2>
             <span class="count" id="imgCountLbl"></span>
           </div>
           <input class="bigsearch" id="imgSearch" type="search" placeholder="Search images by prompt…" autocomplete="off">
@@ -2207,16 +2554,37 @@
             <span class="bcount"></span>
             <div class="bacts">
               <button class="bbtn" type="button" data-pick="collage" title="Tile the selected images into one picture">▦</button>
+              <!-- The ticked pictures as reference images. Two destinations,
+                   because they have different caps: 10 here, 9 on H3.
+
+                   ONE GLYPH EACH, like every other button on this bar. `.bbtn`
+                   is a fixed 30px circle, so a text label does not overflow
+                   gracefully - it escapes the button and lands on the toolbar
+                   above. The meaning lives in the tooltip, which is how the
+                   collage and trash buttons beside them already work. The
+                   second is the rail's own Video glyph, so it points at where
+                   it sends things. -->
+              <button class="bbtn" type="button" data-pick="refs"
+                title="Use as reference images for the next render &mdash; up to 10">&#9707;</button>
+              <button class="bbtn" type="button" data-pick="vidrefs"
+                title="Send to the Video page as H3 reference images and go there &mdash; up to 9">&#9655;</button>
               <button class="bbtn warn" type="button" data-pick="trash" title="Move to trash (reversible, kept in output/trash)">🗑</button>
               <button class="bbtn" type="button" data-pick="clear" title="Clear the selection">✕</button>
             </div>
           </div>
+          </div><!-- /.libhead -->
           <div class="clipgrid" id="imgGrid"></div>
         </div>
       </div>
     </div>
 
     <div id="videoclips" hidden>
+      <!-- The controls you reach for WHILE looking at the grid. One wrapper
+           rather than four sticky siblings: sticky elements do not stack, so
+           stacking them by hand would hard-code each height into the next
+           one’s `top` — and those heights change when the tick bar wraps or
+           the window narrows. -->
+      <div class="libhead">
       <div class="stagehead">
         <h2>Clips</h2>
         <span class="count" id="vidCount"></span>
@@ -2274,6 +2642,7 @@
           <button class="bbtn" type="button" data-pick="clear" title="Clear the selection">✕</button>
         </div>
       </div>
+      </div><!-- /.libhead -->
       <div class="clipgrid" id="clipGrid"></div>
 
       <!-- The big view. The grid shows a 25 KB poster per clip, which is right
@@ -2305,7 +2674,7 @@
          is where you watch it and override it. -->
     <div id="workflow" hidden>
       <div class="wfhead">
-        <h2>Video Workflow</h2>
+        <h2>Music video</h2>
         <p class="hint" id="wfIntro">Turn a finished song into a music video, one
           stage at a time. Nothing here spends GPU until you ask it to.</p>
       </div>
@@ -2676,8 +3045,10 @@
         <div class="ag-cardhead">
           <div>
             <h2 id="agCloudTitle">Cloud models</h2>
-            <p class="ag-sub">Keys are encrypted on this machine and sent only to the provider they belong to.
-              Local models stay available in every menu.</p>
+            <p class="ag-sub">Only keys typed into Studio on this Windows account are used, never one from another
+              program or an environment variable; each key says when it was saved and by which copy of Studio.
+              They stay on this machine, encrypted with Windows DPAPI when it can (each key says so), and are sent
+              only to the provider they belong to. Local models stay available in every menu.</p>
           </div>
           <span class="ag-count" id="agConnected"></span>
         </div>
@@ -2792,7 +3163,7 @@
         <div class="rlab">
           <span>Pictures <i id="reactPicked">none picked</i> <i>· click to pick, in the order they should appear</i></span>
           <div class="reactimgs" id="reactImgs"></div>
-          <p class="hint">Any pictures from the Images library. Two or more read as a
+          <p class="hint">Any pictures from the Pictures library. Two or more read as a
             sequence; one reads as a breathing still.</p>
         </div>
 
@@ -2946,431 +3317,280 @@
          because a page that only advertises is a page nobody trusts. The Thanks
          page holds the licences; the Agent page holds the MCP details; this page
          links to both rather than repeating them. -->
-    <div id="about" class="thanks about" hidden>
-      <h1>About AIPLAY Studio</h1>
-      <p class="lead">A music and video studio that lives on your own computer.
-        You describe a song and it gets written, sung and mixed here, on your
-        graphics card. You can draw pictures, render short video clips, edit
-        images the way a photo editor does, composite video the way a motion
-        designer does, and put all of it together into a finished music video
-        &mdash; without an account, without a subscription, and without your work
-        ever leaving your machine.</p>
+    <div id="about" hidden class="page about">
+      <header class="page-head"><h2>About AIPLAY Studio</h2>
+        <p>A music and video studio that lives on your own computer. No account, no subscription, and your work never leaves your machine.</p></header>
+      <nav class="pnav" aria-label="About sections"></nav>
 
-      <!-- THE WAY BACK TO THE WELCOME. It opens by itself once, on a fresh
-           install, and once is exactly when you know least about what you are
-           looking at — so the tour has to be reachable afterwards, from the
-           page a person goes to when they want to know what this is. The flag
-           lives in settings.json, so "seen it" is one answer for every browser
-           on this machine and an assistant can read and change it too
-           (studio_welcome). Wired in web/welcome.js. -->
-      <!-- WHICH BUILD THIS IS. Two lines, because the answer has two halves:
-           the build, and the original's commit it contains. The button is the
-           only part that touches the internet, and only when pressed. -->
-      <section class="verbox" id="verBox">
-        <div class="verline"><b id="verLine">&mdash;</b><span class="verbase" id="verBase"></span></div>
-        <p class="hint" id="verWhat"></p>
-        <p class="verrow">
-          <button type="button" class="submit" id="verCheck">Check for updates</button>
-          <span class="hint" id="verSays">Asks GitHub whether either repository has moved. Nothing about this machine is sent.</span>
-        </p>
+      <!-- WHICH BUILD THIS IS: the build, and the original's commit it
+           contains. The button is the only part that touches the internet,
+           and only when pressed. The welcome tour opens from here (wired in
+           web/welcome.js); it no longer opens by itself: a new install gets
+           three lines on Home instead (UI_PLAN B5). -->
+      <section class="pcard" id="about-build" data-nav="This build">
+        <h3>This build</h3>
+        <div class="verbox" id="verBox">
+          <div class="verline"><b id="verLine">&mdash;</b><span class="verbase" id="verBase"></span></div>
+          <p class="hint" id="verWhat"></p>
+        </div>
+        <div class="cta">
+          <button type="button" class="btn2" id="verCheck">Check for updates</button>
+          <button type="button" class="btn2" id="welcomeOpen">&#10022; Take the welcome tour</button>
+          <span class="hint" id="verSays">Asks GitHub only. Nothing about this machine is sent.</span>
+        </div>
       </section>
 
-      <p class="welcomeback">
-        <button type="button" class="submit" id="welcomeOpen">&#10022; Take the welcome tour</button>
-        <span class="hint">Every screen, what it makes, what it honestly cannot
-          do, and what this machine has already made &mdash; the window that
-          opens on a fresh install. An assistant can ask for the same thing with
-          <code>studio_capabilities</code>.</span>
-      </p>
-
-      <h2>What this is</h2>
-      <p>AIPLAY Studio is a <b>local-first</b> studio for AI-made music and
-        video. Local-first means the program, the models and everything you make
-        stay on your computer: no upload, no cloud render, no server that can
-        lose your library or change its terms. The exact promise &mdash; and
-        the three narrow cases where the app touches the internet at all &mdash;
-        is spelled out under <i>Privacy</i>, below.</p>
-      <p>The word that gets used around it is <b>safe haven</b>, and it means
-        something specific. Almost everywhere else, saying &ldquo;I made this
-        with AI&rdquo; changes how a room treats you &mdash; playlists refuse
-        it, forums sneer at it, and a lot of people quietly stop mentioning how
-        their song was made. This is a place built for the people who make
-        things with AI: here that is not a confession, it is the whole point.
-        You are welcome, your work is welcome, and nobody here thinks less of a
-        song because a model helped sing it. It helps that the studio is
-        local-first and open source (Apache-2.0) &mdash; a haven you can read
-        the source of, that ships no model weights of its own and shows every
-        model&rsquo;s licence <i>before</i> anything is downloaded; the
-        <a href="#" data-go="thanks">Thanks page</a> is the full accounting.</p>
-      <p>One more thing sets it apart: an AI assistant can drive it. Studio
-        speaks <b>MCP</b> &mdash; a standard way for assistants to use tools
-        &mdash; and every tool a person can click is a tool an agent can call.
-        The <a href="#" data-go="mcp">Agent page</a> explains how to connect one.
-        The showcase further down this page was made that way, end to end.</p>
-
-      <!-- OWNER: edit this section freely — it is your voice. Everything below
-           is a respectful draft standing in until you replace it. -->
-      <h2>From the maker</h2>
-      <p>Honestly, AI PLAY started as me messing around late at night &mdash; a
-        little radio for AI music, back when there was already a big anti-AI
-        movement hating on everything we made. No business plan, no roadmap.
-        The first time I heard what AI could do, something clicked: wait,
-        <i>anyone</i> can make music now? We showcased creations on late-night
-        streams, built listening parties when nobody else would host them, and
-        somewhere along the way it became a community &mdash; a home.</p>
-      <p>This studio is the other half of that story. The platform is where we
-        listen together; the studio is where the work gets <i>made</i> &mdash;
-        songs, cover art, music videos, effects, all of it on your own
-        machine. And this part is open source on purpose: the tools for making
-        art should belong to the people making it. You can read every line of
-        what runs on your computer, keep it forever, and nobody can take it
-        away or put a meter on it. That is also why the app is honest about
-        provenance &mdash; we label what the AI did and celebrate what
-        <i>you</i> did, because we have nothing to hide and everything to be
-        proud of.</p>
-      <p>Don&rsquo;t let anyone tell you it&rsquo;s just &ldquo;AI slop.&rdquo;
-        We tell our stories, we cope, we write love songs, we iterate until
-        it&rsquo;s a masterpiece. Everything in here gets tested end to end
-        &mdash; the same AI that helps build the studio plays every button
-        before we ship &mdash; and there is more coming: a full DAW is on the
-        way, real instruments and all, the piece that makes this suite
-        complete. If this becomes a small home for people who make things with
-        AI, it has done what I hoped. You&rsquo;re what makes this real &mdash;
-        and this is only the start. Let&rsquo;s conquer the world together.</p>
-      <p><i>&mdash; Senzu (Chester)</i></p>
-
-      <h2>What you make is yours</h2>
-      <p>AIPLAY Studio takes no rights over anything you make with it. No
-        licence over your output, no claim, no small print &mdash; the songs,
-        images and videos that come out of this program belong to you, and the
-        studio&rsquo;s own licence has nothing to say about them. One honest
-        caveat: the AI models you run are made by other people, and each
-        model&rsquo;s licence governs the material it generates &mdash; most are
-        generous, some are not, and the app shows you each one before you
-        download it so the choice is always yours.</p>
-
-      <h3>&ldquo;Non-commercial&rdquo; usually means the model, not your picture</h3>
-      <p>This trips up almost everybody, and it costs people money in both
-        directions. When a model is called <i>non-commercial</i>, that is nearly
-        always a rule about <b>the weights</b> &mdash; you may not run them
-        inside a paid service, host them behind an API, or build a product on
-        them. It is not a rule about the picture you just drew. FLUX and Anima
-        both write it down in so many words: they claim no rights in what you
-        generate, and you may use it commercially. One or two go the other way
-        and mean it &mdash; NoobAI&rsquo;s terms reach &ldquo;model-generated
-        products&rdquo;, which is the output itself &mdash; and one of the
-        models this studio can download, Ideogram&nbsp;4, keeps its agreement
-        behind a login nobody here has been through, so the honest answer there
-        is <b>we do not know</b> rather than a confident guess in either
-        direction.</p>
-      <p>So the studio does three things instead of hand-waving. It shows each
-        model&rsquo;s answer below, <b>with the publisher&rsquo;s own sentence
-        one click away</b> &mdash; you read the licence, never our summary. It
-        records <b>which model made what</b>, at the moment it was made, so
-        months later you can still show what the terms were on the day. And it
-        <b>never blocks an export</b>: this program cannot know whether a file is
-        going to a paying client or a group chat, and a tool that guesses wrong
-        about that is a tool people work around.</p>
-      <div id="aboutRights" class="rightslist">Loading&hellip;</div>
-      <p class="hint">Live from the model catalogue &mdash; the same source the
-        <a href="#" data-go="thanks">Thanks page</a> and the Models screen read,
-        so it cannot drift from what the app actually offers. Territory is a
-        separate question from selling<!-- The list of territories used to be
-        typed out here, and was one of five hand-typed copies of it found on
-        2026-09-02. web/app.js fills the span from the same /api/models payload
-        this paragraph's list above comes from, and leaves the clause hidden if
-        that payload never arrives. --><span id="aboutTerritoryClause" hidden>:
-        H3 is licensed only outside <span id="aboutTerritory"></span></span>,
-        and that territory notice is shown before anything is downloaded.</p>
-
-      <h2>Privacy, and what the app promises</h2>
-      <p>Everything runs on your machine. Your projects, songs, images and
-        videos never leave your computer unless you export them and share them
-        yourself. The app phones home for nothing &mdash; there is no
-        telemetry, no account, no analytics. It talks to the internet in
-        exactly three cases: when you ask it to download a model, when you
-        switch on the optional API mode and it makes the cloud calls you
-        configured, and when the Community page checks aiplay.live&rsquo;s
-        public feed for what is happening &mdash; a plain read, every couple of
-        minutes, that sends nothing about you or your library. That is the
-        complete list, and the source is open if you want to check it.</p>
-
-      <h2>What you need</h2>
-      <p><b>To generate</b> &mdash; music, images, video &mdash; you need a
-        Windows machine with a modern NVIDIA graphics card. There is no strict
-        minimum: the engine streams itself to fit smaller cards (the bar in the
-        corner shows the tier it picked), and less card mostly means more
-        waiting. On a strong card a three-minute song takes four to five
-        minutes; system memory matters too, because small-card tiers stream the
-        model from RAM.</p>
-      <p><b>To edit</b>, no big card is needed: the image editor and the VFX
-        compositor are ordinary CPU work. Preview frames come back in tens of
-        milliseconds; for a final VFX render, budget roughly two seconds per
-        720p frame with heavy effects &mdash; minutes for a shot, not hours.
-        Only generation queues for the graphics card; everything else just
-        runs.</p>
-
-      <h2>What each page does &mdash; and what it can&rsquo;t</h2>
-      <p class="hint">Every screen, in the order the rail lists them. The
-        &ldquo;can&rsquo;t&rdquo; lines are real limits, written down on purpose
-        &mdash; an app that only tells you what it does well is advertising.</p>
-      <dl class="thankslist honesty">
-        <dt>&#9834; Music</dt>
-        <dd>Describe a song &mdash; the style it plays in and the words it sings
-          &mdash; and a full track with vocals renders on your graphics card,
-          typically four to five minutes for a three-minute song. Keep several
-          takes, re-roll the mix, pull stems (the vocals, drums and instruments
-          as separate files), and export FLAC, MP3 or Opus; a
-          cover picture is painted for every finished track automatically.
-          <span class="cant">Can&rsquo;t: there is no piano roll &mdash; you
-          steer with words, not notes, and takes vary, which is why takes exist.
-          Everything shares one graphics card, and music always goes first.</span></dd>
-
-        <dt>&#9635; Images</dt>
-        <dd>Makes pictures &mdash; standalone or as cover art &mdash; and opens
-          them in a full image editor: layers and blend modes, curves and
-          levels, brushes, selections, one-click background cutout, a type tool,
-          and export in seven formats. Edits render on the server into a new
-          file, so the original is never destroyed.
-          <span class="cant">Can&rsquo;t: no CMYK or print pipeline &mdash;
-          everything is RGB, made for screens. The default engine (FLUX.2 klein
-          4B, Apache-2.0) is free for any use; Ideogram&nbsp;4&rsquo;s agreement
-          is behind a login and has not been read here, so what it says about
-          selling the picture is genuinely unknown &mdash; the app labels it that
-          way rather than guessing, and does not stop you either way.</span></dd>
-
-        <dt>&#9655; Video</dt>
-        <dd>Renders short video clips from a text prompt or from a picture you
-          made, on your own machine, and keeps them in a searchable library
-          grouped by song, day or engine.
-          <span class="cant">Can&rsquo;t: engine availability varies &mdash;
-          each video engine is a separate download with its own licence and its
-          own hardware appetite, and a licence can exclude a region outright;
-          the Models page shows all of that before anything is fetched. One
-          render is seconds of video and minutes of waiting; longer pieces are
-          several renders chained.</span></dd>
-
-        <dt>&#9672; VFX</dt>
-        <dd>An After-Effects-class compositor: eleven kinds of layer, keyframes on
-          any property, expressions, 3D layers with cameras and lights, a
-          particle system, motion tracking, masks and mattes, nested comps, and
-          presets &mdash; rendering to real video files with sound. Everything
-          it can do in the window, an AI can do through the
-          <a href="#" data-go="mcp">Agent page</a>.
-          <span class="cant">Can&rsquo;t: renders are CPU work &mdash; plan for
-          a second or more per frame at 1080p with heavy effects. 3D layers are
-          flat cards drawn in stack order, so two of them never slice through
-          each other per pixel. There is no roto brush: masks are paths you
-          draw, and the tracker follows a rectangle and honestly reports when it
-          loses the shot. Particles refuse collisions, 3D and textured sprites
-          on purpose.</span></dd>
-
-        <dt>&#9986; Studio</dt>
-        <dd>The video studio: lay clips on a timeline over a song, add a karaoke
-          word overlay and a music visualiser, and export a finished video. One
-          canvas does both preview and export, so what you see is exactly what
-          you get.
-          <span class="cant">Can&rsquo;t: export is a real-time capture of that
-          canvas by the browser &mdash; a three-minute video takes three minutes
-          to save, lands as WebM, and the tab has to stay open. It is also why
-          an AI can build the whole project but a person presses Export.</span></dd>
-
-        <dt>&#9673; Reactive</dt>
-        <dd>Pictures that move with a song: the song is analysed, its bars,
-          beats and hits are found, and your pictures cut or dissolve into each
-          other exactly on them, the frame breathing with the bass and a flash
-          on every beat &mdash; the image arrives on the beat instead of on a
-          timer. Rendered by the Studio&rsquo;s own compositor, so it needs no
-          video model and runs on any card the Studio runs on; the comp it
-          builds opens on the VFX screen for more control.
-          <span class="cant">Can&rsquo;t: it does not generate motion inside a
-          picture &mdash; that is a video model&rsquo;s job (Video, Video Lab).
-          What moves is the picture as a whole: scale, opacity, colour, cuts.</span></dd>
-
-        <dt>&#9790; Overnight</dt>
-        <dd>Write down song ideas at bedtime and let the machine render them
-          while you sleep &mdash; songs, covers, stems, even clips. The plan
-          lives on disk, so a crash or a closed browser does not lose the run.
-          <span class="cant">Can&rsquo;t: the computer has to stay on and awake;
-          Studio keeps it awake but cannot open a closed lid. Stages whose
-          models are not installed are greyed out rather than silently
-          skipped.</span></dd>
-
-        <dt>&#9678; Community</dt>
-        <dd>A window onto aiplay.live &mdash; live listening rooms, events
-          starting soon, and style packs that fill the Music form with a
-          starting point. It is the &ldquo;when you want people to hear
-          it&rdquo; door; nothing walks through it on its own.
-          <span class="cant">Can&rsquo;t: offline or behind a firewall it
-          degrades to &ldquo;not reachable&rdquo;, and that is fine &mdash; no
-          feature in the app needs a connection or an account, and nothing you
-          make is uploaded anywhere.</span></dd>
-
-        <dt>&#9860; Games</dt>
-        <dd>A small number puzzle (2248) for while the queue renders. Renders
-          take minutes; the game is honest about why it is here.
-          <span class="cant">Can&rsquo;t: it is exactly one game, and your best
-          score lives in this browser and nowhere else.</span></dd>
-
-        <dt>&#9636; Models</dt>
-        <dd>The catalogue: every capability, which files it needs, how big they
-          are, and the licence &mdash; shown before you download, because the
-          licence is between you and the model&rsquo;s publisher. Only the music
-          engine is required; everything else is optional.
-          <span class="cant">Can&rsquo;t: Studio never downloads anything on its
-          own, so the first use of a new capability means a wait measured in
-          gigabytes. Licences genuinely differ &mdash; read the line next to
-          the button.</span></dd>
-
-        <dt>&#9881; Settings</dt>
-        <dd>Cover-art style, output formats, folders, the graphics-memory tier
-          for smaller cards, custom ComfyUI workflows (your own render graphs), and the opt-in API mode
-          that rents a cloud model under a monthly spending cap.
-          <span class="cant">Can&rsquo;t: changing the memory tier restarts the
-          engine and clears the cached take, so the next re-roll costs a full
-          render &mdash; it says so before it does it. API mode spends real
-          money, which is exactly why the cap exists.</span></dd>
-
-        <dt>&#9670; Agent</dt>
-        <dd>How to point an AI assistant at Studio over MCP, with the live tool
-          list and a worked &ldquo;make me a music video&rdquo; example. The
-          same page lists what an agent honestly cannot do, and why.
-          <span class="cant">Can&rsquo;t: nothing to add here &mdash;
-          <a href="#" data-go="mcp">that page</a> carries its own confession
-          section, and repeating it here is how two copies start to
-          disagree.</span></dd>
-
-        <dt>&#9829; Thanks</dt>
-        <dd>The credits and the licences: every model, every borrowed idea, and
-          what each licence asks of you, built from the live catalogue so it
-          cannot go stale.
-          <span class="cant">Can&rsquo;t: it can only account for what it can
-          see &mdash; a model file you add yourself brings its own licence, and
-          that one is between you and its author.</span></dd>
-      </dl>
-
-      <h2>Things people make with it</h2>
-      <dl class="thankslist">
-        <dt>A song from one sentence</dt>
-        <dd>Type &ldquo;a slow country ballad about leaving the city&rdquo; and
-          press Create. Four takes and twenty minutes later one of them is the
-          song, with a painted cover and stems if you asked for them. That is
-          the whole workflow for most people, most days.</dd>
-        <dt>A lyric video</dt>
-        <dd>Make the song, open Studio, and switch on the karaoke overlay
-          &mdash; the words arrive on screen as they are sung. Add the
-          visualiser or a clip behind them, then press Export. One song, one
-          sitting.</dd>
-        <dt>A music video, end to end</dt>
-        <dd>Generate a few pictures for the look, seed video clips from each so
-          they match, and let the beat grid place the cuts on the bar lines.
-          The clips can even be restyled in time with the song&rsquo;s bass.
-          What used to be days of editing becomes an evening.</dd>
-        <dt>Cover art you actually finish</dt>
-        <dd>Generate a base image, then take it into the editor: curves for the
-          mood, a cutout to lift the subject, the type tool for the title.
-          Export a PNG at full size. No other program needed.</dd>
-        <dt>A classic VFX shot, recreated</dt>
-        <dd>The compositor is real enough to follow professional After Effects
-          tutorials step by step &mdash; keyframes, cameras, glow, particles.
-          The three finished shots below came out of exactly that exercise.
-          It is the fastest way to learn what the VFX tab can do.</dd>
-        <dt>All of it, hands off</dt>
-        <dd>Connect an assistant on the <a href="#" data-go="mcp">Agent page</a>
-          and ask for the music video instead of making it. The AI writes the
-          song, draws the look, renders the clips and assembles the project.
-          You come back, watch it, and press Export.</dd>
-      </dl>
-
-      <h2>Made entirely by an AI, through MCP</h2>
-      <p>These three shots are recreations of well-known Video Copilot
-        After Effects tutorials &mdash; built in the VFX tab <b>entirely by an
-        AI assistant over MCP</b>, with no human touching a keyframe. The tool
-        calls are counted; a person only watched.</p>
-      <div class="showgrid">
-        <div class="showcard">
-          <video src="assets/showcase/evolution.mp4" controls preload="metadata"></video>
-          <div class="scmeta">
-            <b>Evolution title &middot; 42 tool calls</b>
-            <p class="why">Ornamental flourishes grow in around a serif title
-              with a slow light sweep &mdash; stock footage layered, retimed and
-              blended behind live text.</p>
-          </div>
-          <img class="showsheet" src="assets/showcase/evolution_sheet.png" alt="Evolution title contact sheet" loading="lazy">
-        </div>
-        <div class="showcard">
-          <video src="assets/showcase/shockwave.mp4" controls preload="metadata"></video>
-          <div class="scmeta">
-            <b>Shockwave &middot; 75 tool calls</b>
-            <p class="why">An energy ring bursts through the title on a single
-              white flash frame and dissipates &mdash; keyed stock elements,
-              timed to the hit, over a lit backdrop.</p>
-          </div>
-          <img class="showsheet" src="assets/showcase/shockwave_sheet.png" alt="Shockwave contact sheet" loading="lazy">
-        </div>
-        <div class="showcard">
-          <video src="assets/showcase/magic_reveal.mp4" controls preload="metadata"></video>
-          <div class="scmeta">
-            <b>Magic reveal &middot; 92 tool calls</b>
-            <p class="why">A stream of golden sparks sweeps across the stage and
-              writes the glowing wordmark as it passes &mdash; the built-in
-              particle system driving a moving reveal.</p>
-          </div>
-          <img class="showsheet" src="assets/showcase/magic_reveal_sheet.png" alt="Magic reveal contact sheet" loading="lazy">
-        </div>
-      </div>
-      <p class="hint">Licence note: these renders use Video Copilot
-        <b>Evolution</b>, <b>Shockwave</b> and <b>MotionPulse</b> assets under
-        their standard licence, which allows their use in produced works. The
-        asset packs themselves are <b>not</b> included in this repository and
-        never will be &mdash; only our finished renders and contact sheets.</p>
-
-      <!-- THE REPORT: objective -> agent -> MCP -> execution.
-           The section above CLAIMS an AI built this over MCP. This is where that
-           claim is made checkable, and everything in it is read live from the
-           running instance rather than typed in by hand — because a number typed
-           into a page is exactly the kind of thing the rest of this app spends
-           its time refusing to trust. Empty on a fresh install, and hidden
-           rather than showing zeroes. -->
-      <section id="aboutReport" hidden>
-        <h2>Objective, agent, MCP, execution</h2>
-        <p>The chain this instance can actually account for, read from its own
-          ledger and project documents when you opened this page.</p>
-        <div id="aboutReportBands"></div>
-        <p class="hint" id="aboutReportNote"></p>
+      <section class="pcard" id="about-what" data-nav="What it is">
+        <h3>What it is</h3>
+        <p>A <b>local-first</b> studio for AI-made music and video. Songs, pictures,
+          clips, image editing, compositing and whole music videos, rendered on your
+          own graphics card.</p>
+        <p>A <b>safe haven</b> for people who make things with AI: here that is not a
+          confession, it is the whole point. Open source (Apache-2.0), ships no model
+          weights of its own, and shows every model&rsquo;s licence before anything is
+          downloaded (<a href="#" data-go="thanks">Thanks</a> has the full list).</p>
+        <p>An AI assistant can drive it too: every button is also an <b>MCP</b> tool.
+          See the <a href="#" data-go="mcp">Agent page</a>.</p>
       </section>
 
-      <!-- Same link as the rail button — one Ko-fi, two doors. -->
-      <div id="aboutKofi">
-        <h2>Keep it going</h2>
-        <p>AIPLAY Studio is free, open source, and made in spare hours. There is
-          no subscription to sell you and never will be &mdash; a local-first
-          tool that charged rent would be a contradiction. Nothing in it will
-          ever nag you; but if it earned a place in your day and you would like
-          to keep the work going, a coffee genuinely helps.</p>
+      <!-- OWNER: this section is Senzu's own voice. Edit freely, but it is his. -->
+      <section class="pcard" id="about-maker" data-nav="From the maker">
+        <h3>From the maker</h3>
+        <p>Honestly, AI PLAY started as me messing around late at night &mdash; a
+          little radio for AI music, back when there was already a big anti-AI
+          movement hating on everything we made. No business plan, no roadmap.
+          The first time I heard what AI could do, something clicked: wait,
+          <i>anyone</i> can make music now? We showcased creations on late-night
+          streams, built listening parties when nobody else would host them, and
+          somewhere along the way it became a community &mdash; a home.</p>
+        <p>This studio is the other half of that story. The platform is where we
+          listen together; the studio is where the work gets <i>made</i> &mdash;
+          songs, cover art, music videos, effects, all of it on your own
+          machine. And this part is open source on purpose: the tools for making
+          art should belong to the people making it. You can read every line of
+          what runs on your computer, keep it forever, and nobody can take it
+          away or put a meter on it. That is also why the app is honest about
+          provenance &mdash; we label what the AI did and celebrate what
+          <i>you</i> did, because we have nothing to hide and everything to be
+          proud of.</p>
+        <p>Don&rsquo;t let anyone tell you it&rsquo;s just &ldquo;AI slop.&rdquo;
+          We tell our stories, we cope, we write love songs, we iterate until
+          it&rsquo;s a masterpiece. Everything in here gets tested end to end
+          &mdash; the same AI that helps build the studio plays every button
+          before we ship &mdash; and there is more coming: a full DAW is on the
+          way, real instruments and all, the piece that makes this suite
+          complete. If this becomes a small home for people who make things with
+          AI, it has done what I hoped. You&rsquo;re what makes this real &mdash;
+          and this is only the start. Let&rsquo;s conquer the world together.</p>
+        <p><i>&mdash; Senzu (Chester)</i></p>
+      </section>
+
+      <section class="pcard" id="about-rights" data-nav="Your rights">
+        <!-- The headline used to promise "What you make is yours", which a
+             tester read as leave to sell a YuE2 song when that model's own
+             terms decide it. Studio's own part is the first half; the second
+             half is the rule that actually applies. -->
+        <h3>Studio takes no rights in what you make; each model&rsquo;s licence decides whether you can sell it</h3>
+        <p class="pcard-sub">The studio claims nothing over anything you make. Each model&rsquo;s own licence governs what it generates, and each one is listed here with its answer; every song carries the answer of the model that made it (the chip under its title).</p>
+        <div id="aboutRights" class="rightslist">Loading&hellip;</div>
+        <p class="hint">Live from the model catalogue<!-- web/app.js fills the
+          territory span from /api/models and leaves it hidden if that payload
+          never arrives. --><span id="aboutTerritoryClause" hidden>. H3 is licensed
+          only outside <span id="aboutTerritory"></span></span>.</p>
+        <details class="more"><summary>&ldquo;Non-commercial&rdquo; usually means the model, not your picture</summary>
+          <p>A non-commercial model is nearly always a rule about <b>the weights</b>: you
+            may not run them inside a paid service or build a product on them. FLUX and
+            Anima say in writing that you may use what you generate commercially.
+            NoobAI&rsquo;s terms reach the output itself, and Ideogram&nbsp;4 keeps its
+            agreement behind a login, so there the honest answer is <b>we do not know</b>.</p>
+          <p>So the studio shows each model&rsquo;s answer with the publisher&rsquo;s own
+            sentence one click away, records which model made what, and <b>never blocks
+            an export</b>.</p>
+        </details>
+      </section>
+
+      <section class="pcard" id="about-privacy" data-nav="Privacy">
+        <h3>Privacy</h3>
+        <p>Everything runs on your machine. No telemetry, no account, no analytics.
+          The app goes online in exactly three cases:</p>
+        <ul class="tight">
+          <li>you download a model,</li>
+          <li>you switch on the optional hosted engine,</li>
+          <li>the Community page reads aiplay.live&rsquo;s public feed (sends nothing about you).</li>
+        </ul>
+      </section>
+
+      <section class="pcard" id="about-needs" data-nav="What you need">
+        <h3>What you need</h3>
+        <div class="about-two">
+          <div><h4>To generate</h4>
+            <p>A modern graphics card. There is no strict minimum: smaller cards stream
+              the model and mostly mean more waiting. A three-minute song takes four to
+              five minutes on a strong card.</p></div>
+          <div><h4>To edit</h4>
+            <p>No big card needed. The image editor and the VFX compositor run on the
+              CPU. Only generation waits for the graphics card.</p></div>
+        </div>
+      </section>
+
+      <section class="pcard" id="about-pages" data-nav="Every page">
+        <h3>Every page, and its limits</h3>
+        <p class="pcard-sub">What each screen does, and the honest &ldquo;can&rsquo;t&rdquo; for each.</p>
+        <dl class="pagegrid">
+          <div><dt>&#9834; Music</dt>
+            <dd>Describe a song; a full track with vocals renders on your card. Takes, stems, FLAC / MP3 / Opus, automatic covers.</dd>
+            <dd class="cant">No piano roll: you steer with words, and takes vary.</dd></div>
+          <div><dt>&#9635; Pictures</dt>
+            <dd>Make pictures and edit them: layers, curves, brushes, selections, cutout, text, seven export formats.</dd>
+            <dd class="cant">RGB only, no print pipeline.</dd></div>
+          <div><dt>&#9655; Video</dt>
+            <dd>Short clips from a prompt or a picture, kept in a searchable library.</dd>
+            <dd class="cant">Each engine is its own download and licence. A clip is seconds of video and minutes of waiting.</dd></div>
+          <div><dt>&#9672; VFX</dt>
+            <dd>An After-Effects-class compositor: eleven kinds of layer, keyframes, 3D cameras, particles, tracking, masks, real video out.</dd>
+            <dd class="cant">CPU renders, about a second per 1080p frame with heavy effects. No roto brush.</dd></div>
+          <div><dt>&#9986; Studio</dt>
+            <dd>Clips on a timeline over a song, karaoke words and a visualiser, exported as a video.</dd>
+            <dd class="cant">Export is real time and lands as WebM; keep the tab open.</dd></div>
+          <div><dt>&#9673; Reactive</dt>
+            <dd>Pictures that cut and pulse on the song&rsquo;s bars and beats. No video model needed.</dd>
+            <dd class="cant">Moves the whole picture, not motion inside it.</dd></div>
+          <div><dt>&#9790; Overnight</dt>
+            <dd>Queue song ideas at bedtime: songs, covers, stems, clips. Survives a crash.</dd>
+            <dd class="cant">The computer has to stay on.</dd></div>
+          <div><dt>&#9678; Community</dt>
+            <dd>Live listening rooms, events and style packs from aiplay.live.</dd>
+            <dd class="cant">Offline it just says &ldquo;not reachable&rdquo;. Nothing needs it.</dd></div>
+          <div><dt>&#9636; Models</dt>
+            <dd>Every capability, its files, size and licence, shown before download.</dd>
+            <dd class="cant">Never downloads on its own; first use means a wait.</dd></div>
+          <div><dt>&#9881; Settings</dt>
+            <dd>Simple or every setting, formats, covers, video, Battery Safe, folders, hosted engine, custom workflows.</dd>
+            <dd class="cant">The hosted engine costs real money; that is why it has a cap.</dd></div>
+          <div><dt>&#9670; Agent</dt>
+            <dd>Connect an AI assistant over MCP. That page lists its own limits.</dd></div>
+          <div><dt>&#9829; Thanks</dt>
+            <dd>Credits and every licence, from the live catalogue.</dd>
+            <dd class="cant">A model file you add yourself brings its own licence.</dd></div>
+        </dl>
+      </section>
+
+      <section class="pcard" id="about-ideas" data-nav="Ideas">
+        <h3>Things people make with it</h3>
+        <dl class="pagegrid">
+          <div><dt>A song from one sentence</dt><dd>&ldquo;A slow country ballad about leaving the city&rdquo;, then Create. A few takes later, one is the song.</dd></div>
+          <div><dt>A lyric video</dt><dd>Make the song, open Studio, switch on the karaoke overlay, Export.</dd></div>
+          <div><dt>A music video</dt><dd>Pictures for the look, clips seeded from them, cuts placed on the bar lines.</dd></div>
+          <div><dt>Finished cover art</dt><dd>Generate, then curves, cutout and a title in the editor.</dd></div>
+          <div><dt>A classic VFX shot</dt><dd>The compositor follows real After Effects tutorials step by step.</dd></div>
+          <div><dt>All of it, hands off</dt><dd>Connect an assistant on the <a href="#" data-go="mcp">Agent page</a> and ask for the video.</dd></div>
+        </dl>
+      </section>
+
+      <section class="pcard" id="about-showcase" data-nav="Showcase">
+        <h3>Made entirely by an AI, through MCP</h3>
+        <p class="pcard-sub">Recreations of Video Copilot tutorials, built in the VFX tab by an assistant. No human touched a keyframe.</p>
+        <div class="showgrid">
+          <div class="showcard">
+            <video src="assets/showcase/evolution.mp4" controls preload="metadata"></video>
+            <div class="scmeta"><b>Evolution title &middot; 42 tool calls</b></div>
+            <img class="showsheet" src="assets/showcase/evolution_sheet.png" alt="Evolution title contact sheet" loading="lazy">
+          </div>
+          <div class="showcard">
+            <video src="assets/showcase/shockwave.mp4" controls preload="metadata"></video>
+            <div class="scmeta"><b>Shockwave &middot; 75 tool calls</b></div>
+            <img class="showsheet" src="assets/showcase/shockwave_sheet.png" alt="Shockwave contact sheet" loading="lazy">
+          </div>
+          <div class="showcard">
+            <video src="assets/showcase/magic_reveal.mp4" controls preload="metadata"></video>
+            <div class="scmeta"><b>Magic reveal &middot; 92 tool calls</b></div>
+            <img class="showsheet" src="assets/showcase/magic_reveal_sheet.png" alt="Magic reveal contact sheet" loading="lazy">
+          </div>
+        </div>
+        <p class="hint">Uses Video Copilot <b>Evolution</b>, <b>Shockwave</b> and <b>MotionPulse</b> assets under their standard licence. The packs are not in this repository, only our renders.</p>
+
+        <!-- THE REPORT: objective -> agent -> MCP -> execution, read live from
+             this instance's ledger. Hidden rather than showing zeroes. -->
+        <div id="aboutReport" hidden>
+          <h4>Objective, agent, MCP, execution</h4>
+          <p class="hint">Read from this instance&rsquo;s own ledger when you opened this page.</p>
+          <div id="aboutReportBands"></div>
+          <p class="hint" id="aboutReportNote"></p>
+        </div>
+      </section>
+
+      <section class="pcard" id="about-start" data-nav="Getting started">
+        <h3>Getting started</h3>
+        <ol class="mcpsteps">
+          <li><b>Launch.</b> Run &ldquo;Start AIPLAY Studio&rdquo;. The corner says when the engine is up.</li>
+          <li><b>Get the music model</b> on <b>Models</b>. It is the only required download.</li>
+          <li><b>Make a song</b> on <b>Music</b>: describe it, press Create.</li>
+          <li><b>Make a video</b> in <b>Studio</b> or <b>VFX</b>.</li>
+          <li><b>Or let an AI drive</b> from the <a href="#" data-go="mcp">Agent page</a>.</li>
+        </ol>
+      </section>
+
+      <!-- Same link as the rail button: one Ko-fi, two doors. -->
+      <section class="pcard" id="aboutKofi" data-nav="Support">
+        <h3>Keep it going</h3>
+        <p>Free, open source, and made in spare hours. No subscription, ever. If it earned a place in your day, a coffee genuinely helps.</p>
         <a class="kofi" href="https://ko-fi.com/therealsenzu" target="_blank" rel="noopener">&#9829; Support on Ko-fi</a>
-      </div>
+      </section>
+    </div>
 
-      <h2>Getting started</h2>
-      <ol class="mcpsteps">
-        <li><b>Install and launch.</b> Follow <code>INSTALL.md</code>, then run
-          &ldquo;Start AIPLAY Studio&rdquo;. The engine starts by itself; the
-          bottom-left corner says when it is running.</li>
-        <li><b>Get the music model.</b> Open <b>Models</b> and fetch the music
-          engine &mdash; the only required download. The licence is shown
-          before anything is fetched.</li>
-        <li><b>Make your first song.</b> On <b>Music</b>, describe a song in a
-          sentence or two and press Create. Expect four to five minutes for a
-          three-minute track; a cover arrives on its own.</li>
-        <li><b>Make your first video.</b> Open <b>Studio</b>, drop the song in,
-          switch on the karaoke overlay or the visualiser, press Export. Or
-          open <b>VFX</b>, make a comp, add a text layer and a glow, and render
-          your first real composite.</li>
-        <li><b>Or let an AI drive.</b> The <a href="#" data-go="mcp">Agent
-          page</a> has a snippet to paste into your assistant&rsquo;s MCP
-          configuration. After that, &ldquo;make me a music video&rdquo; is a
-          sentence, not a project.</li>
-      </ol>
+    <!-- COMFY API (launcher: "Use Comfy API"). Hosted models through Comfy
+         Router on the user's own key and credits; web/router.js draws it and
+         server/router/ runs it. Only reachable in that mode. -->
+    <div id="router" hidden class="page page-wide">
+      <header class="page-head">
+        <h2>Comfy API</h2>
+        <p>Hosted image, video, audio, 3D and text models, run with your Comfy API key and credits.</p>
+        <!-- Said plainly, because Use Comfy API hides Music video: a music
+             video is made in Full Studio's Music video screen, and without a strong card a
+             friend renders its scenes (Collab), before any paid route. The
+             sentence is the server's (GET /api/cloud comfy.note, worded for the
+             mode this page is open in); web/router.js paints it here. -->
+        <p class="hint" id="rtNoMv"><b>Music videos are made in Full Studio's Music video screen.</b> Without a strong
+          graphics card, ask a friend on Collab to render the scenes (free).</p>
+      </header>
+      <nav class="pnav" aria-label="Comfy API sections"></nav>
+
+      <section class="pcard" id="router-key" data-nav="Key">
+        <h3>Key</h3>
+        <p class="pcard-sub" id="rtKeySub">Kept on this computer and sent only to Comfy.</p>
+        <div class="rtkey">
+          <span class="chip busy" id="rtKeyChip">Checking…</span>
+          <input class="line" id="rtKey" type="password" autocomplete="off" spellcheck="false" placeholder="comfyui-…" aria-label="Comfy API key" hidden>
+          <button class="btn2 go" id="rtKeySave" type="button" hidden>Save key</button>
+          <button class="btn2" id="rtKeyChange" type="button" hidden>Change</button>
+          <button class="btn2 danger" id="rtKeyForget" type="button" hidden>Forget</button>
+        </div>
+        <p class="hint" id="rtKeySaid" hidden></p>
+        <p class="hint" id="rtKeyHint">Get a key and credits at <a href="https://platform.comfy.org/profile/api-keys" target="_blank" rel="noopener">platform.comfy.org</a>.</p>
+      </section>
+
+      <section class="pcard" id="router-make" data-nav="Make">
+        <h3>Make</h3>
+        <div class="rtkinds" id="rtKinds" role="group" aria-label="Kind of model"></div>
+        <div class="params">
+          <label for="rtModel">model</label>
+          <span class="pv"><select id="rtModel" class="sel2"></select></span>
+        </div>
+        <p class="hint" id="rtModelNote"></p>
+        <div class="rtmodes" id="rtModes" role="group" aria-label="Form"></div>
+        <form id="rtForm" class="rtform" autocomplete="off"></form>
+        <textarea id="rtJson" rows="10" spellcheck="false" aria-label="Request body (JSON)" hidden></textarea>
+        <div class="ctawrap">
+          <span class="ctanote" id="rtRunNote"></span>
+          <div class="cta"><button class="btn" id="rtRun" type="button" disabled>Run</button></div>
+        </div>
+      </section>
+
+      <section class="pcard" id="router-runs" data-nav="Results">
+        <h3>Results</h3>
+        <p class="pcard-sub">Saved to <code id="rtOut"></code> the moment they arrive.</p>
+        <div id="rtRuns" class="rtruns"></div>
+      </section>
     </div>
 
     <div id="thanks" class="thanks" hidden>
@@ -3404,7 +3624,10 @@
         displayed by anything built on it. That is a condition of use rather than a
         courtesy, so it stays on the main window instead of moving here &mdash; a
         credits page is exactly the &ldquo;About box&rdquo; the requirement exists
-        to avoid. The line in the bottom-left corner is that attribution.</p>
+        to avoid. The line above the mark, top left, is that attribution; press it
+        and it says so. It is also on the Models screen against every capability
+        that uses it, with the clause quoted in full before anything is
+        downloaded.</p>
 
       <h2>The software</h2>
       <dl class="thankslist">
@@ -4360,7 +4583,8 @@
     </div>
 
     <!-- ── Chat ───────────────────────────────────────────────────────────
-         The first screen in the rail and the boot default. Filled by
+         The first entry under More tools in the rail (UI_PLAN B1); the boot
+         default is Home. Filled by
          web/chat.js from /api/chat, which streams the loop's PHASES rather
          than tokens — ComfyUI's TextGenerate node returns its whole string
          when the graph finishes, so there is no partial decode to forward and
@@ -4440,69 +4664,80 @@
          The number appears in exactly one place, under the Reveal control, and
          only after that control has written a dated line in the ledger saying
          it was asked for. -->
-    <div id="engine" hidden>
-      <div class="stagehead"><h2>Engine</h2><span class="hint" id="engHead"></span></div>
+    <!-- MUSIC LAB: Senzu's music workflows (auditions, themes, references,
+         saved stages, listening lab) as a page of their own. Each tab is
+         mounted on first open by web/music-workflows.js; "load into Music"
+         sends the request to the Create form and switches there. -->
+    <div id="musicWorkflows" hidden class="page page-wide">
+      <header class="page-head"><h2 id="musicWorkflowsTitle">Music Lab</h2>
+        <p>Build on songs you already have: compare takes, reuse themes, start from a reference, replay stages, test a LoRA.</p></header>
+    <div class="music-workflows-tabs" role="tablist" aria-label="Music workflows">
+      <button id="musicAuditionsTab" role="tab" aria-controls="musicAuditions" aria-selected="true" type="button"><b>Chorus alternatives</b><span>Compare takes in context</span></button>
+      <button id="musicKitsTab" role="tab" aria-controls="musicKits" aria-selected="false" tabindex="-1" type="button"><b>Episode themes</b><span>Reuse a score and create cues</span></button>
+      <button id="musicReferencesTab" role="tab" aria-controls="musicReferences" aria-selected="false" tabindex="-1" type="button"><b>Reference music</b><span>Audio or footage → reviewed brief</span></button>
+      <button id="musicArtifactsTab" role="tab" aria-controls="musicArtifacts" aria-selected="false" tabindex="-1" type="button"><b>Saved stages</b><span>Replay a plan, tokens or sound</span></button>
+      <button id="musicListeningLabTab" role="tab" aria-controls="musicListeningLab" aria-selected="false" tabindex="-1" type="button"><b>Listening lab</b><span>Compare base model and LoRA</span></button>
+    </div>
+    <section id="musicAuditions" role="tabpanel" aria-labelledby="musicAuditionsTab"></section>
+    <section id="musicKits" role="tabpanel" aria-labelledby="musicKitsTab" hidden></section>
+    <section id="musicReferences" role="tabpanel" aria-labelledby="musicReferencesTab" hidden></section>
+    <section id="musicArtifacts" role="tabpanel" aria-labelledby="musicArtifactsTab" hidden></section>
+    <section id="musicListeningLab" role="tabpanel" aria-labelledby="musicListeningLabTab" hidden></section>
+    </div>
+
+    <div id="engine" hidden class="page">
+      <header class="page-head"><h2>Engine <span class="chip" id="engHead">checking…</span></h2>
+        <p>The ComfyUI this app runs, everything it was asked to render, and the tools to run your own graphs.</p></header>
+      <nav class="pnav" aria-label="Engine sections"></nav>
 
       <div id="engPinned" class="eng-warn" hidden></div>
 
-      <section class="eng-card">
-        <div class="eng-cardhead"><b>This engine</b>
+      <section class="pcard" id="eng-status" data-nav="Status">
+        <h3>Status
           <span class="eng-actions">
             <button class="btn2" type="button" id="engRefresh">Refresh</button>
-            <button class="btn2" type="button" id="engWho">Which ComfyUI is this?</button>
-            <button class="btn2" type="button" id="engInterrupt">Interrupt</button>
-            <button class="btn2" type="button" id="engClear">Clear queue</button>
-          </span>
-        </div>
+            <button class="btn2" type="button" id="engWho">Which ComfyUI?</button>
+            <button class="btn2 danger" type="button" id="engInterrupt">Interrupt</button>
+            <button class="btn2 danger" type="button" id="engClear">Clear queue</button>
+          </span></h3>
         <div id="engStatus" class="eng-grid"></div>
         <div id="engIdentity" class="eng-ident" hidden></div>
+        <hr class="sub-rule">
         <div class="eng-row">
           <label class="eng-check"><input type="checkbox" id="engHash"> Record the SHA-256 of every weight file</label>
-          <span class="hint">The only thing that proves <em>which</em> weights rendered a clip.
-            About ten seconds per file the first time each one is seen, then nothing.
-            Off by default. References and outputs are hashed either way.</span>
+          <span class="hint">Proves which weights made a clip. About 10 s per new file, once.</span>
         </div>
         <div class="eng-row">
           <button class="btn2" type="button" id="engReveal">Reveal the port…</button>
-          <span class="hint" id="engRevealNote">The app picks an unpublished loopback port at every
-            start, so nothing on this machine can find the engine by guessing. Revealing it hands
-            that back — and writes a dated line in the ledger saying so, which is the whole
-            difference between an invisible bypass and a visible one.</span>
+          <span class="hint" id="engRevealNote">The port is hidden so nothing can render around this ledger. Revealing it is logged.</span>
         </div>
       </section>
 
-      <section class="eng-card">
-        <div class="eng-cardhead"><b>What this engine has been asked to run</b>
-          <span class="eng-actions">
-            <label class="eng-f">actor <input id="engFActor" class="in2" placeholder="user, agent:…, script:…"></label>
-            <label class="eng-f">via <input id="engFVia" class="in2" placeholder="api, art.clip…"></label>
-            <label class="eng-f">project <input id="engFProject" class="in2" placeholder="any"></label>
-            <label class="eng-f">status <select id="engFStatus" class="sel2">
-              <option value="">any</option><option>completed</option><option>error</option>
-              <option>rejected</option><option>timeout</option><option>vanished</option>
-              <option>running</option></select></label>
-            <label class="eng-f">since <input id="engFSince" class="in2" placeholder="2026-09-01"></label>
-            <label class="eng-f">rows <input id="engFLimit" class="in2 num" type="number" min="1" max="500" value="50"></label>
-          </span>
+      <section class="pcard" id="eng-activity" data-nav="Activity">
+        <h3>Activity</h3>
+        <p class="pcard-sub">Every run this engine was asked to do. Click a row for the details.</p>
+        <div class="eng-filters">
+          <label class="eng-f">actor <input id="engFActor" class="in2" placeholder="user, agent:…"></label>
+          <label class="eng-f">via <input id="engFVia" class="in2" placeholder="api, art.clip…"></label>
+          <label class="eng-f">project <input id="engFProject" class="in2" placeholder="any"></label>
+          <label class="eng-f">status <select id="engFStatus" class="sel2">
+            <option value="">any</option><option>completed</option><option>error</option>
+            <option>rejected</option><option>timeout</option><option>vanished</option>
+            <option>running</option></select></label>
+          <label class="eng-f">since <input id="engFSince" class="in2" placeholder="2026-09-01"></label>
+          <label class="eng-f">rows <input id="engFLimit" class="in2 num" type="number" min="1" max="500" value="50"></label>
         </div>
         <div id="engRuns" class="eng-runs"></div>
         <div id="engDetail" class="eng-detail" hidden></div>
       </section>
 
-      <details class="eng-card">
-        <summary><b>Run a graph</b> — the same door a script or an agent uses</summary>
-        <p class="hint">⚠ <b>API format</b>, not ComfyUI's ordinary Save. "Save (API Format)"
-          writes the file the engine can execute; the ordinary Save writes an editor document
-          with links and positions, which looks equally like JSON and fails very differently.
-          <b>Dry run</b> spends nothing and returns the record that would be written — the model
-          files, the steps, the size and the seed — which is the cheapest way to find out you were
-          about to spend half an hour on the wrong checkpoint.</p>
+      <section class="pcard" id="eng-run" data-nav="Run a graph">
+        <h3>Run a graph</h3>
+        <p class="pcard-sub">Paste an <b>API-format</b> graph (ComfyUI's "Save (API Format)", not the ordinary Save). Dry run shows what it would use without spending anything.</p>
         <div class="eng-row">
           <label class="eng-f eng-wide">start from a stored graph
             <input id="engGraphHash" class="in2" placeholder="sha256:… from any run above"></label>
           <button class="btn2" type="button" id="engLoadGraph">Load it</button>
-          <span class="hint">Graphs are content-addressed, so a hundred arms of one sweep share
-            one stored file. Loading one here is how you run an earlier render again, exactly.</span>
         </div>
         <textarea id="engGraph" class="eng-ta" rows="8" placeholder="the API-format graph, as JSON"></textarea>
         <div class="eng-row">
@@ -4518,300 +4753,425 @@
         <div class="eng-row">
           <label class="eng-check"><input type="checkbox" id="engWait" checked> Wait for it to finish</label>
           <label class="eng-check"><input type="checkbox" id="engAdopt" checked> File the outputs into the library</label>
-          <button class="btn2" type="button" id="engDry">Dry run</button>
-          <button class="btn" type="button" id="engRun">Run</button>
+          <span class="eng-push">
+            <button class="btn2" type="button" id="engDry">Dry run</button>
+            <button class="btn2 go" type="button" id="engRun">Run</button>
+          </span>
         </div>
         <div id="engRunOut" class="eng-out" hidden></div>
-      </details>
+      </section>
 
-      <details class="eng-card">
-        <summary><b>Files with no record</b> — everything made before this door existed</summary>
-        <p class="hint">These are in the output folder and this ledger has never heard of them.
-          Adopting one appends an honest <code>edit</code> event whose origin is
-          <code>unrecorded</code> — it never claims to know what made the file, because it does
-          not. Preview first; nothing is written until you ask.</p>
+      <section class="pcard" id="eng-unrecorded" data-nav="Unrecorded files">
+        <h3>Files with no record</h3>
+        <p class="pcard-sub">Outputs made before this ledger existed. Adopting one records it as "unrecorded origin". Preview first; nothing is written until you ask.</p>
         <div class="eng-row">
           <label class="eng-f">folder <input id="engUPrefix" class="in2" placeholder="all of them"></label>
           <label class="eng-f">rows <input id="engULimit" class="in2 num" type="number" min="1" max="2000" value="200"></label>
-          <button class="btn2" type="button" id="engUScan">Scan</button>
           <label class="eng-check"><input type="checkbox" id="engUAll"> every file the scan can see</label>
-          <button class="btn2" type="button" id="engUPreview">Preview the events</button>
-          <button class="btn2" type="button" id="engUAdopt">Adopt</button>
+          <span class="eng-push">
+            <button class="btn2" type="button" id="engUScan">Scan</button>
+            <button class="btn2" type="button" id="engUPreview">Preview</button>
+            <button class="btn2 go" type="button" id="engUAdopt">Adopt</button>
+          </span>
         </div>
         <div id="engUnrec" class="eng-unrec"></div>
         <div id="engUOut" class="eng-out" hidden></div>
-      </details>
+      </section>
 
-      <details class="eng-card">
-        <summary><b>What nodes this install has</b></summary>
-        <p class="hint">Read from the engine itself rather than from a list in the source, so a
-          misspelled class fails here in a second instead of thirty minutes into a render.</p>
+      <section class="pcard" id="eng-nodes" data-nav="Nodes">
+        <h3>Installed nodes</h3>
+        <p class="pcard-sub">Look up a node class in this install before a render finds out it is missing.</p>
         <div class="eng-row">
-          <label class="eng-f">node <input id="engNode" class="in2" placeholder="KSampler — blank for everything"></label>
+          <label class="eng-f eng-wide">node <input id="engNode" class="in2" placeholder="KSampler (blank for everything)"></label>
           <button class="btn2" type="button" id="engNodes">Look it up</button>
         </div>
         <div id="engNodeOut" class="eng-out" hidden></div>
-      </details>
+      </section>
     </div>
 
-    <div id="settings" hidden>
-      <div class="stagehead"><h2>Settings</h2></div>
+    <div id="settings" hidden class="page">
+      <header class="page-head"><h2>Settings</h2><p>Set once, then forget. Every change applies straight away unless it says otherwise.</p></header>
+      <nav class="pnav" aria-label="Settings sections"></nav>
 
-      <section class="apibox" id="enhanceBox">
-        <div class="apihead"><b>Enhance</b><em class="sp meta" id="enhanceSaved"></em></div>
-        <p class="hint">The ✨ button on the Styles, Lyrics and Simple boxes rewrites what you
-          wrote into a fuller version of the same idea. It asks the model chosen here: a
-          connected API (add keys on the Agent page) or a local model run through ComfyUI.
-          A local model needs the graphics card, so it waits while a render is using it;
-          an API model never touches the card. With nothing chosen it uses Simple mode's
-          model, then Chat's.</p>
+      <!-- HOW THE MAKE SCREENS OPEN (UI_PLAN E1). The saved level, changed only
+           here, at the foot of the rail and through studio_welcome; the
+           per-screen Simple / Advanced switches are for one visit. The line
+           under it says who chose (web/level.js, from the server). -->
+      <section class="pcard" id="set-level" data-nav="Screens">
+        <h3>Screens</h3>
+        <p class="pcard-sub">How Music, Pictures and Video open.</p>
         <div class="params">
-          <label for="enhanceModel">enhance with</label>
-          <span class="pv"><select id="enhanceModel" class="sel2"><option value="">checking…</option></select></span>
+          <label for="levelAll">make screens</label>
+          <span class="pv"><label class="tog"><input type="checkbox" id="levelAll"> Show every setting</label></span>
+        </div>
+        <p class="hint" id="levelNote"></p>
+      </section>
+
+      <!-- WHAT STUDIO PICKED, AND WHAT YOU CHOSE (UI_PLAN A1). One line per
+           default from studio_status `defaults` (server/fit.js defaultFor),
+           filled by web/receipt.js; Change goes to the control that owns it. -->
+      <section class="pcard" id="set-defaults" data-nav="Picked for this PC">
+        <h3>Picked for this PC</h3>
+        <p class="pcard-sub">What runs when you have not chosen, worked out from what is on this PC. A model you pick is kept until you change it or press Let Studio pick.</p>
+        <ul class="deflist" id="defaultsList"></ul>
+      </section>
+
+      <!-- extractSettings() in app.js moves graphics memory, precision,
+           schedule and visualiser into #settingsParams, and their notes after
+           #setNote. Keep both ids inside this card. -->
+      <section class="pcard" id="set-songs" data-nav="Songs">
+        <h3>Songs</h3>
+        <p class="pcard-sub">File format, extras made after each song, and how the engine runs.</p>
+        <div class="params" id="settingsParams">
+          <label for="qFormat">output format</label>
+          <span class="pv"><select id="qFormat" class="sel2">
+            <option value="flac">FLAC (lossless, ~30 MB)</option>
+            <option value="mp3">MP3 V0 (~4 MB)</option>
+            <option value="opus">Opus 192k (~4 MB, best per byte)</option>
+          </select></span>
+
+          <!-- Off by default: separating every take is wasteful when most are
+               discarded, so starred/liked separate only the keepers. -->
+          <label for="qStems">stem separation</label>
+          <span class="pv"><select id="qStems" class="sel2">
+            <option value="off">Off</option>
+            <option value="all">Every song</option>
+            <option value="starred">When I star a track</option>
+            <option value="liked">When I like a track</option>
+          </select></span>
+
+          <label for="qLyrics">timed lyrics</label>
+          <span class="pv"><select id="qLyrics" class="sel2">
+            <option value="off">Off</option>
+            <option value="all">Every song with words</option>
+            <option value="starred">When I star a track</option>
+            <option value="liked">When I like a track</option>
+          </select></span>
+
+          <!-- The python timed lyrics run in. server/lrc.js names this label in
+               its messages (SETTING_WORDS) and lrc_test.js pins the pair. It
+               applies at once: the old way, AIPLAY_WHISPER_PYTHON, reached the
+               server only after the launcher itself was restarted. -->
+          <label for="qWhisperPy">timed lyrics python</label>
+          <span class="pv"><input class="line" id="qWhisperPy" spellcheck="false" data-setup-python="lyrics"
+            placeholder="…\aiplay-whisper\venv\Scripts\python.exe"> <button class="btn2" type="button" id="btnWhisperPy">Use</button>
+            <!-- No python yet? One press builds a private one (web/setup-feature.js, POST /api/setup).
+                 The choice beside it is the PyTorch build that setup installs; its
+                 words and "Auto"'s reason come from the server's status. -->
+            <button class="btn2" type="button" id="btnSetupLyrics" data-setup-feature="lyrics">Set up timed lyrics</button>
+            <select id="qSetupLyricsTorch" data-setup-torch="lyrics" aria-label="PyTorch build for Set up timed lyrics"
+              title="PyTorch build for Set up timed lyrics"><option value="auto">Auto</option></select></span>
+
+          <!-- The python stem separation (demucs) runs in, the same shape as the
+               timed-lyrics row above: a field, Use (POST /api/stems
+               {action:"python"}, which checks demucs and torch and applies at
+               once), and one press to build a private one (setup id "stems",
+               web/setup-feature.js). Stem separation's refusals name this label
+               ("stem separation python"), so the words are the server's too.
+               The placeholder is the default the server falls back to. -->
+          <label for="qStemsPy">stem separation python</label>
+          <span class="pv"><input class="line" id="qStemsPy" spellcheck="false" data-setup-python="stems"
+            placeholder="…\Python310\python.exe"> <button class="btn2" type="button" id="btnStemsPy">Use</button>
+            <button class="btn2" type="button" id="btnSetupStems" data-setup-feature="stems">Set up stem separation</button>
+            <select id="qSetupStemsTorch" data-setup-torch="stems" aria-label="PyTorch build for Set up stem separation"
+              title="PyTorch build for Set up stem separation"><option value="auto">Auto</option></select></span>
+        </div>
+        <p class="hint" id="fmtNote"></p>
+        <p class="hint" id="lyricsNote">Timed lyrics are two .lrc files per song (lines and words) for visualisers. Word timing is approximate on sung vocals.</p>
+        <p class="hint" id="whisperPyNote">Timed lyrics need faster-whisper and stable-ts in the python above. Leave it empty for the default. Use checks both.</p>
+        <p class="hint" id="setupLyricsNote" data-setup-note="lyrics"></p>
+        <p class="hint" id="stemsPyNote">Stem separation (and "its separated voice" when reading a song's tune) needs demucs and PyTorch in the python above. Leave it empty for the default. Use checks both.</p>
+        <p class="hint" id="setupStemsNote" data-setup-note="stems"></p>
+        <p class="hint" id="setNote"></p>
+      </section>
+
+      <section class="pcard" id="set-covers" data-nav="Cover art">
+        <h3>Cover art <em class="sp" id="artSaved"></em></h3>
+        <p class="pcard-sub">Every finished song gets a cover. The style line below is the first half of each cover prompt.</p>
+        <div id="artBox">
+          <div class="params">
+            <!-- AUTOMATIC covers only. Off once refused every "cover" job, which
+                 is also how a Pictures-screen picture is queued (server/art.js
+                 `asked`), so the label says the Pictures screen still works. -->
+            <label for="qArt">automatic covers</label>
+            <span class="pv"><select id="qArt" class="sel2">
+              <option value="1">On, when the card is idle</option>
+              <option value="0">Off (the Pictures screen still works)</option>
+            </select></span>
+
+            <label for="artEngine">covers engine</label>
+            <!-- Filled from #imgEngine by loadArtPrefs (app.js), not typed here:
+                 a second hand-kept list lost qwen-image-2.1 and showed blank. -->
+            <span class="pv"><select id="artEngine" class="sel2"></select></span>
+            <label for="artCkpt" id="artCkptL" hidden>model file</label>
+            <span class="pv" id="artCkptW" hidden><select id="artCkpt" class="sel2"></select></span>
+            <label for="artQuality" id="artQualityL" hidden>preset</label>
+            <span class="pv" id="artQualityW" hidden><select id="artQuality" class="sel2 sm">
+              <option value="default">Default · 20 steps</option>
+              <option value="quality">Quality · 48 steps</option>
+            </select></span>
+          </div>
+          <label class="lbl" for="artStyle">style line</label>
+          <textarea id="artStyle" rows="3" spellcheck="false"></textarea>
+          <div class="cta">
+            <button class="edtool" type="button" id="artSave">Apply</button>
+            <button class="edtool" type="button" id="artReset" title="Back to the shipped style">Reset to default</button>
+          </div>
+          <details class="more"><summary>How cover prompts are built</summary>
+            <p>Each prompt is the style line, then <code>, evoking &lt;subject&gt;</code>. The subject
+              comes from the song's caption, or its title, or a neutral object for untitled tracks.
+              A change applies to the next cover. The Pictures screen keeps its own engine choice.</p>
+          </details>
+        </div>
+        <hr class="sub-rule">
+        <h4>Existing library</h4>
+        <div class="cta">
+          <button class="btn2" type="button" id="btnBackfillArt">Draw any missing covers</button>
+          <button class="btn2" type="button" id="btnEmbedArt">Put covers inside the files</button>
+        </div>
+        <p class="hint" id="artNote"></p>
+      </section>
+
+      <section class="pcard" id="set-video" data-nav="Video">
+        <h3>Video clips</h3>
+        <p class="pcard-sub">Short music-video clips for your songs. The Video screen works either way.</p>
+        <!-- Two controls: whether video is on at all, and when it runs by
+             itself. The second is disabled until the first says yes. -->
+        <div class="params">
+          <label for="qVideo">video clips</label>
+          <span class="pv"><select id="qVideo" class="sel2">
+            <option value="0">Off</option>
+            <option value="1">On</option>
+          </select></span>
+
+          <label for="qVideoEngine">video engine</label>
+          <span class="pv"><select id="qVideoEngine" class="sel2" disabled></select></span>
+
+          <label for="qVideoWhen">make clips</label>
+          <span class="pv"><select id="qVideoWhen" class="sel2" disabled>
+            <option value="off">Only when I ask</option>
+            <option value="all">Every song</option>
+            <option value="starred">When I star a track</option>
+            <option value="liked">When I like a track</option>
+          </select></span>
         </div>
       </section>
 
-      <section class="apibox" id="artBox">
-        <div class="apihead"><b>Cover art</b><em class="sp meta" id="artSaved"></em></div>
-        <p class="hint">Every finished song gets a cover automatically. The prompt is
-          built from two halves: the <b>style line</b> below, then
-          <code>, evoking &lt;subject&gt;</code> — where the subject comes from the
-          song's caption (musical notation stripped out), or its title, or a rotating
-          pool of neutral objects for untitled tracks. Edit the style to restyle the
-          whole library's future covers; the per-song subject stays automatic.</p>
-        <div class="params">
-          <label for="artEngine">covers engine</label>
-          <span class="pv"><select id="artEngine" class="sel2">
-            <option value="flux2">FLUX.2 klein — the default, Apache-2.0</option>
-            <option value="zimage">Z-Image Turbo — 8 steps, Apache-2.0</option>
-            <option value="zimage-base">Z-Image base — 25 steps, Apache-2.0</option>
-            <option value="ideogram4">Ideogram 4 — non-commercial licence</option>
-            <option value="checkpoint">Your own model file</option>
-          </select></span>
-          <label for="artCkpt" id="artCkptL" hidden>model file</label>
-          <span class="pv" id="artCkptW" hidden><select id="artCkpt" class="sel2"></select></span>
-          <label for="artQuality" id="artQualityL" hidden>preset</label>
-          <span class="pv" id="artQualityW" hidden><select id="artQuality" class="sel2 sm">
-            <option value="default">Default · 20 steps</option>
-            <option value="quality">Quality · 48 steps</option>
-          </select></span>
+      <section class="pcard" id="set-enhance" data-nav="Enhance">
+        <h3>Enhance <em class="sp" id="enhanceSaved"></em></h3>
+        <p class="pcard-sub">The ✨ button rewrites your styles and lyrics into a fuller version of the same idea.</p>
+        <div id="enhanceBox">
+          <div class="params">
+            <label for="enhanceModel">enhance with</label>
+            <span class="pv"><select id="enhanceModel" class="sel2"><option value="">checking…</option></select></span>
+          </div>
+          <details class="more"><summary>Local or API?</summary>
+            <p>An API model (keys on the Agent page) never touches the graphics card. A local model
+              runs through ComfyUI and waits while a render is using the card. With nothing chosen,
+              Enhance uses Simple mode's model, then Chat's.</p>
+          </details>
         </div>
-        <label class="lbl" for="artStyle">style line (the first half of every cover prompt)</label>
-        <textarea id="artStyle" rows="3" spellcheck="false"></textarea>
-        <div class="framepick">
-          <button class="edtool" type="button" id="artSave">Apply</button>
-          <button class="edtool" type="button" id="artReset" title="Back to the shipped style">Reset to default</button>
-        </div>
-        <p class="hint">Applies to the next cover rendered — no restart. The Images
-          screen keeps its own per-picture engine choice.</p>
       </section>
 
-      <!-- Your own ComfyUI graphs. Studio's built-ins are the tuned ones, so
-           this sits below API mode and stays quiet unless there is something in
-           the folder. -->
-      <section class="apibox" id="wfBox">
-        <div class="apihead"><b>Custom ComfyUI workflows</b>
-          <em class="sp meta" id="wfCount"></em></div>
-        <p class="hint">
-          Drop <b>API-format</b> graphs into <code id="wfDir"></code> and pick one
-          here. Studio submits your graph unchanged apart from filling in
-          placeholders — it does not try to understand what your nodes do.
-        </p>
-        <div class="params" id="wfPicks"></div>
-        <div id="wfList"></div>
-        <details class="wftokens">
-          <summary>Placeholders you can use</summary>
-          <div id="wfTokens"></div>
+      <!-- Battery Safe. Wired by web/battery.js; the logic is server/power.js. -->
+      <section class="pcard" id="set-power" data-nav="Battery Safe">
+        <h3>Battery Safe</h3>
+        <p class="pcard-sub">If the power goes out mid-generation (laptop unplugged, UPS took over), a countdown starts and the work stops cleanly before the battery dies.</p>
+        <div class="params">
+          <label for="qBatSafe">stop on battery</label>
+          <span class="pv"><select id="qBatSafe" class="sel2">
+            <option value="1">On (recommended)</option>
+            <option value="0">Off</option>
+          </select></span>
+
+          <label for="qBatGrace">stop after</label>
+          <span class="pv"><select id="qBatGrace" class="sel2">
+            <option value="1">1 minute on battery</option>
+            <option value="2">2 minutes on battery</option>
+            <option value="5">5 minutes on battery</option>
+            <option value="10">10 minutes on battery</option>
+            <option value="15">15 minutes on battery</option>
+            <option value="30">30 minutes on battery</option>
+          </select></span>
+        </div>
+        <p class="hint" id="batNote">You can keep generating on battery from the warning. That choice lasts until the power comes back.</p>
+      </section>
+
+      <!-- Provenance (SPEC D5). Two switches and deliberately not a third: the
+           small AI marker is the tool's legal duty and has no switch. -->
+      <section class="pcard" id="set-privacy" data-nav="Provenance">
+        <h3>Provenance</h3>
+        <p class="pcard-sub">What is shown on screen, and what travels inside exported files.</p>
+        <div class="params">
+          <label for="qProvShow">provenance badges</label>
+          <span class="pv"><select id="qProvShow" class="sel2">
+            <option value="1">Show</option>
+            <option value="0">Hide</option>
+          </select></span>
+
+          <label for="qProvEmbed">detailed record in exports</label>
+          <span class="pv"><select id="qProvEmbed" class="sel2">
+            <option value="1">On (travels with the file)</option>
+            <option value="0">Off (stays on this machine)</option>
+          </select></span>
+        </div>
+        <details class="more"><summary>Why the small AI marker has no switch</summary>
+          <p>Exports always carry a small machine-readable marker on AI-generated parts. The model
+            licences and, since 2 August 2026, the EU AI Act (Article&nbsp;50) require the tool to
+            do this, so you never have to. The switch above controls the <b>detailed</b> record:
+            prompts, seeds, lyrics and edit history. That record is yours. Hiding badges only
+            changes what is drawn on screen.</p>
         </details>
       </section>
 
-      <!-- API mode. Off by default and loudly optional: Studio's whole pitch is
-           that nothing leaves the building and nothing costs per song, and this
-           is the one place that stops being true. So it states the trade rather
-           than burying it, and it cannot switch itself on. -->
-      <section class="apibox">
-        <label class="ovstage apihead">
-          <input type="checkbox" id="apiEnabled">
-          <span>Use a hosted engine instead of my GPU</span>
-          <em id="apiState"></em>
-        </label>
-        <p class="hint">
-          For machines that cannot run the model locally. Same MiniMax Music 3,
-          rendered on someone else's hardware with <b>your</b> API key —
-          Studio calls the provider directly, so nothing goes through AI PLAY.
-          Everything else (library, cover art, timed lyrics, the studio timeline,
-          overnight runs) works exactly the same.
-        </p>
-        <p class="hint warnhint" id="apiTradeoff">
-          Two things change: it <b>costs money per song</b>, and
-          <b>audio reference stops working</b> — hosted endpoints take text in and
-          give audio out, with no way to feed a real recording into the model.
-        </p>
+      <!-- NO STRONG GRAPHICS CARD? Friend first, then your own key (the owner,
+           2026-09-24). One card, in that order. The paid half is off by
+           default, every paid run asks first, and nothing switches to it
+           behind the person's back. The order and its sentences come from
+           GET /api/cloud (server/cloud-switch.js); web/cloudswitch.js only
+           shows them. The Hosted engine's own controls kept every id they had
+           (#set-hosted, #apiEnabled, #apiBody, #apiKey…); the key field now
+           comes first and is never hidden behind the switch. -->
+      <section class="pcard" id="set-hosted" data-nav="No strong graphics card?">
+        <h3>No strong graphics card?</h3>
+        <p class="pcard-sub">Two ways to make what this PC can't, in this order. Nothing here is on until you choose it.</p>
 
-        <div class="apibody" id="apiBody" hidden>
+        <div class="cloudstep" id="cloudFriend">
+          <h4><span class="cloudnum">1</span> Ask a friend with a strong card to render for you</h4>
+          <p class="hint" id="cloudFriendHow">Free: a friend with a strong card renders your music video's scenes
+            on their PC.</p>
+          <p class="hint" id="cloudFriendNote" hidden></p>
+          <button class="btn sm" type="button" id="cloudFriendGo">Open Collab</button>
+          <details class="more" id="cloudFriendMore"><summary>More: setting it up, and what it cannot do yet</summary>
+            <p class="hint" id="cloudFriendLimits">Both of you run Full Studio and add each other once on Collab.</p>
+          </details>
+        </div>
+
+        <div class="cloudstep" id="cloudPaid">
+          <h4><span class="cloudnum">2</span> Or pay for a service with your own key</h4>
+          <p class="hint" id="cloudPaidHow">Off until you switch it on. Every paid run asks first and says what it
+            costs. Studio uses only a key typed into Studio, never one from another program.</p>
+
+          <h5 class="cloudsvc">Hosted engine <em>songs · MiniMax Music 3</em></h5>
+          <p class="hint">For machines that cannot run MiniMax Music 3 locally. Uses your own API key; nothing goes through AI PLAY.</p>
+          <p class="hint warnhint" id="cloudHostedNote" hidden></p>
+          <div class="apibody" id="apiBody">
+            <div class="params">
+              <label for="apiProvider">provider</label>
+              <span class="pv"><select id="apiProvider" class="sel2 sm"></select></span>
+
+              <label for="apiKey">your API key</label>
+              <span class="pv">
+                <input class="line sm" id="apiKey" type="password" autocomplete="off"
+                       spellcheck="false" placeholder="paste, then Save">
+                <button class="btn sm" type="button" id="apiKeySave">Save</button>
+                <button class="btn sm ghost" type="button" id="apiKeyClear">Forget</button>
+              </span>
+
+              <label for="apiCap">monthly cap</label>
+              <span class="pv">
+                <input class="line sm num" id="apiCap" inputmode="decimal"><b>USD</b>
+                <button class="btn sm ghost" type="button" id="apiCapSave">Set</button>
+              </span>
+            </div>
+
+            <p class="hint" id="apiKeyState"></p>
+            <div class="apimeter" id="apiMeter" hidden>
+              <div class="apibar"><span id="apiBarFill"></span></div>
+              <p class="hint" id="apiSpend"></p>
+            </div>
+            <p class="hint" id="apiProvNote"></p>
+          </div>
+          <label class="ovstage apihead">
+            <input type="checkbox" id="apiEnabled">
+            <span>Use a hosted engine instead of my GPU</span>
+            <em id="apiState"></em>
+          </label>
+          <p class="hint warnhint" id="apiTradeoff">Costs money per song, and audio reference stops working. Each song asks first.</p>
+
+          <h5 class="cloudsvc">Comfy API <em>pictures, clips, sound, 3D · Comfy credits</em></h5>
+          <p class="hint" id="cloudComfyState">Checking…</p>
           <div class="params">
-            <label for="apiProvider">provider</label>
-            <span class="pv"><select id="apiProvider" class="sel2 sm"></select></span>
-
-            <label for="apiKey">API key</label>
+            <label for="cloudComfyKey">your Comfy API key</label>
             <span class="pv">
-              <input class="line sm" id="apiKey" type="password" autocomplete="off"
-                     spellcheck="false" placeholder="paste, then Save">
-              <button class="btn sm" type="button" id="apiKeySave">Save</button>
-              <button class="btn sm ghost" type="button" id="apiKeyClear">Forget</button>
-            </span>
-
-            <label for="apiCap">monthly cap</label>
-            <span class="pv">
-              <input class="line sm num" id="apiCap" inputmode="decimal"><b>USD</b>
-              <button class="btn sm ghost" type="button" id="apiCapSave">Set</button>
+              <input class="line sm" id="cloudComfyKey" type="password" autocomplete="off"
+                     spellcheck="false" placeholder="comfyui-…, then Save">
+              <button class="btn sm" type="button" id="cloudComfySave">Save</button>
+              <button class="btn sm ghost" type="button" id="cloudComfyForget">Forget</button>
             </span>
           </div>
-
-          <p class="hint" id="apiKeyState"></p>
-          <div class="apimeter" id="apiMeter" hidden>
-            <div class="apibar"><span id="apiBarFill"></span></div>
-            <p class="hint" id="apiSpend"></p>
-          </div>
-          <p class="hint" id="apiProvNote"></p>
+          <p class="hint" id="cloudComfyNote">It runs in the launcher's own <b>Use Comfy API</b> mode, outside a music video.</p>
+          <p class="hint">Get a key and credits at
+            <a href="https://platform.comfy.org/profile/api-keys" target="_blank" rel="noopener">platform.comfy.org</a>.</p>
         </div>
       </section>
-      <p class="hint">These affect how the engine runs, not how a song sounds.
-        You will rarely need to change them.</p>
-      <div class="params" id="settingsParams">
-        <label for="qFormat">output format</label>
-        <span class="pv"><select id="qFormat" class="sel2">
-          <option value="flac">FLAC — lossless, ~30 MB a song</option>
-          <option value="mp3">MP3 V0 — ~4 MB a song</option>
-          <option value="opus">Opus 192k — ~4 MB, best per byte</option>
-        </select></span>
 
-        <!-- AUTOMATIC covers only, and the option text now says so. Off, this
-             once refused every render queued as a "cover" — which is how a
-             picture from the Images screen is queued — so switching off album
-             art switched off image generation with no message anywhere. Fixed
-             in server/art.js (`asked`); the wording is the other half, because
-             a setting whose reach is wider than its label is a trap whether or
-             not it currently misfires. -->
-        <label for="qArt">cover art</label>
-        <span class="pv"><select id="qArt" class="sel2">
-          <option value="1">Draw one per song when idle</option>
-          <option value="0">Off — the Images screen still works</option>
-        </select></span>
+      <!-- Your own ComfyUI graphs. The built-ins are the tuned ones, so this
+           sits near the end and stays quiet unless the folder has something. -->
+      <section class="pcard" id="set-workflows" data-nav="Workflows">
+        <h3>Custom ComfyUI workflows <em class="sp" id="wfCount"></em></h3>
+        <p class="pcard-sub">Drop <b>API-format</b> graphs into <code id="wfDir"></code> and pick one here. Studio only fills in the placeholders.</p>
+        <div id="wfBox">
+          <div class="params" id="wfPicks"></div>
+          <div id="wfList"></div>
+          <details class="more wftokens">
+            <summary>Placeholders you can use</summary>
+            <div id="wfTokens"></div>
+          </details>
+        </div>
+      </section>
 
-        <!-- Off by default. Separating every take is wasteful when most are
-             discarded, so the starred/liked modes separate exactly the ones
-             already marked worth keeping. -->
-        <label for="qStems">stem separation</label>
-        <span class="pv"><select id="qStems" class="sel2">
-          <option value="off">Off</option>
-          <option value="all">Every song</option>
-          <option value="starred">Only when I star a track</option>
-          <option value="liked">Only when I like a track</option>
-        </select></span>
-
-        <!-- Two controls, because they answer different questions: whether the
-             34 GB region-locked model is switched on at all, and when it should
-             run by itself. The second is disabled until the first says yes. -->
-        <label for="qVideo">video clips</label>
-        <span class="pv"><select id="qVideo" class="sel2">
-          <option value="0">Off</option>
-          <option value="1">On — MiniMax H3</option>
-        </select></span>
-
-        <label for="qVideoEngine">video engine</label>
-        <span class="pv"><select id="qVideoEngine" class="sel2" disabled></select></span>
-
-        <label for="qVideoWhen">make clips</label>
-        <span class="pv"><select id="qVideoWhen" class="sel2" disabled>
-          <option value="off">Only when I ask</option>
-          <option value="all">Every song</option>
-          <option value="starred">Only when I star a track</option>
-          <option value="liked">Only when I like a track</option>
-        </select></span>
-
-        <label for="qLyrics">timed lyrics</label>
-        <span class="pv"><select id="qLyrics" class="sel2">
-          <option value="off">Off</option>
-          <option value="all">Every song with words</option>
-          <option value="starred">Only when I star a track</option>
-          <option value="liked">Only when I like a track</option>
-        </select></span>
-      </div>
-      <p class="hint" id="lyricsNote">Two .lrc files per song — one per line, one per
-        word — for visualisers. Line timing is reliable; word timing is approximate
-        on sung vocals, because a word held across two bars has no single onset.</p>
-      <p class="hint" id="fmtNote"></p>
-
-      <!-- Provenance (SPEC D5). Two switches and deliberately not a third:
-           display is the user's, the detailed record is the user's, the small
-           AI marker is the tool's legal duty and has no switch — the note
-           says so plainly instead of hiding it. -->
-      <h4 class="seth">Provenance</h4>
-      <div class="setgrid">
-        <label for="qProvShow">show provenance badges</label>
-        <span class="pv"><select id="qProvShow" class="sel2">
-          <option value="1">On — origin shown per item</option>
-          <option value="0">Off — hide the badges</option>
-        </select></span>
-
-        <label for="qProvEmbed">embed detailed provenance in exports</label>
-        <span class="pv"><select id="qProvEmbed" class="sel2">
-          <option value="1">On — full record travels with the file</option>
-          <option value="0">Off — record stays on this machine</option>
-        </select></span>
-      </div>
-      <p class="hint">Exports always carry a small machine-readable marker on
-        AI-generated parts — the model's licence and, since 2 August 2026, the
-        EU AI Act (Article&nbsp;50) require the tool to ensure this, which is why
-        there is no switch for it: the duty sits on the tool so you never have
-        to think about it. This switch controls the <b>detailed</b> provenance
-        record — prompts, seeds, lyrics, edit history. That record is yours: it
-        strengthens your authorship evidence if kept in, and stays on your
-        machine if turned off. Hiding the badges changes only what is drawn on
-        screen — never what is recorded or embedded.</p>
-
-      <!-- Folders. Separated from the toggles above because these two are the
-           only settings that survive a restart — and the only ones that REQUIRE
-           one, since the engine is launched with them as arguments. -->
-      <h4 class="seth">Folders</h4>
-      <div class="setgrid">
-        <label for="qOutDir">songs go to</label>
-        <span class="pv"><input class="line" id="qOutDir" spellcheck="false"
-          placeholder="…\ComfyUI\output"></span>
-        <label for="qRigDir">ComfyUI is at</label>
-        <span class="pv"><input class="line" id="qRigDir" spellcheck="false"
-          placeholder="…\aiplay-studio-bench"></span>
-      </div>
-      <div class="cta" style="margin:6px 0 0">
-        <button class="btn sm ghost" type="button" id="btnSaveDirs">Save folders</button>
-        <span class="hint" id="dirsNote">Both take effect when Studio restarts.</span>
-      </div>
-
-      <div class="cta" style="margin:10px 0 0">
-        <button class="btn ghost" type="button" id="btnBackfillArt">Draw any missing covers</button>
-        <button class="btn ghost" type="button" id="btnEmbedArt">Put covers inside the files</button>
-      </div>
-      <p class="hint" id="artNote"></p>
-      <p class="hint" id="setNote"></p>
+      <!-- Folders: the only settings that REQUIRE a restart, since the engine
+           is launched with them as arguments. -->
+      <section class="pcard" id="set-folders" data-nav="Folders">
+        <h3>Folders</h3>
+        <p class="pcard-sub">Where songs are saved and where ComfyUI lives. Takes effect after a restart.</p>
+        <div class="params">
+          <label for="qOutDir">songs go to</label>
+          <span class="pv"><input class="line" id="qOutDir" spellcheck="false"
+            placeholder="…\ComfyUI\output"></span>
+          <label for="qRigDir">ComfyUI is at</label>
+          <span class="pv"><input class="line" id="qRigDir" spellcheck="false"
+            placeholder="…\aiplay-studio-bench"></span>
+        </div>
+        <div class="cta">
+          <button class="btn2" type="button" id="btnSaveDirs">Save folders</button>
+          <span class="hint" id="dirsNote"></span>
+        </div>
+      </section>
     </div>
 
     <!-- WELCOME: the first thing anyone sees. The mark, the name, and one row
          of ways in. Nothing else, on purpose. data-go is app.js's existing
          view switch; Explore is Community (to be reworked). -->
-    <div id="home" class="home" hidden>
+    <div id="avatars" hidden class="page page-wide">
+  <header class="page-head stagehead"><h2>3D workshop</h2><a class="btn2" href="/?view=workflow" title="Generate a mesh from an image in Music video">Image to 3D ↗</a></header>
+  <iframe id="avatarFrame" title="3D avatar workshop" allow="autoplay"></iframe>
+</div>
+
+<div id="home" class="home" hidden>
       <div class="homein">
         <img class="homelogo" src="assets/aiplay-logo.png?v=1" alt="">
         <h1 class="homename"><b>AI PLAY</b><span>STUDIO</span></h1>
         <p class="hometag">Made with AI, by people who wanted more from it.<br>
           Local, free and open. By the community, for the community.<br>
           Everything you make here is yours and stays on this machine.</p>
+        <!-- THE FIRST-RUN LINES (UI_PLAN B5), in place of the tour that used to
+             open by itself: what Studio read on this PC, which models, and
+             whether video clips fit. Filled by web/welcome.js from /api/welcome
+             {action:"first_run"}, word for word, and only on a new install;
+             Hide posts `dismiss`. The tour is under About. -->
+        <div class="homestrip" id="homeStrip" hidden role="note" aria-label="About this PC">
+          <p class="homestriplines" id="homeStripLines"></p>
+          <div class="homestriplinks"><span id="homeStripLinks"></span>
+            <button type="button" class="homestriphide" id="homeStripHide">Hide</button></div>
+        </div>
         <p class="homestart">Start with</p>
         <nav class="homego" aria-label="Start with">
           <a href="#" data-go="chat">Chat</a>
           <a href="#" data-go="create">Music</a>
           <a href="#" data-go="video">Video</a>
-          <a href="#" data-go="images">Image</a>
+          <a href="#" data-go="images">Pictures</a>
           <a href="#" data-go="community">Explore</a>
         </nav>
         <!-- Style packs from aiplay.live (they used to sit on Community): a
@@ -4934,9 +5294,15 @@
   </div>
 
   <!-- ───────────────── player ───────────────── -->
+  <!-- ───────────────── player ─────────────────
+       ⚠ IT IS NOT A FIXTURE. It appears when something plays and goes when
+       there is nothing left to control (app.js: playerOpen / playerClose).
+       ✕ at the far left closes it, ⌃ at the far right opens the full player:
+       the two things that make the bar bigger or smaller sit at the two ends,
+       and neither is in the middle where the transport is. -->
   <div class="player">
+    <button class="pclose" type="button" id="pClose" title="Close the player" aria-label="Close the player">&#10005;</button>
     <div class="np">
-      <button class="expand" type="button" id="pExpand" title="Open the full player" aria-label="Open the full player">⌃</button>
       <div class="art" id="pArt"></div>
       <div class="npmeta">
         <div class="t" id="pTitle">—</div>
@@ -4961,6 +5327,7 @@
       <button class="tbtn" type="button" id="pMute" title="Mute">🔊</button>
       <input id="pVol" type="range" min="0" max="1" step="0.02" value="1" aria-label="Volume">
     </div>
+    <button class="expand" type="button" id="pExpand" title="Open the full player" aria-label="Open the full player">⌃</button>
   </div>
 
 </div>
@@ -5160,32 +5527,19 @@
     <details class="runpod-bootstrap">
       <summary>Install the AIPLAY worker after the Pod starts</summary>
       <p class="hint">Open the Pod's JupyterLab terminal, paste this command, then copy the printed worker URL and token into the connection fields above.</p>
-      <textarea class="line" id="runpodBootstrapCommand" rows="3" readonly>curl -fsSL https://raw.githubusercontent.com/nemesisone-dev/AIPLAY-Studio/feature/runpod-rendering/worker/bootstrap-runpod.sh -o /tmp/aiplay-bootstrap.sh &amp;&amp; bash /tmp/aiplay-bootstrap.sh</textarea>
+      <textarea class="line" id="runpodBootstrapCommand" rows="3" readonly>curl -fsSL https://raw.githubusercontent.com/nemesisone-dev/AIPLAY-Studio/main/worker/bootstrap-runpod.sh -o /tmp/aiplay-bootstrap.sh &amp;&amp; bash /tmp/aiplay-bootstrap.sh</textarea>
       <button class="edtool" id="runpodCopyBootstrap" type="button">Copy bootstrap command</button>
       <p class="hint" id="runpodBootstrapState"></p>
     </details>
   </details>
 </div></div>
 
+
+<!-- Before app.js on purpose: its fetch wrapper must be in place before any
+     screen can start a generation. -->
+<script type="module" src="battery.js"></script>
+<script type="module" src="ui.js"></script>
 <script type="module" src="app.js"></script>
-<dialog id="musicWorkflows" aria-labelledby="musicWorkflowsTitle">
-  <header class="music-workflows-head">
-    <div><h2 id="musicWorkflowsTitle">Build on an idea</h2><p>Develop a song, reuse saved stages, or compare a trained adapter with the base model.</p></div>
-    <button class="btn ghost sm" type="button" data-action="close" aria-label="Close music workflows">Close</button>
-  </header>
-  <div class="music-workflows-tabs" role="tablist" aria-label="Music workflows">
-    <button id="musicAuditionsTab" role="tab" aria-controls="musicAuditions" aria-selected="true" type="button"><b>Chorus alternatives</b><span>Compare takes in context</span></button>
-    <button id="musicKitsTab" role="tab" aria-controls="musicKits" aria-selected="false" tabindex="-1" type="button"><b>Episode themes</b><span>Reuse a score and create cues</span></button>
-    <button id="musicReferencesTab" role="tab" aria-controls="musicReferences" aria-selected="false" tabindex="-1" type="button"><b>Reference music</b><span>Audio or footage → reviewed brief</span></button>
-    <button id="musicArtifactsTab" role="tab" aria-controls="musicArtifacts" aria-selected="false" tabindex="-1" type="button"><b>Saved stages</b><span>Replay a plan, tokens or sound</span></button>
-    <button id="musicListeningLabTab" role="tab" aria-controls="musicListeningLab" aria-selected="false" tabindex="-1" type="button"><b>Listening lab</b><span>Compare base model and LoRA</span></button>
-  </div>
-  <section id="musicAuditions" role="tabpanel" aria-labelledby="musicAuditionsTab"></section>
-  <section id="musicKits" role="tabpanel" aria-labelledby="musicKitsTab" hidden></section>
-  <section id="musicReferences" role="tabpanel" aria-labelledby="musicReferencesTab" hidden></section>
-  <section id="musicArtifacts" role="tabpanel" aria-labelledby="musicArtifactsTab" hidden></section>
-  <section id="musicListeningLab" role="tabpanel" aria-labelledby="musicListeningLabTab" hidden></section>
-</dialog>
 <script type="module" src="music-input-ui.js"></script>
 <!-- Loaded after app.js and independent of it: it reaches the Video panel
      through the DOM and posts its own route, so neither file has to know the
@@ -5202,6 +5556,8 @@
 <!-- Simple mode for the Images and Video panels: the switch and the
      "Describe your idea" block are built by the script (server/chat/form-tools.js). -->
 <script type="module" src="assist.js"></script>
+<!-- The rail's "More tools" fold: open or folded, remembered in this browser. -->
+<script type="module" src="rail.js"></script>
 <!-- The "!" hover tips in the Music panel. -->
 <script type="module" src="tips.js"></script>
 <!-- The Agent page: cloud API keys, which model answers where, and the MCP details. -->
@@ -5210,9 +5566,19 @@
 <script type="module" src="credits.js"></script>
 <script type="module" src="roulette.js"></script>
 <script type="module" src="prompt-tools.js"></script>
-<!-- RunPod is an additive render target for the normal Images and Video forms.
-     It owns only the controls carrying runpod ids and intercepts Create in the
-     capture phase when that target is selected. -->
+<!-- RunPod: the launcher's RunPod GPU mode only. It owns only the controls carrying
+     runpod ids and intercepts Make / Render in the capture phase in that mode. -->
 <script type="module" src="runpod-integrated.js"></script>
+<!-- The receipt under Create, Make image and Render clip, and Settings' "Picked
+     for this PC" (web/receipt.js; the defaults are the server's, fit.js). -->
+<script type="module" src="receipt.js"></script>
+<!-- The Video screen follows the card: size chips, what a size needs, sparse
+     attention, More motion, the reference and RAM lines (web/vidfit.js; every
+     judgement and sentence is the server's). -->
+<script type="module" src="vidfit.js"></script>
+  <!-- The full picture behind a reference thumbnail. At BODY level and fixed,
+       because the form column it belongs to is overflow-y:auto and would clip
+       anything bigger than the 88x50 thumb — which is the entire point. -->
+  <div id="imgRefHover" hidden><img alt=""><span></span></div>
 </body>
 </html>

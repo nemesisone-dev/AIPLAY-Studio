@@ -23,11 +23,11 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { config } from "./config.js";
+import { config, loraStepsOf } from "./config.js";
 /* Data only — the catalogue's `gated` flag and the engine->capability map.
  * models.js imports config.js and nothing else from this tree, so there is
  * no cycle here. */
-import { CATALOG, MODEL_TO_CAPABILITY } from "./models.js";
+import { CATALOG, MODEL_TO_CAPABILITY, cardIsAmd } from "./models.js";
 
 /**
  * Flow-matching shifted sigma schedule: sigma(t) = shift*t / (1 + (shift-1)*t),
@@ -270,9 +270,21 @@ export function buildYue2ComfyGraph({
    * those codes as the sampler's prefix — ComfyUI's stock node has no prefix
    * input, and its token generation is sealed inside the text encoder. */
   codes = null, primeSeconds = 8,
+  /* A SUPPLIED SCORE (a hummed melody, a pasted or transcribed one): node 5
+   * sings it as written and the planner (node 4) is left out, since it has no
+   * score input of its own. Both music nodes take the text as a plain string.
+   * The sampler dials override the nodes' defaults: `sampling` node 5's
+   * (temperature, top_p, top_k, repetition_penalty), `planSampling` node 4's
+   * (temperature, top_p). server/music/yue2-comfy-input.js validates all three. */
+  abc = null, sampling = null, planSampling = null,
   prefix = "aiplay",
 }) {
   const plan = cot !== "off";
+  const score = typeof abc === "string" && abc.trim() !== "" ? abc : null;
+  /* The door refuses this with its own sentence; a caller that skipped the
+   * door fails here rather than rendering without the score. */
+  if (score && !plan) throw new Error("A supplied score needs the chain of thought on (full or melody); nothing was rendered.");
+  const pick = (o, k, d) => (o && typeof o[k] === "number" && Number.isFinite(o[k]) ? o[k] : d);
   /* TWO LoRA DOORS, one per half of the model. The audio LoRA rides between
    * the checkpoint and the sampler on the MODEL wire only —
    * LoraLoaderModelOnly, the node H3's turbo LoRAs load through — which
@@ -292,6 +304,10 @@ export function buildYue2ComfyGraph({
   const clipWire = useClipLora ? ["3", 1] : ["1", 1];
   const mode = cot === "melody" ? "melody" : "full";
   const s = Number(seed) || 0;
+  const performance = {
+    temperature: pick(sampling, "temperature", 1.0), top_p: pick(sampling, "top_p", 0.95),
+    top_k: pick(sampling, "top_k", 100), repetition_penalty: pick(sampling, "repetition_penalty", 1.2),
+  };
   return {
     1: { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: checkpoint } },
     ...(useLora ? {
@@ -300,12 +316,12 @@ export function buildYue2ComfyGraph({
     ...(useClipLora ? {
       3: { class_type: "LoraLoader", inputs: { model: ["1", 0], clip: ["1", 1], lora_name: loraClip, strength_model: 0, strength_clip: clipStrength } },
     } : {}),
-    ...(plan ? {
+    ...(plan && !score ? {
       4: {
         class_type: "YuE2GenerateABC",
         inputs: {
           clip: clipWire, style: caption, lyrics, seed: s, mode,
-          max_abc_tokens: 8192, temperature: 0.7, top_p: 0.9, top_k: 30,
+          max_abc_tokens: 8192, temperature: pick(planSampling, "temperature", 0.7), top_p: pick(planSampling, "top_p", 0.9), top_k: 30,
           repetition_penalty: 1.005, penalty_window: 100,
         },
       },
@@ -317,17 +333,17 @@ export function buildYue2ComfyGraph({
        * refuses a replay that leaves no room. */
       class_type: "AiplayYuE2Continue",
       inputs: {
-        clip: clipWire, style: caption, lyrics, abc: plan ? ["4", 0] : "", seed: s, mode: plan ? mode : "off",
+        clip: clipWire, style: caption, lyrics, abc: score ?? (plan ? ["4", 0] : ""), seed: s, mode: plan ? mode : "off",
         codes_dir: String(codes), prime_seconds: Number(primeSeconds) || 0,
         new_duration: Number(maxDuration) || 240,
-        temperature: 1.0, top_p: 0.95, top_k: 100, repetition_penalty: 1.2,
+        ...performance,
       },
     } : {
       class_type: "YuE2GenerateMusic",
       inputs: {
-        clip: clipWire, style: caption, lyrics, abc: plan ? ["4", 0] : "", seed: s, mode,
+        clip: clipWire, style: caption, lyrics, abc: score ?? (plan ? ["4", 0] : ""), seed: s, mode,
         max_duration: Number(maxDuration) || 240,
-        temperature: 1.0, top_p: 0.95, top_k: 100, repetition_penalty: 1.2,
+        ...performance,
       },
     },
     6: { class_type: "ConditioningZeroOut", inputs: { conditioning: ["5", 0] } },
@@ -788,6 +804,23 @@ export function ideogramRefusalMessage(ladderLength, tried) {
     + `FLUX.2 / a checkpoint instead.`;
 }
 
+/* In the models folder or one of the extra ones (config.modelsAlso): the
+ * engine loads from all of them. */
+const onDisk = (sub, file) => [config.modelsDir, ...(config.modelsAlso || [])]
+  .some((b) => { try { return fs.statSync(path.join(b, sub, file)).size > 0; } catch { return false; } });
+
+/* nvfp4 is NVIDIA-only, so an AMD card gets the vendor's fp8 build of the same
+ * encoder (models.js downloads it there), and ONLY that: ROCm has no kernel for
+ * nvfp4 (models.js fp4Blocked), so an nvfp4 file that is on disk (an NVIDIA
+ * machine's folder added as an extra) is never named, and a machine without the
+ * fp8 is told to fetch it. On NVIDIA, whichever is on disk wins. */
+function ideogramEncoder() {
+  const order = cardIsAmd()
+    ? ["qwen3vl_8b_fp8_scaled.safetensors"]
+    : ["qwen3vl_8b_nvfp4.safetensors", "qwen3vl_8b_fp8_scaled.safetensors"];
+  return order.find((n) => onDisk("text_encoders", n)) || order[0];
+}
+
 export function ideogramGraph({ prompt, seed, width, height, quality = "default", count = 1, prefix = "image" }) {
   const snap = (v, d) => Math.max(256, Math.floor(((v ?? d) + 15) / 16) * 16);
   const w = snap(width, 1024), h = snap(height, 1024);
@@ -798,7 +831,7 @@ export function ideogramGraph({ prompt, seed, width, height, quality = "default"
   return {
     1: { class_type: "UNETLoader", inputs: { unet_name: "ideogram4_fp8_scaled.safetensors", weight_dtype: "default" } },
     2: { class_type: "UNETLoader", inputs: { unet_name: "ideogram4_unconditional_fp8_scaled.safetensors", weight_dtype: "default" } },
-    3: { class_type: "CLIPLoader", inputs: { clip_name: "qwen3vl_8b_nvfp4.safetensors", type: "ideogram4", device: "default" } },
+    3: { class_type: "CLIPLoader", inputs: { clip_name: ideogramEncoder(), type: "ideogram4", device: "default" } },
     4: { class_type: "CLIPTextEncode", inputs: { clip: ["3", 0], text: prompt } },
     5: { class_type: "ConditioningZeroOut", inputs: { conditioning: ["4", 0] } },
     6: { class_type: "CFGOverride", inputs: { model: ["1", 0], cfg: 3, start_percent: 0.7, end_percent: 1 } },
@@ -1291,7 +1324,9 @@ const VIDEO_MODEL_DIRS = {
   videoVae: "vae",
   audioVae: "vae",
   upscaler: "latent_upscale_models",
-  turboLora: "loras",
+  /* No turboLora: every H3 speed-up is optional. Without one H3 renders the
+   * bare model (20 steps), and a step count whose file is missing is refused
+   * with its download offered (video-plain.js videoPlan). */
 };
 
 /**
@@ -1313,9 +1348,7 @@ export function videoReady(name) {
   for (const [key, sub] of Object.entries(VIDEO_MODEL_DIRS)) {
     const file = e[key];
     if (!file) continue;
-    try {
-      if (fs.statSync(path.join(config.modelsDir, sub, file)).size > 0) continue;
-    } catch { /* falls through to missing */ }
+    if (onDisk(sub, file)) continue;
     missing.push(file);
   }
   return { ready: missing.length === 0, missing };
@@ -1779,7 +1812,8 @@ export function chainVideoLoras(g, from, loras) {
 
 export function videoGraph(opts = {}) {
   const engine = opts.engine || config.video.engine;
-  return engine === "ltx" ? videoGraphLtx(opts) : videoGraphH3(opts);
+  // FastH3 is H3's graph with its own settings (config.video.engines.fasth3).
+  return engine === "ltx" ? videoGraphLtx(opts) : videoGraphH3({ ...opts, engine });
 }
 
 /* How much of a reference audio clip rides into the render. The whole file
@@ -1818,10 +1852,103 @@ export function h3TurboLoraFor(eng, { steps, refs = false } = {}) {
   return { turbo, use4, use3, lora: lora ?? null };
 }
 
-/** LightX2V's turbo Comfy recipe uses Euler; quality and TaoMate retain
- * their measured sampler. A saved explicit sampler always wins. */
+/**
+ * WHICH SPARSE ATTENTION A RENDER CARRIES, if any: the node-81 recipe or null.
+ *
+ *   FastH3   its own VSA (config `sparseAttention`), always: it was trained
+ *            against it.
+ *   H3       sol-attn (config `solAttn`, h3tier.js H3_SOL_ATTN) on the Fast
+ *            setting's plain path only: the TaoMate 3-step file, text or
+ *            frames, where the H3 lab measured it (1.15x on the wall, a
+ *            slightly softer picture). Standard, Best, the reference path, a
+ *            continuation and video-to-video stay dense: none of them was
+ *            measured with it. `sparse` is the per-render choice ("sol-attn"
+ *            | "off"); unset reads the saved setting (config `sparse`).
+ *   LTX      none.
+ *
+ * One reader for the graph below and for /api/video's check, so the page says
+ * what the graph does.
+ */
+export function h3SparseFor(eng, { steps, refs = false, sparse, continuation = false, control = false } = {}) {
+  if (eng?.sparseAttention) return eng.sparseAttention;
+  const want = sparse ?? eng?.sparse ?? "off";
+  if (want !== "sol-attn" || !eng?.solAttn || continuation || control) return null;
+  const { turbo, use3, lora } = h3TurboLoraFor(eng, { steps, refs });
+  /* The strength is the person's (video_settings sparse_tau, 1.0 to 2.0);
+   * unset, the lab's recipe stands. */
+  const tau = Number(eng.solAttnTau);
+  const recipe = Number.isFinite(tau) && tau >= 1 && tau <= 2 && tau !== eng.solAttn.tau
+    ? { ...eng.solAttn, tau } : eng.solAttn;
+  if (turbo && use3 && !!lora && lora === eng.turboLora3) return recipe;
+  /* Every other step count only when the person asked for it (video_settings
+   * sparse_everywhere): the lab measured the Fast setting alone. The
+   * reference path stays dense either way. */
+  return eng.sparseAll === true && !refs ? recipe : null;
+}
+
+/**
+ * H3's block cache for one render (h3tier.js H3_BLOCK_CACHE), or null.
+ * `blockCache` is the render's answer from art.js videoBlockCache(): true only
+ * where the setting is on AND the engine has the node. Plain path only: no
+ * references, continuation or video-to-video (none measured with it), and
+ * never beside sparse attention, which the node refuses.
+ */
+export function h3BlockCacheFor(eng, { blockCache = false, refs = false, continuation = false, control = false, sparse = null } = {}) {
+  if (blockCache !== true || !eng?.blockCacheRecipe || refs || continuation || control || sparse) return null;
+  return eng.blockCacheRecipe;
+}
+
+/**
+ * THE STEP COUNT A REFERENCE RENDER RUNS, matched to the file that loads.
+ *
+ * The Fast chip is 3 steps, for TaoMate, which is fl2v-only; with references
+ * the 4-step reference build loads instead, a distillation made for another
+ * count (config.js turboLora4: "a different one used wrongly"). So in the
+ * Fast band (at or under turbo4MaxSteps, where that 4-step build is the file
+ * that loads) a count BELOW the loaded file's own is raised to it, and the
+ * caller says so: the Video screen before the render, /api/video and
+ * make_clip in the reply. Nothing else moves: the 6-7 band on the 8-step
+ * file and 8 on a 4-step file keep the page's own ⚠, a count at or above
+ * the file's is left alone, and the text/frames path is untouched.
+ *
+ * @returns {{steps:number, asked:number, raised:boolean, lora:string|null, made:number|null}}
+ */
+export function h3MatchedSteps(eng, { steps, refs = false } = {}) {
+  const asked = Number(steps ?? eng?.steps);
+  if (!refs || !Number.isFinite(asked)) return { steps: asked, asked, raised: false, lora: null, made: null };
+  const { turbo, use4, lora } = h3TurboLoraFor(eng, { steps: asked, refs: true });
+  const made = turbo && lora ? loraStepsOf(lora) : null;
+  const raised = use4 && Number.isFinite(made) && made > asked;
+  return { steps: raised ? made : asked, asked, raised, lora: lora ?? null, made: made ?? null };
+}
+
+/**
+ * THE STEP COUNT KEEPING A CHARACTER RUNS AT ON THIS DISK: the reference
+ * speed-up file's own count (8 or 4, config.js refTurboSteps), else Standard.
+ * One answer for /api/status (per engine `referenceSteps`), videoPlan (a
+ * render with references that names no count) and the music video's
+ * clipsteps.js. The REWIND A/B (2026-09-24, DIRECTING.md §2) kept its
+ * character on the 8-step reference build at 8.
+ */
+export function referenceSteps(eng) {
+  if (eng?.refTurboSteps === 8 || eng?.refTurboSteps === 4) return eng.refTurboSteps;
+  return eng?.stepDefaults?.standard ?? eng?.steps ?? null;
+}
+
+/**
+ * The sampler under "auto", per path. A saved explicit sampler always wins.
+ *
+ *   reference path  res_multistep, measured: Hex Appeal's 31 v2 scenes and the
+ *                   REWIND A/B's winning arm (2026-09-24). Euler reached it with
+ *                   88056dc (2026-09-21) as the publisher's recipe, never
+ *                   measured here.
+ *   fl2v turbo      LightX2V's 4/8-step builds: Euler, their published Comfy
+ *                   recipe (not measured here).
+ *   TaoMate 3-step, the bare model: res_multistep, their measured sampler.
+ */
 export function h3SamplerFor(eng, opts = {}) {
   if (eng.sampler && eng.sampler !== "auto") return eng.sampler;
+  if (opts.refs) return "res_multistep";
   const { turbo, use3, lora } = h3TurboLoraFor(eng, opts);
   const actualThreeStep = use3 && lora !== eng.turboLora4;
   return turbo && !actualThreeStep ? "euler" : "res_multistep";
@@ -1883,8 +2010,28 @@ export function videoGraphH3({ prompt, seed, seconds, width, height, steps,
                                 * ({dit, ditRef, textEncoder, videoVae, audioVae}). Merged
                                 * LAST so one named part replaces one part and the rest of
                                 * the engine is untouched — see server/modelpick.js. */
-                               models = null }) {
-  const v = { ...config.video, ...config.video.engines.h3, ...(models || {}) };
+                               models = null,
+                               /* Which H3-family engine's settings: "h3" or "fasth3". videoGraph() passes it. */
+                               engine = "h3",
+                               /* "ck" wraps the model in ModelAttentionBackend (Comfy Kitchen int8), "pytorch"
+                                * in the same node set to PyTorch; anything else leaves it out. NOT defaulted from
+                                * config: art.js videoAttention() decides (H3 through h3Attention(), "ck" or null;
+                                * FastH3 from its per-render picker, always a node); a caller that says nothing
+                                * gets no node. */
+                               attention = null,
+                               /* H3's sparse attention for THIS render: "sol-attn" | "off", or
+                                * undefined for the saved setting. Only the Fast setting takes
+                                * it (h3SparseFor); art.js videoSparse() turns it into "off"
+                                * where the engine lacks the node. FastH3 ignores it. */
+                               sparse = undefined,
+                               /* H3's block cache for THIS render: true only where the setting is on
+                                * and the engine has the node (art.js videoBlockCache). h3BlockCacheFor
+                                * decides whether this graph can carry it. */
+                               blockCache = false }) {
+  const v = { ...config.video, ...(config.video.engines[engine] || config.video.engines.h3), ...(models || {}) };
+  /* A distillation with a trained schedule runs at that schedule whatever the
+   * slider says: FastH3 is 8 steps, and 20 of them is not a better FastH3. */
+  if (v.fixedSteps) steps = v.fixedSteps;
   const w = width ?? v.width, h = height ?? v.height;
   /* A CONTINUATION renders a window of overlap + extension frames: the
    * source's last `overlapFrames` (17k+5) are anchored at frame 0 as a native
@@ -2035,6 +2182,41 @@ export function videoGraphH3({ prompt, seed, seconds, width, height, steps,
   const shift = h3SigmaShiftFor(v, { steps: steps ?? v.steps, refs: onRefPath });
   const sampler = h3SamplerFor(v, { steps: steps ?? v.steps, refs: onRefPath });
   const shiftV = shift.video, shiftA = shift.audio;
+  /* SPARSE ATTENTION: FastH3's VSA always, H3's sol-attn on the Fast setting only
+   * (h3SparseFor, above; config `sparseAttention` / `solAttn`). ComfyUI's templates chain
+   * shift -> ModelAttentionBackend -> BlockSparseAttention; here the dense backend is
+   * node 85 below, the one H3 uses, before the shift. The shift copies transformer_options
+   * through, and BlockSparseAttention wraps whatever override is on the model when it is
+   * applied (install_override keeps the previous one as its dense path), so the fallback
+   * is the same. 81 MUST follow the shift: it turns start/end_percent into sigmas from the
+   * model's model_sampling at patch time. The dense backend is the one the person picked
+   * (art.js videoAttention() always names one for FastH3), never the launcher's flag. */
+  /* One node 81 per graph: an engine with its own (FastH3) never takes H3's.
+   * VSA and SLA take a keep percentage, sol-attn a tau (the node's DynamicCombo
+   * children, addressed dotted as ref_images' are). */
+  const sparseCfg = h3SparseFor(v, { steps: steps ?? v.steps, refs: onRefPath, sparse,
+    continuation: !!cont, control: !!(controlVideo && controlPatch) });
+  const sparseNodes = sparseCfg ? {
+    81: { class_type: "BlockSparseAttention", inputs: { model: ["6", 0],
+      selection: sparseCfg.method,
+      ...(sparseCfg.keepPercent != null ? { "selection.keep_percent": sparseCfg.keepPercent } : {}),
+      ...(sparseCfg.tau != null ? { "selection.tau": sparseCfg.tau } : {}),
+      start_percent: sparseCfg.startPercent, end_percent: sparseCfg.endPercent, dense_blocks: "",
+      min_tokens: sparseCfg.minTokens, extra_tokens: sparseCfg.extraTokens,
+      sink_conditioning: sparseCfg.sinkConditioning, verbose: false } },
+  } : {};
+  /* THE BLOCK CACHE sits where 81 would, after the shift (its start/end percent
+   * are sampling progress), and only where 81 is absent: the node refuses to
+   * run beside BlockSparseAttention. */
+  const cacheCfg = h3BlockCacheFor(v, { blockCache, refs: onRefPath, continuation: !!cont,
+    control: !!(controlVideo && controlPatch), sparse: sparseCfg });
+  const cacheNodes = cacheCfg ? {
+    82: { class_type: cacheCfg.node, inputs: { model: ["6", 0],
+      residual_diff_threshold: cacheCfg.threshold, start_percent: cacheCfg.startPercent,
+      end_percent: cacheCfg.endPercent, max_consecutive_hits: cacheCfg.maxConsecutiveHits,
+      cache_device: cacheCfg.cacheDevice, metric_stride: cacheCfg.metricStride, verbose: false } },
+  } : {};
+  const SAMPLE_MODEL = sparseCfg ? ["81", 0] : cacheCfg ? ["82", 0] : ["6", 0];
   /* ── VIDEO-TO-VIDEO ──────────────────────────────────────────────────────
    *
    * A control video drives the render frame by frame instead of one opening
@@ -2068,7 +2250,24 @@ export function videoGraphH3({ prompt, seed, seconds, width, height, steps,
                     strength: Number(controlStrength), start_percent: Number(controlStart),
                     end_percent: Number(controlEnd), control_video: ["32", 0] } },
   } : {};
-  const MODEL = useControl ? ["34", 0] : BARE_MODEL;
+  /* ⚠ THE ATTENTION NODE WRAPS THE MODEL AFTER EVERYTHING THAT PATCHES IT —
+   * turbo LoRA, the person's LoRAs, the Fun-ControlNet — and before the sigma
+   * shift, because the shift feeds BOTH the guider and the scheduler; patching
+   * after it would leave one of them on the dense-attention model. Node 85:
+   * refs take 40-48, audio refs 50+2i, continuation 70-77, FastH3's sparse node 81,
+   * user LoRAs 90+.
+   *
+   * "ck" is Comfy Kitchen; "pytorch" is an EXPLICIT PyTorch node, which only an
+   * engine with a per-render picker asks for (FastH3, art.js videoAttention()):
+   * without it the dense part runs under whatever attention the launcher
+   * started ComfyUI with. h3Attention() never says "pytorch", so H3's graphs,
+   * and the cache keys hashed from them, are unchanged. Anything else: no node. */
+  const backend = { ck: "comfy kitchen attention", pytorch: "pytorch attention" }[attention] || null;
+  const attentionNodes = backend ? {
+    85: { class_type: "ModelAttentionBackend",
+          inputs: { model: useControl ? ["34", 0] : BARE_MODEL, attention: backend } },
+  } : {};
+  const MODEL = backend ? ["85", 0] : useControl ? ["34", 0] : BARE_MODEL;
   const lora = (name = h3TurboLoraFor(v, { steps: steps ?? v.steps }).lora) => (useTurbo ? {
     18: {
       class_type: "LoraLoaderModelOnly",
@@ -2163,11 +2362,12 @@ export function videoGraphH3({ prompt, seed, seconds, width, height, steps,
       Object.assign(g, contNodes(pos));
       pos = "74";
     }
-    Object.assign(g, controlNodes, controlApply);
+    Object.assign(g, controlNodes, controlApply, attentionNodes);
     g[6] = { class_type: "MiniMaxH3SigmaShift",
       inputs: { model: MODEL, shift_video: shiftV, shift_audio: shiftA } };
-    g[7] = { class_type: "BasicGuider", inputs: { model: ["6", 0], conditioning: [pos, 0] } };
-    g[8] = { class_type: "BasicScheduler", inputs: { model: ["6", 0], scheduler: v.scheduler, steps: steps ?? v.steps, denoise: 1 } };
+    Object.assign(g, sparseNodes, cacheNodes);
+    g[7] = { class_type: "BasicGuider", inputs: { model: SAMPLE_MODEL, conditioning: [pos, 0] } };
+    g[8] = { class_type: "BasicScheduler", inputs: { model: SAMPLE_MODEL, scheduler: v.scheduler, steps: steps ?? v.steps, denoise: 1 } };
     g[9] = { class_type: "KSamplerSelect", inputs: { sampler_name: sampler } };
     g[10] = { class_type: "RandomNoise", inputs: { noise_seed: seed } };
     g[11] = { class_type: "SamplerCustomAdvanced",
@@ -2187,6 +2387,7 @@ export function videoGraphH3({ prompt, seed, seconds, width, height, steps,
     ...img(lastFrame, 17),
     ...controlNodes,
     ...controlApply,
+    ...attentionNodes,
     1: unetNode(v.dit),
     /* THE TURBO LoRA — fast path only (see `useTurbo` above). History: it was
      * named in config from day one and never loaded; then loaded always; now
@@ -2223,8 +2424,10 @@ export function videoGraphH3({ prompt, seed, seconds, width, height, steps,
       // The LoRA'd model on the fast path, the bare one on the quality path.
       inputs: { model: MODEL, shift_video: shiftV, shift_audio: shiftA },
     },
-    7: { class_type: "BasicGuider", inputs: { model: ["6", 0], conditioning: [cont ? "74" : sound ? "23" : BASE, 0] } },
-    8: { class_type: "BasicScheduler", inputs: { model: ["6", 0], scheduler: v.scheduler, steps: steps ?? v.steps, denoise: 1 } },
+    ...sparseNodes,
+    ...cacheNodes,
+    7: { class_type: "BasicGuider", inputs: { model: SAMPLE_MODEL, conditioning: [cont ? "74" : sound ? "23" : BASE, 0] } },
+    8: { class_type: "BasicScheduler", inputs: { model: SAMPLE_MODEL, scheduler: v.scheduler, steps: steps ?? v.steps, denoise: 1 } },
     9: { class_type: "KSamplerSelect", inputs: { sampler_name: sampler } },
     10: { class_type: "RandomNoise", inputs: { noise_seed: seed } },
     11: {

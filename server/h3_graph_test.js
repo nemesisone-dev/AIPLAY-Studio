@@ -23,6 +23,8 @@ import { config } from "./config.js";
 import {
   videoGraphH3, videoGraphLtx, h3TurboLoraFor, h3SigmaShiftFor, h3SamplerFor, saveEncode,
 } from "./workflow.js";
+import { attentionOptions } from "./art.js";
+import { chosenAttention } from "./comfyargs.js";
 
 let pass = 0;
 const failures = [];
@@ -142,11 +144,11 @@ try {
     eq("refs @8: the ref2v 8-step build loads", g[18]?.inputs?.lora_name, R8);
     eq("refs @8: the reference node is there", g[5].class_type, "MiniMaxH3ReferenceToVideo");
     eq("refs @8: its shift is the table's row for THAT LoRA", g[6].inputs.shift_video, 12);
-    eq("refs @8: Euler also reaches the reference graph", g[9].inputs.sampler_name, "euler");
+    eq("refs @8: the reference path runs res_multistep, measured (REWIND A/B, 2026-09-24)", g[9].inputs.sampler_name, "res_multistep");
     const g4 = build({ steps: 4, refImages: ["ref.png"] });
     eq("refs @4: the ref2v 4-step build", g4[18]?.inputs?.lora_name, R4);
     eq("refs @4: retains ref2v's 12/3 shift, distinct from fl2v", `${g4[6].inputs.shift_video}/${g4[6].inputs.shift_audio}`, "12/3");
-    eq("refs @4: Euler with guidance-free BasicGuider", `${g4[9].inputs.sampler_name}/${g4[7].class_type}`, "euler/BasicGuider");
+    eq("refs @4: res_multistep with guidance-free BasicGuider", `${g4[9].inputs.sampler_name}/${g4[7].class_type}`, "res_multistep/BasicGuider");
   }
   {
     const g = build({ steps: 20 });
@@ -264,11 +266,12 @@ try {
     ok("the table has a row for the fl2v 4-step 768p build, at 6",
       savedH3.turboShiftByLora?.["minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"]?.video === 6);
     ok("refTurboLora's first candidate is the ref2v 8-step v1.0 768p build",
-      /refTurboLora: pick\("loras",\n\s+"minimax_h3_ref2v_turbo_8step_v1\.0_768p_comfyui_bf16\.safetensors"/.test(cfg));
+      /refTurboLora: loraSlot\("refTurboLora",\n\s+"minimax_h3_ref2v_turbo_8step_v1\.0_768p_comfyui_bf16\.safetensors"/.test(cfg));
     ok("refTurboLora4 still leads with the 4-step v0.1 build",
-      /refTurboLora4: pick\("loras",\n\s+"minimax_h3_ref2v_turbo_4step_v0\.1_comfyui_bf16\.safetensors"/.test(cfg));
+      /refTurboLora4: loraSlot\("refTurboLora4",\n\s+"minimax_h3_ref2v_turbo_4step_v0\.1_comfyui_bf16\.safetensors"/.test(cfg));
     ok("turboLora3 leads with the TaoMate conversion, then Kijai's rank-19 average, then the 4-step build",
-      /turboLora3: pick\("loras",\n\s+"taomate_h3_3step_comfy\.safetensors",\n(?:\s*\/\/[^\n]*\n)*\s+"minimax_h3_taomate_3step_lora_avg_rank_19_bf16\.safetensors",\n\s+"minimax_h3_fl2v_turbo_4step_v1\.0_768p_comfyui_bf16\.safetensors"\)/.test(cfg));
+      /export const TAOMATE_FILES = \[\n\s+"taomate_h3_3step_comfy\.safetensors",\n\s+"minimax_h3_taomate_3step_lora_avg_rank_19_bf16\.safetensors",\n\];/.test(cfg)
+      && /turboLora3: loraSlot\("turboLora3", \.\.\.TAOMATE_FILES,\n\s+"minimax_h3_fl2v_turbo_4step_v1\.0_768p_comfyui_bf16\.safetensors"\)/.test(cfg));
     ok("...and the table starts the rank-19 average at the base 12 too",
       savedH3.turboShiftByLora?.["minimax_h3_taomate_3step_lora_avg_rank_19_bf16.safetensors"]?.video === 12);
     ok("the table starts the 3-step build at the base 12 until it is measured",
@@ -277,6 +280,108 @@ try {
       /id="vidSteps" type="range" min="3"/.test(fs.readFileSync(new URL("../web/index.html", import.meta.url), "utf8")));
     ok("config.video.saveCrf is set, and not to libx264's silent 23", savedCrf > 0 && savedCrf < 23);
   }
+  /* ── COMFY KITCHEN ATTENTION ─────────────────────────────────────────────
+   * Measured 1.5-1.9x on the sampler for a real film clip on this card, and
+   * never switched on in 698 earlier renders (config.js has the numbers). The
+   * pins below are about WHERE the node sits, because in the wrong place it is
+   * worse than absent: after the shift, the scheduler runs on one model and the
+   * guider on another; before a LoRA, the LoRA patches the dense model. */
+  console.log("\n  -- Comfy Kitchen attention --");
+  {
+    ok("config ships H3 with attention \"ck\"", savedH3.attention === "ck", String(savedH3.attention));
+    const base = { prompt: "p", seed: 1, seconds: 4.4, width: 1344, height: 768, steps: 4 };
+    const shapes = [
+      ["references", { refImages: ["a.png", "b.png"] }, "18"],
+      ["plain text-to-video", {}, "18"],
+      ["the person's own LoRA", { refImages: ["a.png"], loras: [{ name: "mine.safetensors", strength: 0.8 }] }, "90"],
+      ["a control video", { controlVideo: "c.mp4", controlPatch: "p.safetensors" }, "34"],
+    ];
+    for (const [label, extra, wraps] of shapes) {
+      const g = videoGraphH3({ ...base, ...extra, attention: "ck" });
+      ok(`${label}: node 85 is ModelAttentionBackend on "comfy kitchen attention"`,
+        g["85"]?.class_type === "ModelAttentionBackend" && g["85"]?.inputs.attention === "comfy kitchen attention",
+        JSON.stringify(g["85"]));
+      eq(`${label}: it wraps the LAST patch on the model (${wraps})`, g["85"]?.inputs.model?.[0], wraps);
+      eq(`${label}: and the sigma shift reads it`, g["6"].inputs.model[0], "85");
+      ok(`${label}: so guider AND scheduler both run on the CK model`,
+        g["7"].inputs.model[0] === "6" && g["8"].inputs.model[0] === "6");
+    }
+    for (const off of [null, undefined, "", "CK", "kitchen"]) {
+      const g = videoGraphH3({ ...base, refImages: ["a.png"], attention: off });
+      ok(`attention ${JSON.stringify(off)} puts no node in the graph`,
+        !Object.values(g).some((n) => n.class_type === "ModelAttentionBackend") && g["6"].inputs.model[0] !== "85");
+    }
+    /* "pytorch" is an EXPLICIT PyTorch node in the same place. Only an engine
+     * with a per-render picker asks for it (FastH3); h3Attention() answers "ck"
+     * or null, so H3's own graphs and their cache keys do not change. */
+    {
+      const g = videoGraphH3({ ...base, refImages: ["a.png"], attention: "pytorch" });
+      ok("attention \"pytorch\" is node 85 on \"pytorch attention\", read by the shift",
+        g["85"]?.class_type === "ModelAttentionBackend" && g["85"]?.inputs.attention === "pytorch attention"
+          && g["6"].inputs.model[0] === "85", JSON.stringify(g["85"]));
+    }
+    /* Node 85 is the only free id in that neighbourhood. The first A/B harness
+     * used 50 and would have overwritten the first AUDIO reference's loader. */
+    {
+      const g = videoGraphH3({ ...base, refImages: ["a.png"], refAudios: [{ name: "v.wav" }], attention: "ck" });
+      ok("an audio reference and the attention node do not collide",
+        g["50"]?.class_type === "LoadAudio" && g["85"]?.class_type === "ModelAttentionBackend",
+        `50=${g["50"]?.class_type} 85=${g["85"]?.class_type}`);
+    }
+
+    /* THE ENGINE'S ANSWER, both shapes. Reading only one would make an engine
+     * on the other look like it has no Comfy Kitchen — slow, and never an error. */
+    const v3 = { ModelAttentionBackend: { input: { required: { attention: ["COMBO",
+      { options: ["pytorch attention", "comfy kitchen attention"], default: "pytorch attention" }] } } } };
+    const legacy = { ModelAttentionBackend: { input: { required: { attention: [
+      ["pytorch attention", "comfy kitchen attention"], { default: "pytorch attention" }] } } } };
+    const without = { ModelAttentionBackend: { input: { required: { attention: ["COMBO",
+      { options: ["pytorch attention"] }] } } } };
+    ok("the v3 COMBO shape is read (what 0.36 sends)", attentionOptions(v3).includes("comfy kitchen attention"));
+    ok("the older list shape is read too", attentionOptions(legacy).includes("comfy kitchen attention"));
+    ok("an engine without the kernel does not offer it", !attentionOptions(without).includes("comfy kitchen attention"));
+    for (const junk of [null, {}, { ModelAttentionBackend: {} }, { ModelAttentionBackend: { input: { required: { attention: "x" } } } }]) {
+      ok(`an unreadable answer is "not offered", not a throw (${JSON.stringify(junk).slice(0, 40)})`,
+        Array.isArray(attentionOptions(junk)) && attentionOptions(junk).length === 0);
+    }
+
+    /* THE CALLER. The route that builds every clip names each field it passes
+     * and drops the rest in silence — so a speedup nobody passes is simply
+     * absent, and a slow clip is not an error anyone sees. */
+    const art = fs.readFileSync(new URL("./art.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+    ok("art.js hands the H3 graph its attention", /attention: await this\.videoAttention\(job\),/.test(art));
+    {
+      const va = art.slice(art.indexOf("async videoAttention(job)"), art.indexOf("async videoAttention(job)") + 600);
+      ok("...videoAttention gives LTX no node", /if \(name === "ltx"\) return null;/.test(va));
+      ok("...H3 goes through h3Attention(), never around it", /return this\.h3Attention\(\);/.test(va));
+      ok("...and an engine with its own picker names a literal backend, never the launcher's",
+        /if \(eng\?\.sparseAttention\) \{[\s\S]{0,200}return "pytorch";[\s\S]{0,120}return \(await this\.#kitchenOffered\(\)\) \? "ck" : "pytorch";/.test(va));
+    }
+    const fn = art.slice(art.indexOf("async h3Attention()"), art.indexOf("async h3Attention()") + 900);
+    const probe = art.slice(art.indexOf("async #kitchenOffered()"), art.indexOf("async #kitchenOffered()") + 500);
+    ok("h3Attention answers \"ck\" or null, never \"pytorch\" (so H3's graphs are unchanged)",
+      /return \(await this\.#kitchenOffered\(\)\) \? "ck" : null;/.test(fn) && !/"pytorch"/.test(fn.slice(0, fn.indexOf("async #kitchenOffered()"))));
+    ok("h3Attention lets an EXPLICIT launcher choice other than CK win",
+      /const chosen = chosenAttention\(config\.comfy\?\.options\?\.attention,\s*\{ fix: config\.comfy\?\.amdFix, vendor: vendorOf\(config\.gpu, config\.torchBackend\) \}\);\s*if \(chosen && chosen !== "--use-ck-attention"\) return null;/.test(fn));
+    /* The AMD/Intel fix's PyTorch value is what the launcher's panel SHOWS on
+     * those cards, so any Save stores it. Read as a choice, it took Comfy
+     * Kitchen away from H3 on every AMD install whose panel was ever saved. */
+    const PT = "--use-pytorch-cross-attention";
+    eq("AMD, fix auto: the fix's PyTorch is not a choice", chosenAttention(PT, { fix: "auto", vendor: "amd" }), null);
+    eq("Intel, fix auto: the same", chosenAttention(PT, { fix: "auto", vendor: "intel" }), null);
+    eq("fix forced on (any card): the same", chosenAttention(PT, { fix: "on", vendor: "nvidia" }), null);
+    eq("NVIDIA, fix auto: PyTorch is the person's choice", chosenAttention(PT, { fix: "auto", vendor: "nvidia" }), PT);
+    eq("AMD with the fix OFF: PyTorch is the person's choice", chosenAttention(PT, { fix: "off", vendor: "amd" }), PT);
+    eq("AMD, fix auto: Sage is still the person's choice", chosenAttention("--use-sage-attention", { fix: "auto", vendor: "amd" }), "--use-sage-attention");
+    eq("AMD, fix auto: CK stays CK", chosenAttention("--use-ck-attention", { fix: "auto", vendor: "amd" }), "--use-ck-attention");
+    eq("nothing saved is no choice", chosenAttention(undefined, { fix: "auto", vendor: "amd" }), null);
+    ok("...honours config's own switch", /config\.video\.engines\.h3\?\.attention \?\? "ck"\) !== "ck"\) return null/.test(fn));
+    ok("...asks the running engine whether it offers the option", /engineDoor\.objectInfo\("ModelAttentionBackend"\)/.test(probe) && /attentionOptions\(info\)\.includes\("comfy kitchen attention"\)/.test(probe));
+    ok("...and a failed probe means not offered, never a thrown render", /catch \{ this\.#ckOffered = false; \}/.test(probe));
+    ok("an engine restart forgets the answer, because it may be a different ComfyUI",
+      /engineDoor\.on\("rebound", \(\) => \{[\s\S]{0,300}this\.#ckOffered = undefined;/.test(art));
+  }
+
 } finally {
   restore();
 }

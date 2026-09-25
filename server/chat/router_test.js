@@ -23,8 +23,8 @@
  * hook. No server, no card, no model.
  */
 import {
-  ROUTABLE, WITHHELD, COST_TEXT, index, chooseTools, routedRegistry,
-  adaptTool, callableShape, scoreTool, toolTokens, words, wantsRemoval, ROUTE_LIMIT,
+  ROUTABLE, WITHHELD, COST_TEXT, COST_TEXT_BY_TOOL, index, chooseTools, routedRegistry,
+  adaptTool, callableShape, scoreTool, toolTokens, words, wantsRemoval, ROUTE_LIMIT, CHAT_WITHHELD_ARGS,
 } from "./router.js";
 import { TOOLS as MCP_TOOLS } from "../mcp.js";
 import { createChatTools } from "./tools.js";
@@ -140,8 +140,10 @@ head("§2  the gate is DECLARED, because deriving it is wrong in the dangerous d
   const gated = index().filter(({ tool }) => tool.gate);
   ok("every gated tool carries the cost sentence its card will show",
     gated.every(({ tool }) => typeof tool.cost === "string" && tool.cost.length > 10));
-  ok("...and it is the sentence for its own kind of gate",
-    gated.every(({ tool }) => tool.cost === COST_TEXT[tool.gate]));
+  ok("...and it is the sentence for its own kind of gate (or the tool's own, where the gate's would be false)",
+    gated.every(({ tool }) => tool.cost === (COST_TEXT_BY_TOOL[tool.name] || COST_TEXT[tool.gate])));
+  ok("...and a tool's own sentence is only for a tool that is gated",
+    Object.keys(COST_TEXT_BY_TOOL).every((n) => ROUTABLE[n]));
 
   /* Tools whose names say plainly that they render. If one of these is ever
    * marked free, the chat spends a shared card without asking. */
@@ -440,6 +442,96 @@ head("§9  the scorer, and that routing costs no model call");
   ok("an empty message routes nothing", chooseTools("").length === 0);
   ok("a message of pure punctuation routes nothing", chooseTools("!!! ??? ...").length === 0);
   ok("a very long message does not throw", chooseTools("render ".repeat(500)).length <= ROUTE_LIMIT);
+}
+
+/* ─────────────────────────────────────────────────────────────── §10 */
+head("§10  the overrides the chat may not send");
+
+{
+  /* Accepting a friend's order and keeping a returned take are ordinary writes
+   * the chat may make after its confirm card. Their `anyway` is not: it walks
+   * past a busy card, the minutes a day a person gave that friend, or a take
+   * that failed its checks — and the confirm card cannot say which. */
+  const argsFor = (name) => (name === "collab_accept" ? { file: "x.aiplay", seen: true } : { from: "ab", file: "x.mp4" });
+  for (const name of ["collab_accept", "collab_adopt"]) {
+    const tool = MCP_TOOLS.find((t) => t.name === name);
+    ok(`${name} is routable, and its override is on the withheld list`,
+      !!tool && ROUTABLE[name] === "writes" && "anyway" in (CHAT_WITHHELD_ARGS[name] || {}));
+    const calls = [];
+    const adapted = adaptTool({ ...tool, run: async (a) => { calls.push(a); return { ok: true }; } }, ROUTABLE[name]);
+    ok(`...${name} is never shown \`anyway\``, !("anyway" in adapted.args) && "file" in adapted.args);
+    let refused = null;
+    try { await adapted.run({ ...argsFor(name), anyway: true }); } catch (e) { refused = e.message; }
+    ok("...and a call that sends it anyway is refused by name, never silently stripped",
+      /^anyway is not available in this chat/.test(refused || "") && calls.length === 0, refused);
+    await adapted.run(argsFor(name));
+    ok("...while the ordinary call goes through, with no override in it",
+      calls.length === 1 && !("anyway" in calls[0]), JSON.stringify(calls));
+  }
+  /* ⚠ AND THE WAY ROUND IT (release critic, 2026-09-24): with collab_accept
+   * routable, raising a friend's minutes a day and then accepting walked past
+   * the same check the withheld `anyway` guards. The allowance, the role and
+   * the trust grant are a person's decisions on the Collab screen. */
+  for (const name of ["collab_set_lend_minutes", "collab_set_role", "collab_verify"]) {
+    ok(`${name} is withheld from the in-app chat, with a reason, and never routed`,
+      !(name in ROUTABLE) && typeof WITHHELD[name] === "string" && WITHHELD[name].length > 40
+      && !index().some((e) => e.tool.name === name), WITHHELD[name]);
+  }
+  ok("...and the minutes setter's reason names the accept it would get around",
+    /collab_accept/.test(WITHHELD.collab_set_lend_minutes) && /anyway/.test(WITHHELD.collab_set_lend_minutes));
+  /* video_settings SAVES what it sets (sparse attention on Fast among it). */
+  ok("video_settings asks first, and its card says the change is saved, not a new file",
+    ROUTABLE.video_settings === "writes" && /SAVED/.test(COST_TEXT_BY_TOOL.video_settings)
+    && !/NEW FILE/.test(COST_TEXT_BY_TOOL.video_settings));
+  /* A plain read asks too (the router gates the tool, not the call), so the
+   * card says reading changes nothing, in plain words, and the chat's tool
+   * list does not call it a file (release critic). */
+  const vs = adaptTool({ ...MCP_TOOLS.find((t) => t.name === "video_settings"), run: async () => ({}) }, ROUTABLE.video_settings);
+  ok("...its card says a read changes nothing, with no engine jargon, and its tag says it saves a setting, not a file",
+    /reading your video settings changes nothing/.test(vs.cost) && !/sparse attention|Fast/.test(vs.cost)
+    && gateLabel(vs) === "   [SAVES A SETTING \u2014 ASKS YOU FIRST]", `${vs.cost} | ${gateLabel(vs)}`);
+  ok("every tool named on that list is a real tool with that argument",
+    Object.entries(CHAT_WITHHELD_ARGS).every(([name, a]) => {
+      const props = MCP_TOOLS.find((t) => t.name === name)?.inputSchema?.properties || {};
+      return Object.keys(a).every((k) => k in props);
+    }));
+}
+
+/* ─────────────────────────────────────────────────────────────── §11 */
+head("§11  the score tools, the stem splitter and the Stop button are within reach");
+
+{
+  /* ⚠ MEASURED 2026-09-24 (a user's question led to it): hum_to_score and
+   * song_to_score were in ROUTABLE, but their required `source` is an object,
+   * so the shape rule dropped them and "turn my hum into a score" was offered
+   * score_* tools instead. daw_edit_notes was dropped the same way. */
+  for (const name of ["hum_to_score", "song_to_score", "daw_edit_notes"]) {
+    ok(`${name} is in the index`, routedNames.has(name));
+  }
+  const hum = chooseTools("turn my hum into a score").map((t) => t.name);
+  ok("\"turn my hum into a score\" reaches hum_to_score first", hum[0] === "hum_to_score", hum.join(", "));
+  const humTool = index().find((e) => e.tool.name === "hum_to_score")?.tool;
+  ok("...offering the flat library_file a 4B sends best, and source as a JSON string",
+    humTool?.args?.library_file?.type === "string" && humTool?.args?.source?.type === "string"
+    && /^JSON object/.test(humTool?.args?.source?.note || ""), JSON.stringify(humTool?.args));
+  const calls = [];
+  const adapted = adaptTool({ ...mcpByName.get("hum_to_score"), run: async (a) => { calls.push(a); return { ok: true }; } }, ROUTABLE.hum_to_score);
+  await adapted.run({ source: JSON.stringify({ library_file: "aiplay_00001.flac" }) });
+  ok("...and a JSON source is decoded before the MCP tool runs",
+    calls[0]?.source?.library_file === "aiplay_00001.flac", JSON.stringify(calls));
+
+  ok("separate_stems is reachable and asks first (it holds the card)",
+    routedNames.has("separate_stems") && ROUTABLE.separate_stems === "gpu");
+  const split = chooseTools("separate the stems of my last song").map((t) => t.name);
+  ok("...and \"separate the stems\" finds it", split.includes("separate_stems"), split.join(", "));
+  ok("stop_generation is reachable and asks first (it ends the person's own render)",
+    routedNames.has("stop_generation") && ROUTABLE.stop_generation === "writes");
+  const stopCard = index().find(({ tool }) => tool.name === "stop_generation")?.tool?.cost || "";
+  ok("...and its card does not say Stop writes a new file", /ends the render/.test(stopCard) && !/NEW FILE/.test(stopCard), stopCard);
+  ok("stems_python is withheld: it names a program Studio runs",
+    typeof WITHHELD.stems_python === "string" && /program/.test(WITHHELD.stems_python) && !("stems_python" in ROUTABLE));
+  ok("setup_feature stays withheld, so a refusal's setup id waits for the person",
+    typeof WITHHELD.setup_feature === "string" && !routedNames.has("setup_feature"));
 }
 
 console.log(`\n${pass} passed, ${failures.length} failed`);

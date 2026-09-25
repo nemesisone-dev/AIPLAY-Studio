@@ -14,6 +14,7 @@
  */
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { config } from "../config.js";
 
 let pass = 0;
@@ -49,7 +50,7 @@ console.log("\n§1  the driver: a replay branch, and what it replays");
     /raise Refused\("--extend-from %s has no %s;/.test(py));
   const python = config?.yue?.python || "D:\\AI\\aiplay-studio-bench\\venv-yue\\Scripts\\python.exe";
   if (fs.existsSync(python)) {
-    const r = spawnSync(python, ["-m", "py_compile", new URL("./yue_driver.py", import.meta.url).pathname.slice(1)], { encoding: "utf8" });
+    const r = spawnSync(python, ["-m", "py_compile", fileURLToPath(new URL("./yue_driver.py", import.meta.url))], { encoding: "utf8" });
     ok("the driver byte-compiles under the YuE2 python", r.status === 0, (r.stderr || r.stdout || "").trim().slice(0, 300));
   } else {
     console.log("  skip  the YuE2 python is not on this machine; the driver was not byte-compiled");
@@ -97,7 +98,7 @@ console.log("\n§4  the page, the MCP tool and the doc");
   const app = src("../../web/app.js"), mcp = src("../mcp.js"), router = src("../chat/router.js"), api = src("../../API.md");
   ok("the page offers Extend on a YuE2 take", /\$\("spExtendSec"\)\.hidden = !\(\(t\?\.codes \|\| t\?\.yueDir \|\| state\.tokenizerReady\) && t\?\.durationSeconds\);/.test(app));
   ok("...and lets it start", /if \(!t\.codes && !t\.yueDir && !state\.tokenizerReady\) \{/.test(app));
-  ok("...sending a longer score when Advanced Options holds one", /abc: \$\("yAbcUse"\)\?\.checked \? \(\$\("yAbc"\)\?\.value\.trim\(\) \|\| undefined\) : undefined,/.test(app));
+  ok("...sending a longer score when Melody & score holds one", /abc: \$\("yAbcUse"\)\?\.checked \? \(\$\("yAbc"\)\?\.value\.trim\(\) \|\| undefined\) : undefined,/.test(app));
   ok("extend_song exists, requires file, and forwards every declared parameter",
     /name: "extend_song",/.test(mcp) && /required: \["file"\],/.test(mcp)
     && /fromSeconds: Number\.isFinite\(a\.from_seconds\)/.test(mcp) && /abc: typeof a\.abc === "string"/.test(mcp));

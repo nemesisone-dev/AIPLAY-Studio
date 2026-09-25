@@ -201,6 +201,10 @@ sigma 0.387. Costs the entire point of the 4-step path — 5× wall clock.
   to 20 steps at 1344×768, where `useTurbo` is false and no LoRA loads. But 97 of
   100 real clips ran at 4 or 8 steps and 61 at 1920×1088. The longest justification
   comment in `config.js` describes a configuration used 3 times out of 100.
+  *(Since 2026-09-23 it resolves to the matched turbo setting the disk has: 8
+  where both 8-step builds are on disk, else 4, since the Models screen fetches
+  only the 4-step ones. The Video screen opens on the same number, and 20 on
+  the bare model is the Best chip. Arm H below is why the default left 20.)*
 - **The reference path has never been verified at the settings in use.** Checked
   once, by eye, in `0df69e6`: one reference, 864×480, 8 steps. Meanwhile 53 of 100
   clips used two or three references at 1920×1088 and 4 steps.
@@ -301,6 +305,12 @@ colours" was four things stacked: the 1.4 Mbit/s encode, the 4-step v0.1
 path's warm cast and 2× churn, the prompt's own softness, and the untagged
 BT.601 colour in the file. Contact sheets and crops: the session's
 scratchpad, `ab_h3_sheet.jpg` and `ab_h3_zoom_*.png`.
+
+Superseded for new music-video projects on 2026-09-24: the REWIND A/B put the song
+under every reference shot (DIRECTING.md §2), and new projects start on Song under
+the clip: always. The sampler on the reference path is res_multistep again. (The
+detail column above is not seconds: arm D's 199 against arm A's 189 is no measure of
+what the song costs to render, which has never been measured on its own.)
 
 ## The three repos
 

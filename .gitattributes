@@ -16,8 +16,8 @@ examples/** text=auto eol=lf
 # every commit; a CRLF checkout of the .abc fails that lane on a clean tree.
 server/score/fixtures/** text=auto eol=lf
 
-# Shell entry points run inside Linux containers and must not acquire Windows
-# CRLF endings when this repository is prepared from a Windows checkout.
+# Shell entry points run inside Linux containers (the RunPod worker bootstrap)
+# and must not acquire Windows CRLF endings from a Windows checkout.
 *.sh text eol=lf
 
 # A GitHub "Download ZIP" has no .git, so the build could not say which commit it

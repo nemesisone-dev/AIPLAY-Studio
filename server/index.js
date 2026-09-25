@@ -1,3 +1,6 @@
+import { createWeightTransferRoutes } from './mesh/avatar-weight-transfer.js';
+import { createAvatarFittingRoutes } from './mesh/avatar-fitting.js';
+import {makeVideoRecipe,readVideoRecipe,describeVideoRecipe,videoRecipeMcpArgs} from "./collab/video-recipe.js";
 /**
  * AIPLAY Studio — local server.
  *
@@ -10,13 +13,13 @@ import { readFile, stat, writeFile, unlink, mkdir, readdir, rename, copyFile, re
 import { ImgWorker } from "./imgworker.js";
 import { createImageEditor } from "./image-editor.js";
 import { requestImageAndWait } from "./image-job.js";
-import { createReadStream } from "node:fs";
+import { createReadStream, statSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
 import { WebSocketServer } from "ws";
-import { config, prefsSnapshot } from "./config.js";
+import { config, PREF_PATHS, prefsSnapshot, loraStepsOf, whisperPython, defaultWhisperPython, prefChosen, prefOrigin, applyMachineDefault, forgetPref, overrideForSession, sessionOverride, LITERAL_DEFAULTS, refreshH3Speedups } from "./config.js";
 import { createVfxRoutes } from "./vfx/routes.js";
 import { createScoreRoutes } from "./score/routes.js";
 import { createAuditions, createAuditionRoutes, createAuditionSourceInspector, audioHash, exactJobReceipt, finishReplacement } from "./music/auditions.js";
@@ -40,25 +43,36 @@ import { hasAmdMusicFix, vendorOf } from "./comfyargs.js";
  * of an image/video MODEL throughout this file, and a bare import would be
  * shadowed inside the very handlers that need the door. */
 import { engine as engineDoor } from "./engine/client.js";
-import { qwenImageGraph, QWEN_IMAGE_PRESET } from "./qwen-image.js";
+import { qwenImageGraph, QWEN_IMAGE_PRESET, QWEN_DRAFT, qwenImageSettings } from "./qwen-image.js";
 import { validateVideoLoras } from "./video-lora-validation.js";
 import { qwenImageStatus, stageQwenReferences, QWEN_IMAGE_ENGINE } from "./qwen-status.js";
 import { createEngineRoutes } from "./engine/routes.js";
+/* RunPod rendering (the launcher's "RunPod GPU" mode): the worker client, the
+ * account (Pods and billing) and their routes, contributed by nemesisone-dev. */
 import { createRemoteRoutes } from "./engine/remote-routes.js";
 import { JobRunner } from "./jobs.js";
 import { Library } from "./library.js";
-import { BatchRunner } from "./batch.js";
-import { gpuStatus, ramStatus } from "./gpu.js";
-import { ArtRunner, COVER_DIR, LRC_DIR, CLIP_DIR, IMAGE_DIR, coverNameFor } from "./art.js";
+import { isNativeLibraryWav } from "./library-wav.js";
+import { BatchRunner, plannedSongs } from "./batch.js";
+import { gpuStatus, ramStatus, cpuStatus, gpuFirstReading, gpuReadOnce } from "./gpu.js";
+import { ArtRunner, COVER_DIR, LRC_DIR, CLIP_DIR, IMAGE_DIR, coverNameFor, videoSpeed } from "./art.js";
+import { jobStanding, ownFailure } from "./art-wait.js";
+import { whisperPythonMissing, pythonVerdict } from "./lrc.js";
+import { createWhisperRoutes } from "./whisper.js";
 import { probeClip, overlapFor, extensionFrames } from "./clipjoin.js";
 import { setSecret, clearSecret, secretStatus, protectionAvailable, getSecret, hasSecret } from "./secrets.js";
 import { createCloud } from "./llm/providers.js";
 import { createLlmRoutes } from "./llm/routes.js";
+import { createRouterClient, routerKeyCache } from "./router/client.js";
+import { createCatalog } from "./router/catalog.js";
+import { createRouterJobs } from "./router/jobs.js";
+import { createRouterRoutes, KEY_NAME as ROUTER_KEY } from "./router/routes.js";
 import { apiStatus, spendSummary, estimateUsd, PROVIDERS } from "./apiEngine.js";
+import { createCloudRoutes, hostedWouldBill, paidRefusal, HOSTED_KEY_PLACE, CLOUD_CARD_PLACE, localUiHost, LENDER_ROLE_LABEL } from "./cloud-switch.js";
 import { listCustom, CUSTOM_DIR, TOKENS, KINDS, assignedTo } from "./customWorkflows.js";
-import { ModelManager, diskFree, CATALOG, MODEL_TO_CAPABILITY, modelLabel, modelPageUrl, engineFromModelFile } from "./models.js";
+import { ModelManager, diskFree, CATALOG, MODEL_TO_CAPABILITY, modelLabel, modelPageUrl, engineFromModelFile, markRequired, modulesOf, songRights, songRightsStamp } from "./models.js";
 import { probeModel, loadableAs, presetFor, loraFits } from "./detect.js";
-import { listPickable, listVideoPickable, listParts, resolvePick, isDitFolder, DIT_ENGINE, VIDEO_DIT_ENGINE } from "./modelpick.js";
+import { listPickable, listVideoPickable, listParts, listVideoParts, resolvePick, isDitFolder, DIT_ENGINE, VIDEO_DIT_ENGINE } from "./modelpick.js";
 
 /**
  * The parts a VIDEO render may be pointed at instead of the engine's own.
@@ -76,7 +90,10 @@ async function videoModelPatch(b, engine) {
     audioVae: String(b.audioVae || "").trim(),
   };
   if (!Object.values(named).some((x) => x && x !== "auto")) return { models: null };
-  const [shelf, parts] = await Promise.all([listVideoPickable(config), listParts(config)]);
+  /* listVideoParts, because the three rows below are checked for FIT and not
+   * only for existence — the same verdict the Video screen filters its
+   * dropdowns with, so the door and the screen cannot drift apart. */
+  const [shelf, parts] = await Promise.all([listVideoPickable(config), listVideoParts(config)]);
   const patch = {};
   if (named.dit && named.dit !== "auto") {
     const row = shelf.find((r) => r.name === path.basename(named.dit));
@@ -90,11 +107,27 @@ async function videoModelPatch(b, engine) {
      * one the person wants used, so it stands in for both rather than half. */
     if (engine === "h3") patch.ditRef = row.name;
   }
-  for (const [key, list, folder] of [["textEncoder", parts.encoders, "text_encoders"],
-                                     ["videoVae", parts.vaes, "vae"], ["audioVae", parts.vaes, "vae"]]) {
+  for (const [key, list, folder, verdict] of [["textEncoder", parts.encoders, "text_encoders", "fit"],
+                                              ["videoVae", parts.vaes, "vae", "fitVideo"],
+                                              ["audioVae", parts.vaes, "vae", "fitAudio"]]) {
     const want = named[key] && named[key] !== "auto" ? path.basename(named[key]) : "";
     if (!want) continue;
-    if (!list.some((x) => x.name === want)) return { error: `No such file in models/${folder}: ${want}.` };
+    const row = list.find((x) => x.name === want);
+    if (!row) return { error: `No such file in models/${folder}: ${want}.` };
+    /* ⚠ THE DOOR, NOT ONLY THE DROPDOWN. The screen stopped offering parts that
+     * belong to another engine, but this route takes them by name from anything
+     * that can POST — the MCP tools, a script, a second window on the old page.
+     * Until this line a FLUX autoencoder named as H3's video VAE was accepted
+     * and failed three minutes later inside ComfyUI.
+     *
+     * Only a positive "no" is refused: "unknown" (a .gguf encoder, a file with
+     * no embedding tensor to measure) goes through, because turning "we could
+     * not tell" into "you may not" would block a working file at the door with
+     * no way around it. */
+    if (row[verdict]?.[engine] === "no") {
+      return { error: `${want} is not a ${key === "textEncoder" ? "text encoder" : key === "videoVae" ? "video VAE" : "audio VAE"} `
+        + `the ${engine.toUpperCase()} engine can load — it is built differently from the one it came with.` };
+    }
     patch[key] = want;
   }
   return { models: patch };
@@ -124,23 +157,112 @@ let coverSkipSaid = false;
 async function checkedVideoLoras(value, engine) {
   const e = videoEngine(engine);
   return validateVideoLoras(value, {
-    engine, shelf: async () => scanBases(await modelBases()), probe: probeModel,
+    engine, loraBase: e.loraBase, label: e.label, shelf: async () => scanBases(await modelBases()), probe: probeModel,
     automatic: [e.turboLora, e.turboLora4, e.turboLora3, e.refTurboLora, e.refTurboLora4].filter(Boolean),
   });
 }
+/* Qwen too, now: its files missing is the same "not installed" as any other
+ * engine's, and a cover queued without them could only fail ("Qwen Image 2.1
+ * is unavailable") after every song. Its runtime check still runs in art.js
+ * when the files are there. The answer and its one sentence are the cover row
+ * of machineDefaults() (server/fit.js defaultFor "cover"). */
 async function coverCanRun() {
-  if (assignedTo("cover") || (config.art.engine === "checkpoint" && config.art.checkpoint)) return true;
-  // Qwen's runner checks both native files and runtime nodes, and reports a
-  // normal failed job to Overnight/UI. A catalogue-only skip hides that result.
-  if (config.art.engine === QWEN_IMAGE_ENGINE) return true;
-  const capId = MODEL_TO_CAPABILITY[config.art.engine || "flux2"];
-  if (!capId) return true;
-  const row = (await models.status().catch(() => [])).find((c) => c.id === capId);
-  if (!row || row.ready) return true;
-  if (!coverSkipSaid) console.log(`  [cover] skipped: ${row.label} is not installed (Models screen, Images). Songs are unaffected.`);
+  const cover = (await machineDefaults().catch(() => null))?.find((d) => d.key === "art.engine");
+  if (!cover || cover.canRun) return true;
+  if (!coverSkipSaid) console.log(`  [cover] skipped: ${cover.why} Songs are unaffected.`);
   coverSkipSaid = true;
   return false;
 }
+
+/**
+ * DEFAULTS THAT FOLLOW THE DISK, and who chose each one.
+ *
+ * server/fit.js defaultFor() decides; this reads what it needs (the catalogue,
+ * the music model choices, the machine) and puts the answer into the live
+ * config ONLY where nobody chose — config.js applyMachineDefault, which never
+ * reaches settings.json. Worked out on read: /api/status, a song queued with no
+ * engine named, and a cover about to be queued. Cached for five seconds, like
+ * the music model list it reads, because /api/status is polled every four
+ * seconds by every open tab; a choice clears the cache at once.
+ * Returns studio_status's `defaults`: [{key, value, chosenBy, why, …}].
+ */
+let defaultsCache = { at: 0, value: null };
+/* No graphics card at all: the launcher installed ComfyUI's CPU-only PyTorch
+ * (settings.json torchBackend "cpu"). H3 is then not offered, rather than
+ * "cannot tell" (server/h3tier.js H3_NO_CARD); an AMD or Intel card whose
+ * memory was not read keeps "cannot tell". */
+function cpuOnlyEngine() { return config.torchBackend === "cpu"; }
+/* THE VIDEO DECODER THE H3 LAB MEASURED WITH (server/h3tier.js
+ * H3_VAE_MEASURED): the int8 file of the rig's own size, as config.js loads
+ * it. On a PC that loads it the measured tier sentences drop their "measured
+ * with a smaller video decoder" clause; everywhere else (a new install's fp16,
+ * Comfy-Org's same-named 2.81 GB int8) they keep it. Two stats, every 30 s. */
+let h3VaeCheck = { at: 0, value: false };
+function h3VaeMeasured() {
+  if (Date.now() - h3VaeCheck.at < 30_000) return h3VaeCheck.value;
+  const name = config.video.engines.h3?.videoVae;
+  const value = name === H3_VAE_MEASURED.file && [config.modelsDir, ...(config.modelsAlso || [])].some((base) => {
+    try { return statSync(path.join(base, "vae", name)).size === H3_VAE_MEASURED.bytes; } catch { return false; }
+  });
+  h3VaeCheck = { at: Date.now(), value };
+  return value;
+}
+async function machineDefaults() {
+  if (defaultsCache.value && Date.now() - defaultsCache.at < 5000) return defaultsCache.value;
+  /* The card first: until its first reading gpuStatus() is null and every
+   * machine looks like one with no card (native GGUF on NVIDIA, the int8 build
+   * on AMD). Waited for once, bounded; instant afterwards. */
+  await gpuFirstReading();
+  const cat = await models.status();
+  const choices = await musicModelChoices(cat);
+  const machine = readMachine(gpuStatus(), ramStatus(), { cpuOnly: cpuOnlyEngine(), vaeMeasured: h3VaeMeasured() });
+  machine.amdMusicFixed = hasAmdMusicFix(studioLaunchArgs());
+  /* What settings.json holds (a session's swap reports the saved value beside
+   * the one running) and who put it there. */
+  const swap = sessionOverride("music", "engine");
+  const ckptSwap = sessionOverride("music", "yue2Checkpoint");
+  const music = defaultFor("music", {
+    saved: prefChosen("music", "engine")
+      ? { engine: swap ? swap.saved : config.music.engine,
+        checkpoint: prefChosen("music", "yue2Checkpoint") ? (ckptSwap ? ckptSwap.saved : config.music.yue2Checkpoint) : null,
+        kept: prefOrigin("music", "engine") === "kept" }
+      : null,
+    session: swap || ckptSwap
+      ? { engine: config.music.engine, checkpoint: ckptSwap ? config.music.yue2Checkpoint : null, reason: (swap || ckptSwap).reason }
+      : null,
+    choices, machine, musicOnly: config.musicOnly,
+    api: { enabled: !!config.api?.enabled, provider: config.api?.provider || null },
+    /* Nothing ready names YuE2 through ComfyUI only where this launch runs one,
+     * on a PC its row does not put under the minimum (card or RAM: the
+     * launcher asks the same function, launcher/checks.mjs). */
+    comfy: comfyWanted,
+    ...(() => { const f = yue2ComfyFitOn(cat.find((c) => c.id === MODEL_TO_CAPABILITY["yue2-comfy"]), machine);
+      return { comfyFits: f.fits, comfyShort: f.short }; })(),
+  });
+  applyMachineDefault("music", "engine", music.value);
+  if (music.checkpointBy === "machine") applyMachineDefault("music", "yue2Checkpoint", music.checkpoint);
+  const image = defaultFor("image", {
+    saved: prefChosen("image", "engine") ? config.image.engine : null, kept: prefOrigin("image", "engine") === "kept",
+    capabilities: cat, machine, literal: LITERAL_DEFAULTS.image.engine,
+  });
+  applyMachineDefault("image", "engine", image.value);
+  const cover = defaultFor("cover", {
+    saved: prefChosen("art", "engine") ? config.art.engine : null, kept: prefOrigin("art", "engine") === "kept",
+    custom: !!assignedTo("cover") || (config.art.engine === "checkpoint" && !!config.art.checkpoint),
+    capabilities: cat, machine, literal: LITERAL_DEFAULTS.art.engine,
+  });
+  applyMachineDefault("art", "engine", cover.value);
+  const h3 = config.video.engines.h3;
+  const steps = h3?.stepDefaults ? defaultFor("videoSteps", { engine: "h3", label: h3.label, stepDefaults: h3.stepDefaults, turboBuilds: h3.turboBuilds }) : null;
+  const value = [music, image, cover, steps].filter(Boolean);
+  /* Not cached while the card is still unread (the wait above timed out):
+   * the next read answers again rather than repeating a no-card answer. */
+  defaultsCache = gpuReadOnce() ? { at: Date.now(), value } : { at: 0, value: null };
+  return value;
+}
+/* A startup swap: the machine's pick when nobody chose; for a saved choice,
+ * this session only (config.js overrideForSession), never written back. */
+const settle = (group, key, value, reason) => overrideForSession(group, key, value, reason);
 
 function missingSupport(cap, ownDit, own = {}) {
   if (!cap) return null;
@@ -173,14 +295,18 @@ function missingSupport(cap, ownDit, own = {}) {
 import {
   scanBases, extraBases, uniqueDirs, countByFolder, shelfOf, pickFolderDialog, samePath,
 } from "./localmodels.js";
-import { readMachine, fitFor, recommendFor, FIT_STATES } from "./fit.js";
-import { createPersonaStore, applyPersona, personaFits } from "./personas.js";
+import { readMachine, fitFor, recommendFor, FIT_STATES, defaultFor, yue2BuildFor, yue2ComfyFitOn } from "./fit.js";
+import { h3Status, h3StartSize, H3_VAE_MEASURED } from "./h3tier.js";
+/* The Video screen's sentences and the one plan behind a render (UI_PLAN C3/E4, the H3 lab's #5-#7). */
+import { videoPlan, refsIgnored, h3NotOfferedLine, isH3Family, fastNote, personaUnknown, personaMissing, keepFast } from "./video-plain.js";
+import { createPersonaStore, applyPersona, personaFits, bindPersonaForClip, stagePersonaForClip, CLIP_PERSONA_PICTURES } from "./personas.js";
+import { referenceSteps } from "./workflow.js";
 import { createReviewStore, reviewState, makeThumbnailer, suggestExpect } from "./review.js";
 import { createPromptStore } from "./prompts.js";
 import { expand, enumerate, hasWildcards, combinations, createDuplicateGuard, resolveRepeat } from "./wildcards.js";
 import * as reactive from "./reactive.js";
 import { runReactive } from "./reactive.js";
-import { paintClip } from "./reactive_paint.js";
+import { paintClip, paintDials } from "./reactive_paint.js";
 import { motionClip, motionChoices } from "./reactive_motion.js";
 // Video Workflow (fork-only). See FORK_DELTA.md.
 import { createMvRoutes } from "./mv/routes.js";
@@ -190,7 +316,10 @@ import * as prov from "./provenance.js";
  * /api/welcome and nothing else, and the document it serves is the same one
  * server/mcp-welcome.js hands an agent. */
 import { createWelcomeRoutes } from "./welcome/routes.js";
-/* CHAT v1 (FORK): the first screen in the rail. Owns /api/chat and nothing
+/* Simple or Advanced: saved on the first start so a new install stays the new
+ * install it was (UI_PLAN E1; server/welcome/level.js says why). */
+import { persistStartLevel } from "./welcome/level.js";
+/* CHAT v1 (FORK): the first entry under More tools. Owns /api/chat and nothing
  * else. Its eight tools reach this same server's own routes over loopback rather
  * than importing the runners out of this file's closure — the shape
  * welcome/routes.js already uses for /api/models, and for the same reason: one
@@ -200,8 +329,16 @@ import { createChatModels } from "./chat/models.js";
 import { createQwenModel, engineBusy } from "./chat/loop.js";
 import { createGallery, createEnhancer, createPromptToolRoutes } from "./prompt-tools.js";
 import { createMusicInputRoutes } from "./music-input.js";
+/* One-click setups: a private Python per feature (timed lyrics), built with the
+ * kept uv, and Studio's own packages again in an engine Studio installed. */
+import { createSetupRunner } from "./setup/venv.js";
+import { createEnginePackagesRunner } from "./setup/engine-packages.js";
+/* Read through the namespace, not by name: engineModuleRefusal (lane D) is
+ * called only when the module carries it, so this file loads either way. */
+import * as enginePackages from "./setup/engine-packages.js";
+import { createSetupRoutes, oneRunner } from "./setup/routes.js";
 import { createMusicPlanRoutes } from "./music-plan.js";
-import { createAvatarRoutes } from "./mesh/avatar.js";
+import { createAvatarRoutes, createAvatarService } from "./mesh/avatar.js";
 import { fit, rungArgs, fp8Allowed, maxTokensFor, GENERATION_CAP_SECONDS, CONTEXT_SECONDS } from "./music/yue_fit.js";
 import { cudaCapability } from "./mesh/runner.js";
 /* The YuE2 door's own refusals, answered at the click rather than as a failed
@@ -211,6 +348,7 @@ import { cudaCapability } from "./mesh/runner.js";
 import { refuseLyrics, yueStatus, YUE_MODEL } from "./music/yue.js";
 import { yueGgufStatus } from "./music/yue-gguf.js";
 import { prepareGgufJob } from "./music-gguf-input.js";
+import { yue2ComfyFields } from "./music/yue2-comfy-input.js";
 import { GgufSetup } from "./music/gguf-setup.js";
 /* Where a YuE2 render lands its score: the run folder is adopted by its
  * receipt, and the sheet is engraved so the ♪ badge on the row answers. */
@@ -233,22 +371,43 @@ import { createPreviewStore, assertPreviewFresh } from "./collab/preview.js";
 const collabPreviews = createPreviewStore();
 import { resourceCard, readResourceCard, describeResources, ageOf } from "./collab/resources.js";
 import { creditRollup, creditLines } from "./collab/credit.js";
-import { makeOrder, readOrder, orderPlanItem, describeOrder, makeReturn } from "./collab/order.js";
+import { makeOrder, readOrder, orderPlanItem, describeOrder, makeReturn, shotFlags } from "./collab/order.js";
 import { machineBusy, readWorkload } from "./collab/free.js";
 import * as book from "./collab/orderbook.js";
 import { ERRAND_SEGMENT, MIME_FOR, errandDoc, errandTitle, pictureKind, stageOrderFiles } from "./collab/errand.js";
 import { describePacket as describeAnyPacket } from "./collab/packet.js";
 import { speaks, stamp as collabStamp, describeStamp } from "./collab/compat.js";
 import { adoptReturn, dropReturn, landReturn, listQuarantine } from "./collab/quarantine.js";
+/* Lending for a person with no strong card: the renderer's own frame grid, the
+ * speed-up file check, the minutes a day, and filing a take onto a scene that
+ * was never rendered here. One namespace, so the door gains one name. */
+import * as collabLending from "./collab/lending.js";
+import { quarantineTake } from "./collab/quarantine.js";
+/* One reading of a Range header for the take door and /api/clip; each used to
+ * carry its own copy, and both misread a suffix range. */
+import { byteRange } from "./byterange.js";
+/* The audio door's sender: closes the song's handle when the player hangs up. */
+import { sendFile } from "./sendfile.js";
 import { scanInbox } from "./collab/inbox.js";
 import { createProject as createMvProject, updateProject as updateMvProject } from "./mv/store.js";
 import { anyRunning as plansRunningNow } from "./mv/planrun.js";
 import { readProject as readMvProject, assetsDir as mvAssetsDir } from "./mv/store.js";
 import { songToScore } from "./music/cover.js";
 import { ensureVocalStem, ensureStem, STEMS } from "./music/stems.js";
+/* The stems preflight and its cache (lane C), and the stems-python choice in
+ * config.js (lane C), read through namespaces for the same reason. */
+import * as stemsLib from "./music/stems.js";
+import * as configLib from "./config.js";
 import { seedScore } from "./music/seed.js";
 import { appVersion, versionLine } from "./version.js";
 import { checkUpdates, lastCheck, updateSentence } from "./updates.js";
+import { BatteryGuard, watchPower } from "./power.js";
+/* THE MINORS RULE (docs/SAFETY.md): sexual content involving minors is refused
+ * at every door, whatever the model, the agent or the setting. */
+import { onRefusal, safetyRefusal, assertSafe, bodyOfError } from "./safety/refusal.js";
+import { LineageMap, lineageOf } from "./safety/lineage.js";
+import { createSafetyRoutes } from "./safety/routes.js";
+import { BACKSTOP_TOKEN } from "./safety/backstop.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.join(__dirname, "..", "web");
@@ -281,27 +440,59 @@ async function renderMediaForBatch(kind, item, take, actor) {
    * announces both kinds by the `file` handle the route minted, so the wait is
    * an event rather than a poll, and a run advances the moment its step is
    * really finished. */
-  const landed = (event, file) => new Promise((resolve, reject) => {
+  const landed = (event, file, jobId) => new Promise((resolve, reject) => {
+    const produced = (e) => (event === "cover" ? (e.covers || []) : [e.clip].filter(Boolean));
     const done = (e) => {
       if (e.file !== file) return;
       cleanup();
-      resolve(event === "cover" ? (e.covers || []) : [e.clip].filter(Boolean));
+      resolve(produced(e));
     };
-    const failed = () => {
-      /* The art runner reports a failure by going idle with an error rather
-       * than by emitting for this file, so the queue is what says so. */
-      if (art.status().queued === 0 && !art.status().current) {
+    /* ITS OWN FAILURE, heard the way its success is heard: art.js emits
+     * "failed" with the job's own `file` and its whole error text.
+     *
+     * ⚠ THIS USED TO WAIT FOR THE QUEUE TO GO IDLE AND THEN REJECT WITH
+     * `art.lastError`, and neither half worked. It read art.status().queued and
+     * .current at the top level, where status() has neither (both live under
+     * .art), so the idle test never passed: a failed overnight picture or clip
+     * held the whole night for the three-hour ceiling below and was then
+     * recorded as "step timed out". And had it fired, lastError is the QUEUE's
+     * last failure, whoever's it was, so a step could have been failed with
+     * another job's error: the verdict server/art-wait.js stopped borrowing for
+     * the MCP tools and the chat. */
+    const failed = (e) => {
+      if (e.file !== file) return;
+      cleanup();
+      reject(new Error(e.error || "the render did not produce anything"));
+    };
+    /* A JOB NO EVENT WILL EVER NAME, found by the `job.id` the route returned
+     * and the same jobStanding() the MCP waiter reads: dropped from the queue
+     * (drop() and stopAll() emit nothing for it), or already finished before
+     * these listeners were attached. Asked once now and again on every update.
+     * A route that returned no id ("unnamed") leaves only the events and the
+     * ceiling, as before. */
+    const standing = () => {
+      const a = art.status().art || {};
+      const { where, row } = jobStanding(a, jobId);
+      if (where === "missing") {
         cleanup();
-        reject(new Error(art.lastError || "the render did not produce anything"));
+        reject(new Error(`the ${kind} job ${jobId} is no longer queued, running or finished: it was dropped from the queue before it rendered`));
+      } else if (where === "finished") {
+        cleanup();
+        if (row.error) reject(new Error(ownFailure(row, a.lastError, kind)));
+        else resolve(produced(row));
       }
     };
-    const cleanup = () => { art.off(event, done); art.off("update", failed); clearTimeout(t); };
+    const cleanup = () => {
+      art.off(event, done); art.off("failed", failed); art.off("update", standing); clearTimeout(t);
+    };
     /* A ceiling, not a schedule: art.js already sizes its own per-render
      * deadline from the job. This only catches a step that vanished entirely,
      * which would otherwise stall the whole night on one item. */
     const t = setTimeout(() => { cleanup(); reject(new Error("step timed out")); }, 3 * 60 * 60 * 1000);
     art.on(event, done);
-    art.on("update", failed);
+    art.on("failed", failed);
+    art.on("update", standing);
+    standing();
   });
 
   if (kind === "image") {
@@ -315,6 +506,7 @@ async function renderMediaForBatch(kind, item, take, actor) {
         dit: item.dit, ditEngine: item.ditEngine, encoder: item.encoder, vae: item.vae,
         quality: item.quality, persona: item.persona, refImages: item.refImages,
         refSizing: item.refSizing, refResolution: item.refResolution, transparent: item.transparent,
+        draft: item.draft,
         sampler: item.sampler, scheduler: item.scheduler, clipSkip: item.clipSkip, loras: item.loras,
         /* No seed on purpose. Every take rolls its own, and the duplicate guard
          * catches a repeat that slips through anyway — which is the whole
@@ -322,7 +514,7 @@ async function renderMediaForBatch(kind, item, take, actor) {
       }),
     })).json();
     if (r.error) throw new Error(r.error);
-    return await landed("cover", `image:${r.id}`);
+    return await landed("cover", `image:${r.id}`, r.job?.id);
   }
 
   if (kind === "video") {
@@ -335,7 +527,7 @@ async function renderMediaForBatch(kind, item, take, actor) {
       }),
     })).json();
     if (r.error) throw new Error(r.error);
-    return await landed("clip", r.file ?? `clip:${r.id}`);
+    return await landed("clip", r.file ?? `clip:${r.id}`, r.job?.id);
   }
 
   throw new Error(`Unknown overnight kind: ${kind}`);
@@ -400,6 +592,12 @@ art.on("cover", async ({ file, covers, thumbs, runId }) => {
  * second pass never drops a field the first one set.
  */
 async function embedCover(file, coverName) {
+  /* ⚠ A NATIVE YuE2 WAV CANNOT HOLD A PICTURE. RIFF INFO has no image field
+   * (library-wav.js says so in its first line), so "embedding" the cover
+   * rewrote a 30 MB WAV to add nothing — and on a song somebody was playing,
+   * failed with EPERM and a warning on the console. The cover is already in
+   * the sidecar; nothing is written here. */
+  if (isNativeLibraryWav(file)) return { ok: true, cover: false, skipped: "native-wav" };
   const m = library.meta.get(file) || {};
   const meta = {
     title: m.title, caption: m.caption, lyrics: m.lyrics,
@@ -409,9 +607,14 @@ async function embedCover(file, coverName) {
     date: new Date(m.createdAt || Date.now()).toISOString().slice(0, 10),
     // The re-tag must not drop the marker or the record the first pass wrote.
     ...(await songProvMeta(file)),
+    ...songCredit(file),
   };
   const res = await library.tagFile(file, meta, path.join(COVER_DIR, coverName));
   if (res?.cover) library.remember(file, { coverEmbedded: true });
+  /* This pass rewrites every tag the first one wrote, so it also settles a
+   * first pass that failed (tagPending). */
+  if (res?.ok === true) library.remember(file, { taggedAt: Date.now(), tagPending: null });
+  else if (res?.ok === false) console.error(`  cover embed for ${file} left the tags as they were: ${res.error || "no reason given"}`);
   return res;
 }
 art.on("stems", ({ file, stems }) => {
@@ -466,30 +669,56 @@ art.on("cover", ({ file, covers, seed, imageOptions, durationMs, engine, checkpo
   const prompt = pendingImagePrompt.get(file) || "";
   const actor = pendingImageActor.get(file) || "system";
   const wildOf = pendingImageWild.get(file) || null;
+  /* ⚠ THE ROW SURVIVES, THE WORDS DO NOT. Dropping the whole row would make
+   * a private picture an orphan in the gallery — no seed, no engine, no date,
+   * and no way to tell it apart from a file somebody copied in by hand. Only
+   * the prompt goes, and it says so, so the Images screen can explain an empty
+   * prompt box rather than looking broken.
+   *
+   * The wildcard expansion goes with it: `template` and `promptChoices` are the
+   * prompt in two pieces, and keeping them would rebuild it. */
+  const isPrivate = pendingImagePrivate.get(file) === true;
+  /* ⚠ A PROMPT HASH IS NOT A REDACTION. Measured on this app's own ledger,
+   * 305 of 419 promptHash values were confirmed just by hashing candidate
+   * prompts out of the picture sidecar — a prompt is low-entropy text, so a
+   * bare sha256 of one is a lookup key. append() drops it for a private event
+   * as well; this is simply the site that would otherwise compute it. */
+  const ledgerPromptHash = prompt && !isPrivate ? `sha256:${prov.sha256hex(prompt)}` : null;
   for (const name of covers) {
-    imageMeta.set(name, { prompt, seed, at: Date.now(),
+    imageMeta.set(name, { ...(isPrivate ? { promptRedacted: true } : { prompt }), seed, at: Date.now(),
                           durationMs: durationMs ?? null, engine: engine || "flux2",
                           /* Which FILE, not just which engine. "checkpoint" names
                            * one of however many .safetensors the user has on the
                            * shelf, so without this the answer to "what made this?"
                            * is a category rather than a model. */
                           checkpoint: checkpoint ?? null,
+                          /* imageOptions carries `safety` too: two booleans,
+                           * never words, kept when private — what the minors
+                           * rule knows this picture was made from
+                           * (art.js, server/safety/lineage.js). */
                           ...(imageOptions || {}),
-                          ...(wildOf || {}) });
+                          ...(isPrivate ? {} : (wildOf || {})) });
     // Generated-media registration: the image entered the library here.
     provNote("library", {
-      actor, type: "generate", asset: `images/${name}`,
-      data: { model: engine || "flux2", promptHash: prompt ? `sha256:${prov.sha256hex(prompt)}` : null,
+      actor, type: "generate", asset: `images/${name}`, private: isPrivate,
+      /* ⚠ A PROMPT HASH IS NOT A REDACTION — measured, 305 of 419 were
+       * confirmed by hashing candidates out of the sidecar. */
+      data: { model: engine || "flux2", promptHash: ledgerPromptHash,
               /* ADDED beside `model`, never replacing it: existing ledger lines
                * and the provenance tests both read `model`, and a hash chain is
                * not a thing to rewrite the meaning of. For the checkpoint engine
                * this is the field that actually identifies the weights. */
               checkpoint: checkpoint ?? null,
               seed: seed ?? null,
-              runId: runId ?? null },
+              runId: runId ?? null,
+              /* FAST DRAFT, said in the ledger as well as on the row: the same
+               * model with Viggle's turbo LoRA on it. Only on a draft, so every
+               * other line keeps the shape the chain already has. */
+              ...(imageOptions?.draft ? { draft: true, lora: imageOptions.lora ?? null } : {}) },
     });
   }
   pendingImagePrompt.delete(file);
+  pendingImagePrivate.delete(file);
   pendingImageActor.delete(file);
   pendingImageWild.delete(file);
   saveImageStore();
@@ -596,6 +825,14 @@ function enhanceLimitBytes() {
 const provNote = (scope, evt) =>
   prov.append(scope, evt).catch((err) =>
     console.error(`  [provenance] event lost (${evt?.type}/${evt?.asset}): ${err.message}`));
+
+/* ⚠ EVERY REFUSAL UNDER THE MINORS RULE IS FILED, AND NOTHING OF WHAT WAS
+ * ASKED. server/safety/refusal.js builds the event: type "refused", the code,
+ * the door and a caller id, no prompt, no label, no hash. The engine door files
+ * its own; this is the one listener for every other door (routes, the art
+ * queue, collab orders and recipes, overnight plans, the Comfy Router, the
+ * enhancer, MV control renders, the engine's own backstop). */
+onRefusal((evt) => provNote("library", evt));
 
 /**
  * The tagging meta's provenance fields for a library audio file: the pinned
@@ -733,13 +970,31 @@ const imageDupGuard = createDuplicateGuard({ limit: 500 });
 /* The character shelf. Beside the image store, because a persona is about the
  * pictures and travels with them. */
 const personas = createPersonaStore(path.join(config.outputDir, "images", "_personas.json"));
+/* A SAVED CHARACTER IN A CLIP (the Video screen's Keep my character, make_clip
+ * `persona`): the row, {name, missing:true} for a name the shelf does not have
+ * (the plan refuses it by name, reason "persona"), or null when none is named. */
+async function clipPersona(name) {
+  if (name === undefined || name === null || String(name).trim() === "") return null;
+  return (await personas.get(String(name).trim())) || { name: String(name).trim(), missing: true };
+}
+/* The saved characters with pictures, for the Keep line's "pick X" hint. */
+async function clipCharacters() {
+  return (await personas.list()).filter((x) => x.refImages?.length).map((x) => ({ name: x.name, pictures: x.refImages.length }));
+}
 /* Templates worth keeping. Beside the personas for the same reason: both are
  * about making the next picture, and both are a few kilobytes of text. */
 const promptShelf = createPromptStore(path.join(config.outputDir, "images", "_prompts.json"));
 
 const ckptProbeCache = new Map();
 
-const imageMeta = new Map();
+/* ⚠ A LineageMap, NOT A PLAIN Map (server/safety/lineage.js). Every row
+ * written here gets its wordless minors fingerprint, `safety: {minor,
+ * sexual}`, from its own words and from every file it names as its parent, so
+ * the dozens of places below that write a derived picture (edit, upscale,
+ * cutout, mask, sheet, composite, document, vector...) copy it forward without
+ * each having to remember. Rows read back from disk go in with `load`. */
+const libraryRows = (n) => [imageMeta.get(n), clipMeta.get(n)].filter(Boolean);
+const imageMeta = new LineageMap(libraryRows);
 const pendingImagePrompt = new Map();
 /* WHO asked for the image — parked beside the prompt for the same reason, so
  * the ledger's generate event can carry the honest actor (user vs agent:*)
@@ -749,6 +1004,10 @@ const pendingImageActor = new Map();
  * an overnight run can be admired and never made again — which is the whole
  * reason dynamic prompts record anything at all. */
 const pendingImageWild = new Map();
+/* Whether this render was asked for privately. Parked with the others for the
+ * same reason: the request is gone by the time the file lands, and the seam
+ * that writes the sidecar has no other way to know. */
+const pendingImagePrivate = new Map();
 const IMAGE_STORE = path.join(config.outputDir, "images", "_meta.json");
 async function saveImageStore() {
   try {
@@ -758,7 +1017,7 @@ async function saveImageStore() {
 }
 try {
   const raw = JSON.parse(await readFile(IMAGE_STORE, "utf8"));
-  for (const [k, v] of Object.entries(raw)) imageMeta.set(k, v);
+  for (const [k, v] of Object.entries(raw)) imageMeta.load(k, v);
 } catch { /* none yet */ }
 
 /* WHAT WAS ASKED FOR, and whether anyone checked (server/review.js).
@@ -783,7 +1042,63 @@ const clipTimes = new Map();
  *
  * In memory for standalone clips (they are not library rows); track-attached
  * ones also go into the sidecar, which is the copy that survives a restart. */
-const clipMeta = new Map();
+const clipMeta = new LineageMap(libraryRows);
+
+/**
+ * WHAT THE PICTURES A REQUEST HANDS OVER WERE MADE FROM, for the minors rule.
+ *
+ * A reference picture, an opening frame, the image being edited and the clip
+ * being continued or restyled all reach the model as pixels, which no text
+ * check can read. What this app CAN read is what each library file was made
+ * from: its stored prompt (imageMeta, clipMeta) and its wordless fingerprint,
+ * for it and for EVERY ancestor it names (an edit's `derivedFrom`, a sheet's
+ * `sheetOf`, a composite's sources...), with no depth limit
+ * (server/safety/lineage.js). The words go in as context and the fingerprints
+ * as flags; both count on both sides exactly like the prompt, so "make her
+ * nude" on a picture that was made as "a portrait of a child" is refused, on
+ * the fifth edit as on the first, and on a private render that kept no words.
+ * An upload has no history; that residual is stated in docs/SAFETY.md.
+ * @returns {{ texts: string[], flags: object[] }}
+ */
+function lineage(values) {
+  return lineageOf(values, libraryRows);
+}
+
+/** The words an MV project row carries (a cast member's description and sheet
+ *  prompt, a plate prompt), for the rows named: what stands behind a
+ *  <Picture n> in a scene sent to a friend. Context only; never sent. */
+function mvRowWords(doc, names = []) {
+  const rows = [...(doc?.characters || []), ...(doc?.backgrounds || []), ...(doc?.props || [])];
+  const out = [];
+  for (const n of new Set(names)) {
+    const row = rows.find((r) => r?.name === n);
+    for (const k of ["description", "sheetPrompt", "platePrompt"]) {
+      if (typeof row?.[k] === "string" && row[k].trim()) out.push(row[k]);
+    }
+  }
+  return out;
+}
+
+/** The library pictures an editor document is built from: every `src` its
+ *  layers (and masks) name, read from the document shelf imgdoc.py keeps
+ *  beside the images. A shelf this cannot read names nothing. */
+async function documentSources(id) {
+  try {
+    const shelf = JSON.parse(await readFile(path.join(IMAGE_DIR, "_documents.json"), "utf8"));
+    const doc = shelf?.documents?.[String(id)];
+    const out = [];
+    const visit = (v, d) => {
+      if (d > 16 || !v || typeof v !== "object") return;
+      if (Array.isArray(v)) { for (const x of v) visit(x, d + 1); return; }
+      for (const [k, x] of Object.entries(v)) {
+        if (k === "src" && typeof x === "string" && x.trim()) out.push(x);
+        else visit(x, d + 1);
+      }
+    };
+    visit(doc, 0);
+    return out;
+  } catch { return []; }
+}
 
 /**
  * Both of the above, on disk.
@@ -799,7 +1114,7 @@ let clipStoreTimer = null;
 async function loadClipStore() {
   try {
     const raw = JSON.parse(await readFile(CLIP_STORE, "utf8"));
-    for (const [k, v] of Object.entries(raw.meta ?? {})) clipMeta.set(k, v);
+    for (const [k, v] of Object.entries(raw.meta ?? {})) clipMeta.load(k, v);
     for (const [k, v] of Object.entries(raw.times ?? {})) clipTimes.set(k, v);
   } catch { /* first run, or unreadable — neither is worth failing over */ }
 }
@@ -831,8 +1146,53 @@ art.on("update", () => {
 // Optional model weights. Nothing here downloads on its own — the catalogue
 // reports what is missing and how large it is, and the user presses a button.
 const models = new ModelManager();
+
+/* ── what the models are costing on disk ──────────────────────────────────
+ *
+ * The rail shows VRAM and RAM; disk is the third thing that runs out, and it
+ * is the one that runs out QUIETLY — a download stops, and nothing on the
+ * screen had been counting.
+ *
+ * ⚠ CACHED FOR A MINUTE, and that is not an optimisation. /api/status is
+ * polled every few seconds and models.status() stats every file in a
+ * 45-capability catalogue; doing that per poll would put hundreds of syscalls
+ * a minute behind a number that changes when somebody downloads a model. The
+ * Models screen recomputes it directly, so a fresh download is never more than
+ * a minute from being counted here and is immediate there.
+ */
+let diskMark = { at: 0, value: null };
+async function modelsDisk() {
+  if (Date.now() - diskMark.at < 60000) return diskMark.value;
+  diskMark.at = Date.now();
+  try {
+    const [cat, free] = await Promise.all([models.status(), diskFree()]);
+    /* Installed means present AND the right size, which is the same test the
+     * Models screen shows a tick for: a half-finished download is not storage
+     * this app is using on purpose. */
+    /* ⚠ DEDUPLICATED BY PATH. Several capabilities share a file — three rows
+     * name the same Qwen3-4B encoder — and counting per capability would quote
+     * storage that is not being used twice. A partially downloaded file counts
+     * for what is actually on the disk (`have`), because that is the question. */
+    const seen = new Map();
+    for (const cap of cat || []) {
+      for (const f of cap.files || []) {
+        if (!f.dest || seen.has(f.dest)) continue;
+        seen.set(f.dest, f.present ? (Number(f.bytes) || 0) : (Number(f.have) || 0));
+      }
+    }
+    let bytes = 0, files = 0;
+    for (const n of seen.values()) { if (n > 0) { bytes += n; files += 1; } }
+    diskMark.value = { modelBytes: bytes, modelFiles: files,
+      freeBytes: free?.freeBytes ?? null, totalBytes: free?.totalBytes ?? null };
+  } catch { diskMark.value = null; }
+  return diskMark.value;
+}
 const ggufSetup = new GgufSetup();
 models.on("update", () => push(jobs.snapshot()));
+/* An H3 speed-up that lands (3, 4 or 8 steps) is used at once, not after a restart. */
+models.on("ready", (id) => {
+  if (CATALOG.find((c) => c.id === id)?.addonFor === "video") refreshH3Speedups();
+});
 
 /**
  * MAY A CLIP BE RENDERED — and if so, on WHICH engine.
@@ -893,36 +1253,51 @@ async function videoWeightsGate() {
  * which on this stack is the difference between fused CUDA kernels and a
  * silently 5x slower app.
  */
-const SYSTEM_PYTHON = process.env.AIPLAY_SYS_PYTHON
-  || path.join(process.env.LOCALAPPDATA || "", "Programs", "Python", "Python310", "python.exe");
+/* ⚠ NO SECOND COPY OF THE STEMS PYTHON. A constant here used to hold the
+ * Python310 default, and the Models screen named it as "the python" even after
+ * Settings (or AIPLAY_SYS_PYTHON) had chosen another: config.systemPython is
+ * the interpreter art.js spawns, so it is the one probed and the one named. */
 let packageCache = null;
 // Each package is probed in the interpreter that RUNS it, or the answer is about
 // nothing: demucs runs from config.systemPython (art.js), faster_whisper from
-// config.lyrics.python (art.js), and those may differ from each other and from
-// SYSTEM_PYTHON. The Models screen once reported faster_whisper present in an
+// config.lyrics.python (art.js), and those may differ from each other. The
+// Models screen once reported faster_whisper present in an
 // interpreter that never launches it. `probed` says which python answered.
+//
+// BOTH modules lrc.py imports, in the lyrics interpreter. Probing only
+// faster_whisper badged timed lyrics Ready in a fresh venv where every run then
+// died on "No module named 'stable_whisper'" (measured 2026-09-23). The list is
+// written out here because welcome/catalogue_test.js reads these literals; it
+// must equal the catalogue's `needsModules` for "lyrics", which lrc_test.js pins.
 const PACKAGE_PROBES = () => {
-  const sys = config.systemPython || SYSTEM_PYTHON;
+  const sys = config.systemPython;
   const groups = new Map();
   const add = (py, m) => groups.set(py, [...(groups.get(py) || []), m]);
   for (const m of ["demucs", "torch", "av", "numpy"]) add(sys, m);
-  add(config.lyrics?.python || sys, "faster_whisper");
+  for (const m of ["faster_whisper", "stable_whisper"]) add(config.lyrics?.python || sys, m);
   return [...groups.entries()];
 };
-function probeOne(py, mods) {
+/** What POST /api/lyrics "python" probes: the catalogue's list, the one the
+ *  Models row reads, so Settings and that row cannot disagree. */
+const LYRICS_MODULES = modulesOf(CATALOG.find((c) => c.id === "lyrics") || {});
+function probeOne(py, mods, timeoutMs = 20_000) {
   return new Promise((resolve) => {
     const proc = spawn(py, ["-c",
       `import importlib.util as u,json;print(json.dumps({m:u.find_spec(m) is not None for m in ${JSON.stringify(mods)}}))`],
       { windowsHide: true });
+    // find_spec imports nothing, so a real python answers in well under a
+    // second; one that hangs (a stalled disk, a wrapper waiting on input) must
+    // not hold the route or the Models screen open. It reads as "not found".
+    const timer = setTimeout(() => { try { proc.kill(); } catch { /* gone */ } resolve({}); }, timeoutMs);
     let so = "";
     proc.stdout.on("data", (d) => (so += d));
-    proc.on("exit", () => { try { resolve(JSON.parse(so)); } catch { resolve({}); } });
-    proc.on("error", () => resolve({}));
+    proc.on("exit", () => { clearTimeout(timer); try { resolve(JSON.parse(so)); } catch { resolve({}); } });
+    proc.on("error", () => { clearTimeout(timer); resolve({}); });
   });
 }
 let probedBy = {};
 async function pythonPackages() {
-  if (config.musicOnly) return {};
+  if (config.musicOnly || config.cloudOnly || config.remoteOnly) return {};
   if (packageCache && Date.now() - packageCache.at < 30_000) return packageCache.value;
   const value = {};
   const by = {};
@@ -1070,7 +1445,11 @@ jobs.on("update", async (snap) => {
           codes: chained || h.codes,
           ...(isYueExt ? {
             engine: "yue2", yueDir: job.yue?.dir ?? null, cot: job.cot || "full",
-            quantization: job.quantization || "none", rights: "CC BY-NC 4.0 — not for sale",
+            quantization: job.quantization || "none",
+            rights: songRights({ engine: "yue2", tokenized: job.tokenized || null }).label,
+            /* A continued RECORDING was read through the real-audio tokenizer
+             * (not for sale); songRights() finds that by this marker. */
+            ...(job.tokenized ? { tokenized: job.tokenized } : {}),
           } : {}),
           extendedFrom: job.extendedFrom,
           // WHERE the model rejoined, so this take's own new material can later
@@ -1087,9 +1466,13 @@ jobs.on("update", async (snap) => {
           /* `runId` is the EXTENSION's render, which is the only one that
             * happened here — the join itself is a splice on disk, not a
             * render. Saying so beats leaving the field out. */
-          data: { model: "MiniMax-Music3", modelVersion: job.model || "int8",
+          /* The engine that rendered the new part: this said MiniMax-Music3
+           * for a YuE2 continuation too, so the ledger stamped a YuE2 join
+           * with MiniMax's rights. A tokenized recording's join says so. */
+          data: { model: modelName, modelVersion: isYueExt ? "3B" : (job.model || "int8"),
                   op: "extend-join", extendedFrom: job.extendedFrom, joinedAt: at,
-                  runId: job.runId ?? null },
+                  runId: job.runId ?? null,
+                  ...songOutputRights({ engine: job.engine, tokenized: job.tokenized }) },
         });
       }
     } catch (err) {
@@ -1135,6 +1518,11 @@ jobs.on("update", async (snap) => {
               scoreSupplied: !!job.abc }
           : isYueComfy
           ? { runtime: "comfy", checkpoint: job.yue2Checkpoint || null, cot: job.cot || "full",
+              scoreSupplied: !!job.abc, sampling: job.sampling || null, planSampling: job.planSampling || null,
+              /* The saved score version it was sung from, as written (this
+               * build makes no score of its own to adopt, unlike the Python
+               * kit's `score` below, which is the version its run wrote). */
+              scoreFrom: job.scoreSlug ? (job.scoreVersion ? `${job.scoreSlug}/${job.scoreVersion}` : job.scoreSlug) : null,
               narSteps: job.narSteps || 32, maxDuration: job.maxDuration ?? null,
               lora: job.lora || null, loraStrength: job.lora ? (job.loraStrength ?? 1) : null }
           : isYue
@@ -1152,6 +1540,9 @@ jobs.on("update", async (snap) => {
          * A local render's runId leads to the graph, both cfgs, the model
          * files and the wall time. */
         runId: job.runId ?? null,
+        /* Stricter than the model when an add-on made it so (a Mothersuperior
+         * LoRA, the tokenizer): the ledger and the library row then agree. */
+        ...songOutputRights({ engine: job.engine || "minimax-music3", lora: job.lora, loraClip: job.loraClip, tokenized: job.tokenized }),
       },
     });
   }
@@ -1182,7 +1573,9 @@ jobs.on("update", async (snap) => {
         artifactSource: job.artifactSource, artifactSourceRunId: job.artifactSourceRunId } : {}),
       scoreSlug: score?.slug ?? null, scoreVersion: score?.version ?? null,
       durationSeconds: Number.isFinite(job.audioSeconds) ? Math.round(job.audioSeconds) : undefined,
-      rights: "CC BY-NC 4.0 — not for sale",
+      /* The words at write time, from the catalogue (models.js songRights);
+       * library rows recompute them, so a later change still reaches this song. */
+      rights: songRights({ engine: job.engine, tokenized: job.tokenized || null }).label,
     } : {}),
     ...(isAce ? {
       aceDit: job.aceDit || null, bpm: job.bpm, keyscale: job.keyscale, timesignature: job.timesignature,
@@ -1191,17 +1584,26 @@ jobs.on("update", async (snap) => {
     } : {}),
     ...(isYueComfy ? {
       cot: job.cot || "full", checkpoint: job.yue2Checkpoint || null,
+      /* Sung from a score you supplied (hummed, pasted, transcribed), not
+       * from the model's own plan. The version it came from is in the ledger
+       * (params.scoreFrom); the ♪ badge's scoreSlug stays the Python kit's. */
+      scoreSupplied: !!job.abc,
       lora: job.lora || null, loraStrength: job.lora ? (job.loraStrength ?? 1) : null,
       /* The planner's LoRA beside the audio one — including the one the
        * Instrumental switch picks by itself, which is why this matters more
        * than the line above it. */
       loraClip: job.loraClip || null, loraClipStrength: job.loraClip ? (job.loraClipStrength ?? 1) : null,
-      rights: "CC BY-NC 4.0 — not for sale",
+      rights: songRights({ engine: "yue2-comfy", lora: job.lora, loraClip: job.loraClip }).label,
     } : {}),
     /* WHICH RECORDING THIS IS A COVER OF. Lineage only — nothing splices on
      * it, unlike extendedFrom — and the rights in the song it covers stay the
      * caller's to clear, which no field here can do for them. */
     ...(job.coverOf ? { coverOf: job.coverOf, coverSeconds: job.fromSeconds || null, tokenized: job.tokenized || null } : {}),
+    /* A continued or section-replaced RECORDING, and any take extended from
+     * one, was read through the real-audio tokenizer too, and its weights are
+     * not for sale: songRights() finds that by this marker. It used to be kept
+     * for covers only, so those songs read "Sellable by individuals". */
+    ...(job.tokenized && !job.coverOf ? { tokenized: job.tokenized } : {}),
     caption: job.caption,
     // Kept so the song panel can show what actually produced the track. It is in
     // the FLAC tags too, but reading tags back per row would mean a subprocess
@@ -1244,9 +1646,23 @@ jobs.on("update", async (snap) => {
         // Tier-1 marker specifics + (toggle-governed) Tier-2 ledger summary.
         ...(await songProvMeta(h.file)),
       };
+    /* The model's credit line (YuE2: the authors, the statement, the licence
+     * file) rides in the file itself as ATTRIBUTION/COPYRIGHT (ICOP on a WAV). */
+    Object.assign(meta, songCredit(h.file));
     const info = await library.tagFile(h.file, meta);
     if (info?.seconds) library.remember(h.file, { durationSeconds: Math.round(info.seconds) });
-  } catch { /* never lose a track over a tag */ }
+    if (info?.ok !== true) throw new Error(info?.error || "the tagger gave no answer (is the engine's python there?)");
+    library.remember(h.file, { taggedAt: Date.now(), tagPending: null });
+  } catch (err) {
+    /* ⚠ NEVER LOSE A TRACK OVER A TAG — BUT SAY SO. This used to be an
+     * empty catch, so a locked file (the audio door's leak, antivirus) left a
+     * song with no AI disclosure and no attribution in its tags and nobody was
+     * told. It is logged, and the sidecar remembers it: list_songs reports
+     * `tagged: false` until a later pass (the cover's) writes them. */
+    const why = String(err?.message || err).slice(0, 300);
+    console.error(`  tags not written for ${h.file}: ${why}`);
+    library.remember(h.file, { tagPending: { at: Date.now(), error: why } });
+  }
 
   filedMusicJobs.add(job.id);
 
@@ -1408,7 +1824,7 @@ const onAmd = () => config.torchBackend === "rocm" || config.gpu?.vendor === "am
 /* Whether this process starts ComfyUI. Always in full Studio; in music-only
  * only when a YuE2 checkpoint makes YuE2-through-ComfyUI possible. Sent in
  * /api/status so the launcher knows whether to wait for the engine. */
-let comfyWanted = config.comfyAutoStart;
+let comfyWanted = !config.musicOnly && !config.cloudOnly && !config.remoteOnly;
 
 /** YuE2 checkpoints in any checkpoints folder the engine loads from. */
 async function findYue2Checkpoints() {
@@ -1491,9 +1907,11 @@ async function musicModelChoices(cat) {
         value: `minimax-music3:api:${name}`, engine: "minimax-music3", precision: null, api: name,
         label: `MiniMax Music 3 · API (${prov.label.split(" — ")[0]})`,
         available: !!key.usable,
-        note: key.usable ? `billed per song${prov.verified ? "" : " · untested adapter"}`
-          : key.set ? "saved key cannot be read here, save it again in Settings → API mode"
-          : "add a key in Settings → API mode",
+        /* Where the key goes, in the words on screen (one copy: cloud-switch.js). */
+        keyPlace: HOSTED_KEY_PLACE,
+        note: key.usable ? `billed per song, asks each time${prov.verified ? "" : " · untested adapter"}`
+          : key.set ? `saved key cannot be read here, paste it again in ${HOSTED_KEY_PLACE}`
+          : `needs your own key · ${HOSTED_KEY_PLACE}`,
       });
     }
   }
@@ -1551,6 +1969,17 @@ async function musicModelChoices(cat) {
       available: !!byId.musicYue2.ready, note: byId.musicYue2.ready ? null : "not installed",
     });
   }
+  /* RUNPOD GPU MODE: the ComfyUI engines render on the Pod, so this PC's disk
+   * does not decide whether they are ready. The Pod's worker checks each graph
+   * against its own files and names any that are missing. Native GGUF and the
+   * Python kit still run here and keep their own answer. */
+  if (config.remoteOnly) {
+    for (const c of out) {
+      if (c.api || !["minimax-music3", "ace-step15", "yue2-comfy"].includes(c.engine)) continue;
+      c.available = true;
+      c.note = "on your RunPod";
+    }
+  }
   musicChoicesCache = { at: Date.now(), value: out };
   return out;
 }
@@ -1573,6 +2002,37 @@ function modelGroupOf(c) {
   if (c.makes === "picture" || c.id === "imageCutout" || c.id === "upscale") return "images";
   if (/^(video|pose|interpolate)/.test(c.id)) return "video";
   return "music";
+}
+
+/** The hosted engine's switch, provider and cap, from POST /api/apimode
+ *  {action:"config"} and POST /api/cloud {action:"set"}: one writer, so the
+ *  Settings card and set_cloud cannot clamp differently. */
+async function applyApiConfig(b) {
+  const patch = {};
+  if (typeof b.enabled === "boolean") patch.enabled = b.enabled;
+  if (typeof b.provider === "string" && PROVIDERS[b.provider]) patch.provider = b.provider;
+  if (Number.isFinite(b.monthlyCapUsd)) {
+    // Clamped rather than free-form: a typo'd extra zero is the exact
+    // accident the cap exists to prevent.
+    patch.monthlyCapUsd = Math.min(Math.max(b.monthlyCapUsd, 0), 1000);
+  }
+  Object.assign(config.api, patch);
+  await saveApiSettings();
+  musicChoicesCache.at = 0;
+  return { ok: true, api: config.api, spend: await spendSummary() };
+}
+
+/** What a hosted song would cost and which key it would bill: the words of the
+ *  paid-run question (server/cloud-switch.js paidRefusal). */
+async function hostedQuote(seconds) {
+  const name = PROVIDERS[config.api.provider] ? config.api.provider : "fal";
+  const prov = PROVIDERS[name];
+  return {
+    provider: name, name: prov.label.split(" — ")[0], label: prov.label, seconds,
+    usd: estimateUsd(seconds, name),
+    key: await secretStatus(prov.keyName).catch(() => ({ set: false })),
+    spend: await spendSummary(),
+  };
 }
 
 /** API mode's switch, provider and cap, kept in settings.json and read back
@@ -1655,6 +2115,15 @@ async function renderTimeline(name, { fade = 0, beatZoom = 0, beatsFile = null }
 
 const mvRoutes = createMvRoutes({
   json, readBody, library, art, beatsFor, LRC_DIR, CLIP_DIR, IMAGE_DIR, COVER_DIR,
+  /* What a library clip or picture was made from, for the minors rule: a
+   * control render's driving clip is judged with its own history. */
+  lineage,
+  /* The reading the music video's size pick is judged against: the Video
+   * screen's own (a PC with no card is "not offered" on both). */
+  cardReading: () => ({ gpu: gpuStatus(), ram: ramStatus(), cpuOnly: cpuOnlyEngine(), vaeMeasured: h3VaeMeasured() }),
+  /* Whether LTX's weights are on disk: "hybrid" sends a scene with no cast
+   * there only when they are (server/mv/shot.js). */
+  ltxReady: () => videoReady("ltx").ready,
   /* THE PLAN OBJECT's two dependencies, and they are the whole of its wiring.
    *
    * `provenance` is the same module every other surface writes through, so a
@@ -1976,6 +2445,31 @@ function json(res, code, body) {
   res.end(s);
 }
 
+/* A REQUEST THAT CHOOSES WHAT RUNS ON THIS MACHINE comes from Studio's own page
+ * or a local client, never from a web page the person happens to have open.
+ * readBody parses the bytes whatever the Content-Type, and a cross-site page can
+ * POST a text/plain JSON body with mode 'no-cors' and no preflight: it gets no
+ * answer back, but the route still runs. So the test is on the request itself:
+ * the Host is this machine on the UI port (a rebound DNS name fails here), an
+ * Origin, which a browser sends on every cross-site POST, is this same origin,
+ * and the body is declared application/json, which a cross-site page cannot
+ * send without a preflight no route answers. The Settings page and MCP's api()
+ * both send application/json. One copy: /api/music-gguf/setup (installs a
+ * runtime), /api/lyrics's python choice (names a program to run), POST
+ * /api/models (every action: the folders the engine loads from and downloads
+ * into, overrides, downloads), POST /api/settings (the rig whose ComfyUI Studio
+ * launches, and the output folder), POST /api/apimode (the paid mode, its cap
+ * and its keys), POST /api/generate (a song, which in API mode is billed) and
+ * the Comfy API page's POSTs (a key, and runs that spend credits;
+ * server/router/routes.js) share it. */
+function sameOriginLocalJson(req) {
+  const host = req.headers.host || "";
+  const local = [`127.0.0.1:${config.uiPort}`, `localhost:${config.uiPort}`, `[::1]:${config.uiPort}`];
+  return local.includes(host)
+    && (!req.headers.origin || req.headers.origin === `http://${host}`)
+    && /^application\/json(?:;|$)/i.test(req.headers["content-type"] || "");
+}
+
 /* ⚠ A SIZE CAP HAS TO REFUSE WHILE READING, NOT AFTER. Everything below runs
  * before any route sees a byte: the body is concatenated and handed to
  * JSON.parse, so a hundred-megabyte paste is a hundred-megabyte string in V8
@@ -1990,8 +2484,8 @@ async function readBody(req, maxBytes = 0) {
   let n = 0, over = false;
   for await (const c of req) {
     n += c.length;
-    /* \u26a0 STOP ACCUMULATING, BUT KEEP DRAINING. Destroying the request here
-     * does bound the memory \u2014 and it also tears the socket down before the
+    /* ⚠ STOP ACCUMULATING, BUT KEEP DRAINING. Destroying the request here
+     * does bound the memory — and it also tears the socket down before the
      * route can write its 413, so the caller measured `HTTP 100` and an empty
      * body: indistinguishable from the studio having crashed, which is the very
      * thing this cap exists to prevent. Dropping the chunks keeps the memory
@@ -2004,11 +2498,182 @@ async function readBody(req, maxBytes = 0) {
     chunks.push(c);
   }
   if (over) {
-    const err = new Error(`body is over ${Math.round(maxBytes / 1048576)} MB`);
+    /* In the unit the cap was set in: a 64 KB door said "over 0 MB". */
+    const err = new Error(`body is over ${maxBytes >= 1048576 ? `${Math.round(maxBytes / 1048576)} MB` : `${Math.round(maxBytes / 1024)} KB`}`);
     err.tooBig = true;
     throw err;
   }
   return chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+}
+
+/* ── REFUSALS THAT CARRY THEIR REMEDY ─────────────────────────────────────
+ *
+ * 409 means "this machine is not ready": a python, a module or a model is
+ * missing. The sentence says what and where; when one button would fix THIS
+ * machine the reply also names it (`setup`, the id POST /api/setup takes),
+ * so the page can offer an Install dialog (offerSetup) and an agent can name
+ * setup_feature, instead of both being handed a bare sentence — which is how a
+ * person ended up hunting for the engine's venv to pip into by hand. Every door
+ * that relays an error from hum.js, tokenize.js, stems.js or a python spawn
+ * spreads refusalFields(e): only the keys the error actually carries. */
+const REFUSAL_KEYS = ["setup", "pip", "python", "module", "reason"];
+function refusalFields(e) {
+  const out = {};
+  if (!e || typeof e !== "object") return out;
+  for (const k of REFUSAL_KEYS) if (typeof e[k] === "string" && e[k]) out[k] = e[k];
+  return out;
+}
+/** The error's own HTTP status when it names one (400-599), else the door's. */
+function refusalStatus(e, fallback) {
+  const n = Number(e?.status);
+  return Number.isInteger(n) && n >= 400 && n <= 599 ? n : fallback;
+}
+/** A stem that could not be made. A refusal (409: no demucs here, a stopped
+ *  separation) says its own sentence and carries its setup id; any other
+ *  failure says which stem. */
+function stemFailure(e, stem, extra = {}) {
+  if (refusalStatus(e, 0) === 409) return { status: 409, body: { error: e.message, ...extra, ...refusalFields(e) } };
+  return { status: 500, body: { error: `The ${stem} stem could not be separated: ${e?.message || e}`, ...extra, reason: "stem-failed" } };
+}
+/**
+ * A python that died on a missing module, as a refusal (setup/engine-packages.js
+ * engineModuleRefusal): which module, the pip line for THAT python, and the
+ * "studio-packages" setup id when Studio installed that engine itself. Null
+ * when the text names no missing module (or before that helper exists), and
+ * the caller keeps its own sentence.
+ */
+async function moduleRefusal(stderr, feature, python = config.python) {
+  const read = enginePackages.engineModuleRefusal;
+  if (typeof read !== "function") return null;
+  const r = await read({ stderr: String(stderr || ""), feature, rig: config.rig, python }).catch(() => null);
+  return r ? Object.assign(new Error(r.message), r) : null;
+}
+/** An image-editor door's failure: a missing-module refusal speaks for itself
+ *  (409, with its setup id); anything else keeps the door's own sentence. */
+function imageFailure(res, err, status, error) {
+  if (refusalStatus(err, 0) === 409) return json(res, 409, { error: err.message, ...refusalFields(err) });
+  return json(res, status, { error });
+}
+/** The warm image worker's failure as a refusal when it names a missing
+ *  module: a worker that died on `import imagetools` (cv2) carries its stderr
+ *  tail, a lazy import inside the engine (scipy) its own sentence. An error
+ *  that is already a refusal, or names no module, comes back as it was. */
+async function imageRefusal(err) {
+  if (refusalStatus(err, 0) === 409) return err;
+  return (await moduleRefusal(err?.stderr || err?.message, "The image editor", config.python)) || err;
+}
+
+/* ── STEM SEPARATION'S PYTHON ─────────────────────────────────────────────
+ *
+ * config.systemPython is the interpreter art.js spawns for demucs (and the
+ * audio-reference encoder). Settings > Songs > "stem separation python" and the
+ * stems setup choose it through chooseStemsPython(); AIPLAY_SYS_PYTHON still
+ * wins when set. The resolution itself (env, then saved, then the Python310
+ * default) is config.js's (lane C); until it is there, the same order is kept
+ * here with the interpreter Studio started with as the default. */
+const BOOT_SYSTEM_PYTHON = config.systemPython;
+const STEMS_MODULES = ["demucs", "torch"];
+const stemsPythonSource = () => (typeof configLib.systemPythonSource === "function"
+  ? configLib.systemPythonSource()
+  : process.env.AIPLAY_SYS_PYTHON ? "env" : config.stems?.systemPython ? "saved" : "default");
+const defaultStemsPython = () => (typeof configLib.defaultSystemPython === "function" ? configLib.defaultSystemPython() : null);
+/** Can stem separation run here? C1's preflight: demucs and torch in the stems
+ *  python, cached 30 s, a missing file answered without spawning. */
+async function stemsReady() {
+  if (typeof stemsLib.stemsPreflight !== "function") return { ok: true, python: config.systemPython };
+  return stemsLib.stemsPreflight();
+}
+/** Choose the stems python (a path, or null for the default), at once and across restarts. */
+async function chooseStemsPython(value) {
+  config.stems.systemPython = value || null;
+  config.systemPython = typeof configLib.systemPython === "function"
+    ? configLib.systemPython(config.stems.systemPython)
+    : (process.env.AIPLAY_SYS_PYTHON || config.stems.systemPython || BOOT_SYSTEM_PYTHON);
+  packageCache = null; // the Models screen probes the new interpreter on its next read
+  if (typeof stemsLib.clearStemsPreflight === "function") stemsLib.clearStemsPreflight();
+  await savePrefs();
+}
+/** The stems setup (setup/venv.js RECIPES.stems) would change nothing while
+ *  AIPLAY_SYS_PYTHON names the interpreter: refused up front, in the words
+ *  Settings uses. */
+function stemsBlockedBy(id) {
+  if (id !== "stems" || !process.env.AIPLAY_SYS_PYTHON) return null;
+  return `AIPLAY_SYS_PYTHON is set, so stems run in ${config.systemPython} whatever Studio builds. `
+    + "Install demucs there, or remove the variable and start Studio again to use the button.";
+}
+/** A finished stems build becomes the stem separation python the way the
+ *  Settings field chooses one, and the preflight's cache is cleared so the
+ *  next Separate stems sees it at once. */
+async function saveStemsBuild(py) {
+  await chooseStemsPython(py);
+  return { note: `Stem separation now runs in ${py}.` };
+}
+/**
+ * POST /api/stems {action:"python"}: Settings > Songs > "stem separation
+ * python" and the stems_python tool, the twin of /api/lyrics "python". No
+ * `value` reports; a path chooses it (at once: art.js reads
+ * config.systemPython at every spawn); "" or null goes back to the default.
+ * The answer probes demucs and PyTorch in THAT python. Setting it names a
+ * program Studio will run, so only Studio's page or a local client may.
+ */
+async function answerStemsPython(req, res, b) {
+  if (b.value !== undefined) {
+    if (!sameOriginLocalJson(req)) {
+      return json(res, 403, { error: "Choosing the stem separation python requires a same-origin local JSON request." });
+    }
+    // Explorer's "Copy as path" wraps the path in quotes; take it as pasted.
+    const raw = b.value === null ? "" : String(b.value).trim().replace(/^"(.*)"$/, "$1").trim();
+    if (raw) {
+      /* A UNC or device path (\\server\share, \\?\, \\.\) would run a
+       * program off another machine. A python lives on a local disk. */
+      if (/^[\\/]{2}/.test(raw)) {
+        return json(res, 400, { error: "Choose a python on this computer's own disk, not a network or device path." });
+      }
+      if (!path.isAbsolute(raw) || /[\r\n\0]/.test(raw) || raw.length > 1024) {
+        return json(res, 400, { error: `Give the full path to the python, for example ${defaultStemsPython() || "C:\\Users\\you\\AppData\\Local\\Programs\\Python\\Python310\\python.exe"}.` });
+      }
+      let st = null;
+      try { st = await stat(raw); } catch { /* answered below */ }
+      if (!st?.isFile()) return json(res, 400, { error: `There is no file at ${raw}.` });
+    }
+    await chooseStemsPython(raw ? path.resolve(raw) : null);
+  }
+  return json(res, 200, { ok: true, stems: await stemsVerdict() });
+}
+/** What Settings, the stems_python tool and a finished setup say about it. */
+async function stemsVerdict() {
+  const py = config.systemPython;
+  let there = false;
+  try { there = (await stat(py)).isFile(); } catch { /* answered below */ }
+  const got = there ? await probeOne(py, STEMS_MODULES).catch(() => ({})) : {};
+  const modules = Object.fromEntries(STEMS_MODULES.map((m) => [m, !!got[m]]));
+  const ready = STEMS_MODULES.every((m) => modules[m]);
+  const source = stemsPythonSource();
+  const missing = STEMS_MODULES.filter((m) => !modules[m]).map((m) => (m === "torch" ? "PyTorch" : m));
+  const note = !there
+    ? `There is no python at ${py}. Press "Set up stem separation", or name your own python here.`
+    : ready ? `Stem separation runs in ${py}: demucs and PyTorch both import.`
+    : `${py} lacks ${missing.join(" and ")}. Press "Set up stem separation", or install into it: "${py}" -m pip install demucs`;
+  return {
+    python: py, chosen: config.stems?.systemPython || null, source, defaultPython: defaultStemsPython(),
+    modules, ready,
+    note: source === "env" ? `${note} AIPLAY_SYS_PYTHON names this python, so the field and a Studio-built python are not used while it is set.` : note,
+  };
+}
+/** The credit line a song's own tags carry (models.js songRights): the
+ *  engine's attribution — YuE2's names the authors and the licence file — and
+ *  a not-for-sale add-on's licence. Nothing for an engine that asks for none. */
+function songCredit(file) {
+  const r = songRights(library.meta.get(file) || {}, { parentOf: (f2) => library.meta.get(f2) });
+  return r.attribution ? { attribution: r.attribution } : {};
+}
+
+/** The ledger's rights for a song when an add-on made it stricter than its
+ *  model (models.js songRightsStamp), as a generate event's `outputRights`;
+ *  nothing otherwise, and provenance.js stamps the model's own row. */
+function songOutputRights(meta) {
+  const stamp = songRightsStamp(meta || {}, { parentOf: (f2) => library.meta.get(f2) });
+  return stamp ? { outputRights: stamp } : {};
 }
 
 /* The close handler for an engine that speaks {ok:false, error} on STDOUT and
@@ -2022,9 +2687,19 @@ function engineClose(resolve, reject, so, se, code, tailBytes = 400) {
   if (code === 0 && tail) return resolve(tail);
   try {
     const r = JSON.parse(tail);
-    if (r && r.ok === false && r.error) return reject(new Error(r.error));
+    if (r && r.ok === false && r.error) {
+      /* The engine's own sentence comes first; a lazy import that failed
+       * inside it (scipy for curves) still becomes the refusal. */
+      const said = new Error(r.error);
+      return void moduleRefusal(r.error, "The image editor", config.python).then((m) => reject(m || said), () => reject(said));
+    }
   } catch { /* no JSON on stdout — the engine died before answering */ }
-  reject(new Error(se.trim().slice(-tailBytes) || `exit ${code}`));
+  /* A crash on a missing module (cv2, scipy…) becomes the engine-package
+   * refusal: status 409, the pip line for the python that ran, and Studio's
+   * Install setup id when it built that engine. Every caller is an image-editor
+   * door, and imageFailure() passes those fields on. */
+  const plain = new Error(se.trim().slice(-tailBytes) || `exit ${code}`);
+  moduleRefusal(se, "The image editor", config.python).then((r) => reject(r || plain), () => reject(plain));
 }
 
 /* The studio runs unattended for hours. A single unhandled rejection anywhere
@@ -2123,6 +2798,38 @@ async function trackReplacement(job, replacing) {
   if (replacing) await auditions.observe(jobs.snapshot());
 }
 const musicInputRoutes = createMusicInputRoutes({ json, config, jobs, provenance: prov });
+/* POST /api/setup (server/setup/). A finished build is chosen through the same
+ * two fields as Settings > Songs > "timed lyrics python", and only after the
+ * both-modules probe passed there; the answer is that door's own verdict.
+ * With AIPLAY_WHISPER_PYTHON set the environment names the interpreter and
+ * wins over the field, so a build would change nothing: it is refused up
+ * front, in the same words Settings uses. */
+const setupRoutes = createSetupRoutes({ json, readBody, sameOriginLocalJson, runner: oneRunner(createSetupRunner({
+  appData: config.dataDir,
+  vendor: () => gpuStatus()?.vendor || vendorOf(config.gpu, config.torchBackend),
+  probe: (py, mods) => probeOne(py, mods),
+  currentPython: (id) => (id === "lyrics" ? config.lyrics.python : id === "stems" ? config.systemPython : null),
+  blockedBy: (id) => (id === "lyrics" && process.env.AIPLAY_WHISPER_PYTHON
+    ? `AIPLAY_WHISPER_PYTHON is set, so timed lyrics run in ${config.lyrics.python} whatever Studio builds. `
+      + "Install faster-whisper and stable-ts there, or remove the variable and start Studio again to use the button."
+    : stemsBlockedBy(id)),
+  save: async (id, py) => {
+    if (id === "stems") return saveStemsBuild(py);
+    if (id !== "lyrics") return null;
+    config.lyrics.whisperPython = py;
+    config.lyrics.python = whisperPython();
+    packageCache = null;
+    await savePrefs();
+    const got = await probeOne(config.lyrics.python, LYRICS_MODULES).catch(() => ({}));
+    return pythonVerdict({ python: config.lyrics.python, chosen: config.lyrics.whisperPython,
+      modules: Object.fromEntries(LYRICS_MODULES.map((m) => [m, !!got[m]])) });
+  },
+}), createEnginePackagesRunner({
+  appData: config.dataDir,
+  rig: () => config.rig,
+  python: () => config.python,
+  probe: (py, mods) => probeOne(py, mods),
+})) });
 const musicPlanRoutes = createMusicPlanRoutes({ json, readBody });
 const listeningRuntime = createListeningLabRuntime({ config, library,
   shelf: async () => scanBases(await modelBases()), probe: probeModel, engine: engineDoor });
@@ -2198,7 +2905,7 @@ const collabPlanningRoutes = createCollabPlanningRoutes({
   resolveKitCue: musicWorkflowRoutes.resolveKitCue,
 });
 const imageEditor = createImageEditor({
-  imageDir: IMAGE_DIR, inputDir: config.inputDir, python: config.python,
+  imageDir: IMAGE_DIR, inputDir: config.inputDir, coverDir: COVER_DIR, python: config.python,
   async preflight(options) {
     await stageQwenReferences(options.refImages, {
       inputDir: config.inputDir, coverDir: COVER_DIR, imageDir: IMAGE_DIR,
@@ -2209,9 +2916,11 @@ const imageEditor = createImageEditor({
   generate: (options, actor) => requestImageAndWait({
     art, options, actor,
     async submit(body, who) {
+      // The editor flattens its own extra references. Its frozen source keeps
+      // its alpha, which a masked edit composites through.
       const response = await fetch(`http://127.0.0.1:${config.uiPort}/api/image`, {
         method: "POST", headers: { "Content-Type": "application/json", "x-aiplay-actor": who || "system" },
-        body: JSON.stringify(body), signal: AbortSignal.timeout(120_000),
+        body: JSON.stringify({ ...body, refAlpha: "keep" }), signal: AbortSignal.timeout(120_000),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "The image request was refused.");
@@ -2239,6 +2948,9 @@ const imageEditor = createImageEditor({
   },
 });
 const avatarRoutes = createAvatarRoutes({ json, directory: path.join(config.outputDir, 'avatars'), provenance: prov });
+const weightTransferRoutes = createWeightTransferRoutes({json, directory:path.join(config.outputDir,'avatar-weight-transfer'), provenance:prov});
+const avatarFitAssets = createAvatarService({directory:path.join(config.outputDir,'avatars')});
+const avatarFittingRoutes = createAvatarFittingRoutes({json,directory:path.join(config.outputDir,'avatar-fitting'),inspectAsset:avatarFitAssets.file,provenance:prov});
 
 /* The Video lab. It needs the art runner (an arm is awaited by the clip event
  * the runner emits, not by polling a directory) and the same rememberClip the
@@ -2246,7 +2958,9 @@ const avatarRoutes = createAvatarRoutes({ json, directory: path.join(config.outp
  * every other clip maker tags one, and /api/clips shows the group without
  * knowing this subsystem exists. */
 const videoLabRoutes = createVideoLabRoutes({
-  json, readBody, art,
+  /* The guard POST /api/video uses: a comparison switches the engine and
+   * queues renders, and set_knob saves video settings. */
+  json, readBody, art, sameOriginLocalJson,
   rememberClip: (name, renderSeconds, meta) => {
     if (!name) return;
     if (renderSeconds) clipTimes.set(name, renderSeconds);
@@ -2263,7 +2977,7 @@ const earRoutes = createEarRoutes({ json, readBody, config, provenance: prov });
 /* The welcome window's surface: the capability catalogue, the showcase read off
  * this disk, and the first-run flag. Two dependencies, both of them this file's
  * own helpers — everything else it needs it reads from config. */
-const welcomeRoutes = createWelcomeRoutes({ json, readBody });
+const welcomeRoutes = createWelcomeRoutes({ json, readBody, sameOriginLocalJson });
 
 /* Chat v1. Two dependencies, both of them this file's own helpers; the model it
  * runs, the tools it can call and where it keeps its conversations all come
@@ -2276,14 +2990,73 @@ const cloud = createCloud({
   usageFile: path.join(config.paths.appData, "llm-usage.json"),
 });
 const llmRoutes = createLlmRoutes({ json, readBody, cloud, config });
-const chatRoutes = createChatRoutes({ json, readBody, config, cloud });
+
+/* Comfy Router (the launcher's "Use Comfy API" mode): hosted models on the
+ * user's own Comfy key and credits. Mounted only in that mode, so full Studio
+ * has no route that can spend a credit. */
+/* The key, decrypted once. secrets.js decrypts through DPAPI in a new
+ * powershell.exe per call, and the client asks on every poll of every run;
+ * dropped by the page's own save and forget, the only two ways it changes.
+ * ⚠ A GENERATION, NOT JUST A CLEAR. A save takes ~300 ms (read the store,
+ * encrypt in powershell, write), and a poll that started reading during it
+ * decrypted the OLD file and cached it after the clear: every later run was
+ * submitted and polled on the old key until Studio restarted. The generation
+ * moves before AND after each write, so a read that began before the write
+ * finished never stores what it read. */
+const { getKey: getRouterKey, drop: dropRouterKey } = routerKeyCache(() => getSecret(ROUTER_KEY));
+const routerClient = createRouterClient({ getKey: getRouterKey });
+const routerJobs = createRouterJobs({
+  client: routerClient,
+  dir: path.join(config.paths.appData, "router"),
+  outDir: path.join(config.outputDir, "router"),
+});
+/* sameOriginLocalJson: the one rule for a request that spends or chooses
+ * what runs here. The routes check the Host themselves before anything. */
+const routerRoutes = config.cloudOnly ? createRouterRoutes({
+  json, readBody, config, sameOriginLocalJson,
+  secrets: { has: hasSecret, status: secretStatus,
+    set: async (name, value) => { dropRouterKey(); try { return await setSecret(name, value); } finally { dropRouterKey(); } },
+    clear: async (name) => { dropRouterKey(); try { return await clearSecret(name); } finally { dropRouterKey(); } } },
+  client: routerClient,
+  catalog: createCatalog({ dir: path.join(config.paths.appData, "router") }),
+  jobs: routerJobs,
+}) : null;
+const chatRoutes = createChatRoutes({ json, readBody, config, cloud, gpu: gpuStatus });
+/* No strong graphics card? Friend first, then your own key (server/
+ * cloud-switch.js): GET /api/cloud reads the order, the paid switch and both
+ * keys; POST sets the switch through applyApiConfig, the same writer as POST
+ * /api/apimode, and saves or forgets the Comfy key with the Comfy page's own
+ * free check. Mounted in every mode: saving a key spends nothing, and the
+ * Comfy key is still only USED by the launcher's Use Comfy API mode. */
+const cloudRoutes = createCloudRoutes({
+  json, readBody, config, sameOriginLocalJson,
+  hosted: {
+    status: async () => {
+      const st = await apiStatus();
+      const prov = PROVIDERS[st.provider] || PROVIDERS.fal;
+      return { ...st, key: await secretStatus(prov.keyName).catch(() => ({ set: false })) };
+    },
+    configure: (patch) => applyApiConfig(patch),
+  },
+  comfy: {
+    status: () => secretStatus(ROUTER_KEY).catch(() => ({ set: false })),
+    save: async (key) => {
+      if (!/^\S{16,400}$/.test(key)) return { error: "That does not look like a Comfy API key." };
+      try { await routerClient.listModels({ key }); }
+      catch (e) { return { error: e.type === "unauthorized" ? "Comfy did not accept that key." : e.message }; }
+      dropRouterKey();
+      try { return await setSecret(ROUTER_KEY, key); } finally { dropRouterKey(); }
+    },
+    forget: async () => { dropRouterKey(); try { await clearSecret(ROUTER_KEY); } finally { dropRouterKey(); } },
+  },
+});
 
 /* Saved galleries (styles, lyrics, Simple descriptions, chat prompts) and the
  * Enhance button (server/prompt-tools.js). Enhance asks its own chosen model —
  * saved as enhanceModel, falling back to Simple mode's and then Chat's — and a
  * local one is refused while a render holds the card. */
 const enhanceModels = createChatModels({ engine: engineDoor, config, key: "enhanceModel",
-  fallbackKey: ["chatModelMusic", "chatModel"], cloud });
+  fallbackKey: ["chatModelMusic", "chatModel"], cloud, gpu: gpuStatus });
 const promptToolRoutes = createPromptToolRoutes({
   json, readBody,
   gallery: createGallery({ file: path.join(config.paths.appData, "prompt-gallery.json") }),
@@ -2300,6 +3073,14 @@ const promptToolRoutes = createPromptToolRoutes({
       return null;
     },
   }),
+});
+
+/* WHISPER AS A TOOL (server/whisper.js): transcribe or time any library song,
+ * clip or file in the output folder, through the art queue (kind "whisper")
+ * in the timed-lyrics python, and choose the model both use. */
+const whisperRoutes = createWhisperRoutes({
+  json, readBody, sameOriginLocalJson, art, config, probe: probeOne, modules: LYRICS_MODULES,
+  savePrefs, lrcDir: LRC_DIR, clipDir: CLIP_DIR,
 });
 
 /* THE ENGINE DOOR's public side. Same whole-prefix-plus-`handled` bargain as
@@ -2327,10 +3108,18 @@ const engineRoutes = createEngineRoutes({
  * injected at construction because the client is a module-level singleton and
  * CLIP_DIR, IMAGE_DIR and the closure above are all built in this file. */
 engineDoor.setAdopter(engineRoutes.adopt);
-const remoteRoutes = createRemoteRoutes({ config, getSecret, setSecret, clearSecret, append: prov.append, actorFrom: prov.actorFrom,
+/* RUNPOD, in its own launch mode only (config.remoteOnly). A Pod bills by the
+ * hour and its account routes can create one, so full Studio never builds these
+ * routes: /api/runpod answers there with a refusal naming the mode. Results
+ * are adopted into the same library as a local render; audio goes to the
+ * music library under a runpod- name. */
+const remoteRoutes = config.remoteOnly ? createRemoteRoutes({ config, getSecret, setSecret, clearSecret,
+  append: prov.append, actorFrom: prov.actorFrom,
   adopt: async (details) => {
     if (/\.(wav|flac|mp3|ogg|opus)$/i.test(details.output.file)) {
-      const name = `runpod-${details.runId}-${path.basename(details.output.file)}`;
+      /* "aiplay_" first: the library lists only its own prefixes (library.js
+       * PREFIXES), and a "runpod-" name never appeared in it. */
+      const name = `aiplay_runpod_${details.runId}_${path.basename(details.output.file)}`;
       await rename(path.join(config.outputDir, details.output.subfolder, details.output.file), path.join(config.outputDir, name));
       library.remember(name, { title: details.record.label || name, engine: "runpod", runId: details.runId });
       await library.save();
@@ -2338,7 +3127,35 @@ const remoteRoutes = createRemoteRoutes({ config, getSecret, setSecret, clearSec
     }
     return engineRoutes.adopt(details);
   },
+}) : null;
+/* MUSIC ON THE POD: the queue builds the same graph it builds for this PC and
+ * hands it here instead of to the local engine (jobs.js #runRemote). The song
+ * comes back through the adopt above (audio -> the library) and is filed by the
+ * queue's usual "done" path, title, tags and all. */
+if (remoteRoutes) jobs.setRemote(async ({ graph, label, actor, isCancelled, onState }) => {
+  const c = await remoteRoutes.start();
+  const sent = await c.submit({ graph, bindings: [], label: `AIPLAY music · ${label || "song"}`, actor });
+  const FINAL = new Set(["completed", "cancelled", "failed", "uncertain"]);
+  let cancelSent = false;
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 2500));
+    const row = c.status().jobs.find((j) => j.id === sent.id);
+    if (!row) continue;
+    if (isCancelled() && !cancelSent && !FINAL.has(row.state)) { cancelSent = true; await c.cancel(sent.id).catch(() => {}); }
+    onState(row.state);
+    if (!FINAL.has(row.state)) continue;
+    if (row.state !== "completed") throw new Error(row.error || `The RunPod job ended ${row.state}.`);
+    const audio = (row.outputs || []).find((o) => /\.(wav|flac|mp3|ogg|opus)$/i.test(o.localFile || o.file || ""));
+    if (!audio?.localFile) throw new Error("The Pod finished but returned no audio file.");
+    return { file: audio.localFile, runId: row.runId || null };
+  }
 });
+
+/* THE ENGINE'S OWN BACKSTOP ASKS HERE. server/comfy_nodes/aiplay_safety_gate.py
+ * sends every graph posted to the engine (including through a revealed or
+ * pinned port, which never passes through this process) to POST
+ * /api/safety/check with the per-boot token the supervisor gave it. */
+const safetyRoutes = createSafetyRoutes({ json, readBody, token: BACKSTOP_TOKEN });
 
 /* ⚠ MODULE SCOPE, BECAUSE THE HANDLER BELOW RUNS PER REQUEST. This was first
  * written beside adoptEngineImage, which READS like module scope and is not -
@@ -2362,6 +3179,7 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (p === "/api/runpod" || p.startsWith("/api/runpod/")) {
+      if (!remoteRoutes) return json(res, 404, { error: "RunPod rendering is the launcher's RunPod GPU mode. Start Studio from there to use it." });
       if (await remoteRoutes(req, res, url)) return;
     }
     /* Video Workflow — the whole music-video pipeline, additive. Claims only
@@ -2377,13 +3195,25 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/engine" || p.startsWith("/api/engine/")) {
       if (await engineRoutes(req, res, url)) return;
     }
+    if (p === "/api/safety/check") {
+      if (await safetyRoutes(req, res, url)) return;
+    }
 
     // ---- API ------------------------------------------------------------
     if (p === '/api/avatars' || p.startsWith('/api/avatars/')) {
       if (await avatarRoutes(req, res, url)) return;
     }
+    if (p === '/api/avatar-weight-transfer') {
+      if (await weightTransferRoutes(req, res, url)) return;
+    }
+    if (p === '/api/avatar-fitting' || p.startsWith('/api/avatar-fitting/')) {
+      if (await avatarFittingRoutes(req, res, url)) return;
+    }
     if (p === "/api/music-input") {
       if (await musicInputRoutes(req, res, url)) return;
+    }
+    if (p === "/api/setup") {
+      if (await setupRoutes(req, res, url)) return;
     }
     if (p === "/api/music-plan") {
       if (await musicPlanRoutes(req, res, url)) return;
@@ -2396,7 +3226,27 @@ const server = http.createServer(async (req, res) => {
       catch (error) { return json(res, 400, { error: error.message }); }
     }
     if (p === "/api/images/ai-edit" && req.method === "POST") {
-      try { return json(res, 200, await imageEditor.request(await readBody(req), prov.actorFrom(req))); }
+      try {
+        const b = await readBody(req);
+        /* ⚠ THE MINORS RULE, before the editor prepares anything. The picture
+         * being edited is pixels; the prompt it was made from (and whatever it
+         * was derived from) is read as context, so an edit instruction on a
+         * picture of a child is judged with that child in view. The render
+         * itself goes through /api/image and the engine door, which check the
+         * words again. */
+        if (!b?.action || b.action === "create") {
+          /* A document is edited as a whole: its layers' own library pictures
+           * are what it was made from. */
+          const editLineage = lineage([b?.source, ...(Array.isArray(b?.refImages) ? b.refImages : []),
+            ...(b?.documentId ? await documentSources(b.documentId) : [])]);
+          const refused = safetyRefusal({
+            door: "api.images.ai-edit", actor: prov.actorFrom(req), texts: [String(b?.prompt || "")],
+            context: editLineage.texts, flags: editLineage.flags,
+          });
+          if (refused) return json(res, 422, refused);
+        }
+        return json(res, 200, await imageEditor.request(b, prov.actorFrom(req)));
+      }
       catch (error) { return json(res, 400, { error: error.message }); }
     }
     /* ⚠ THE DOOR THAT WAS NEVER HUNG. server/score/ shipped with 2451 lines and
@@ -2447,8 +3297,17 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/llm" || p === "/api/llm/models") {
       if (await llmRoutes(req, res, url)) return;
     }
+    if (routerRoutes && (p === "/api/router" || p.startsWith("/api/router/"))) {
+      if (await routerRoutes(req, res, url)) return;
+    }
+    if (p === "/api/cloud") {
+      if (await cloudRoutes(req, res, url)) return;
+    }
     if (p === "/api/gallery" || p === "/api/enhance") {
       if (await promptToolRoutes(req, res, url)) return;
+    }
+    if (p === "/api/whisper") {
+      if (await whisperRoutes(req, res, url)) return;
     }
 
     /* WHICH BUILD, AND IS THERE A NEWER ONE.
@@ -2470,6 +3329,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === "/api/status") {
+      /* Before anything below reads config.music.engine: an unchosen default
+       * follows the disk (machineDefaults), so the page and studio_status name
+       * what will actually run. */
+      const defaults = await machineDefaults().catch(() => null);
       return json(res, 200, {
         engine: {
           ready: comfy.ready,
@@ -2519,8 +3382,17 @@ const server = http.createServer(async (req, res) => {
           musicAceLora: config.music.aceLora,
           musicAceLoraStrength: config.music.aceLoraStrength,
           musicModels: await musicModelChoices(),
+          /* Who chose each default: {key, value, chosenBy "machine"|"you", why}.
+           * studio_status returns it; the receipts and Settings read it. */
+          defaults,
           musicOnly: config.musicOnly,
-          remoteOnly: config.remoteOnly,
+          /* Simple or Advanced, and who chose (UI_PLAN E1). web/level.js reads
+           * the same through /api/welcome, which also carries the tooltips. */
+          ui: { level: config.ui.level, levelBy: config.ui.levelBy },
+          // The launcher's "Use Comfy API" mode: the web app shows the Comfy API page only.
+          cloudOnly: !!config.cloudOnly,
+          // The launcher's "RunPod GPU" mode: Images and Video render on the saved Pod.
+          remoteOnly: !!config.remoteOnly,
           engineExpected: comfyWanted,
           /* The real-audio tokenizer (musicYue2Tokenizer): with it on disk,
            * Continue works on any track in the library, not only on takes. */
@@ -2562,8 +3434,16 @@ const server = http.createServer(async (req, res) => {
           paths: { outputDir: config.outputDir, rig: config.rig },
           siteSessions: config.community.sessions,
           output: config.output,
-          stems: config.stems,
-          lyrics: { when: config.lyrics.when, model: config.lyrics.model },
+          /* The stems python beside the setting, as Settings > Songs shows it:
+           * the one that runs, where it came from, and the default. */
+          stems: { ...config.stems, python: config.systemPython, pythonSource: stemsPythonSource(), defaultPython: defaultStemsPython() },
+          lyrics: {
+            when: config.lyrics.when, model: config.lyrics.model,
+            // Settings > Songs shows the interpreter that will run, and the one
+            // chosen there; they differ when AIPLAY_WHISPER_PYTHON is set.
+            python: config.lyrics.python, whisperPython: config.lyrics.whisperPython,
+            pythonFromEnv: !!process.env.AIPLAY_WHISPER_PYTHON, defaultPython: defaultWhisperPython(),
+          },
           video: {
             enabled: config.video.enabled, when: config.video.when,
             engine: config.video.engine,
@@ -2594,6 +3474,8 @@ const server = http.createServer(async (req, res) => {
             engines: Object.fromEntries(Object.entries(config.video.engines).map(([k, e]) => [k, {
               label: e.label, sizes: e.sizes, seconds: e.seconds, fps: e.fps,
               width: e.width, height: e.height, steps: e.steps ?? null,
+              /* The trained size where the start size differs (720p off NVIDIA, config.js). */
+              nativeWidth: e.nativeWidth ?? e.width, nativeHeight: e.nativeHeight ?? e.height,
               frameRule: e.frameRule,
               costFixedSeconds: e.costFixedSeconds, costRate: e.costRate, costExponent: e.costExponent,
               /* The step counts at which each distillation takes over. Sent so
@@ -2602,27 +3484,95 @@ const server = http.createServer(async (req, res) => {
                * the day the 4-step build was added. */
               turboMaxSteps: e.turboMaxSteps ?? null, turbo4MaxSteps: e.turbo4MaxSteps ?? null,
               turbo3MaxSteps: e.turbo3MaxSteps ?? null,
+              /* A distillation that runs at one step count (FastH3: 8) and its
+               * attention choice: the screen hides the step slider for it and
+               * shows the attention picker instead. */
+              fixedSteps: e.fixedSteps ?? null,
+              attention: e.sparseAttention ? (e.attention || "pytorch") : null,
               /* Whether the 3-step distillation is actually on disk: config
                * falls back to the 4-step file at these step counts otherwise,
                * and a 4-step LoRA sampled at 3 is the wrong model. make_clip's
-               * "fast" reads this to choose 3 or 8. */
+               * "fast" and the Video screen's Fast chip read stepDefaults.fast
+               * below, which is 3 exactly where this is true. */
               turbo3Ready: /taomate/i.test(String(e.turboLora3 || "")),
+              /* The step counts this DISK runs matched (config.js, the block
+               * after `config`): Standard is 8 only where both 8-step files
+               * resolved, else 4, and Fast is 3 only where TaoMate did. The
+               * Video screen's slider opens on `standard` and its chips read
+               * all three, and make_clip's `quality` maps through them, so no
+               * surface keeps a literal 8 that a Models-screen install (4-step
+               * files only) would run as a 4-step LoRA at 8 steps. */
+              stepDefaults: e.stepDefaults ?? null,
+              /* Keep my character's step count: the reference build's own
+               * (workflow.js referenceSteps), a sibling of stepDefaults so its
+               * {fast, standard, best} shape stays as mcp-steer_test pins it. */
+              referenceSteps: e.stepDefaults ? referenceSteps(e) : null,
+              /* Fast while a character is kept: the count the reference path
+               * really runs (TaoMate is text-only) and the chip's words
+               * (video-plain.js keepFast), H3 only. */
+              keepFast: k === "h3" ? keepFast(e) : null,
+              turboBuilds: e.turboBuilds ?? null,
+              /* This PC's measured speed against the cost curve (video-speed.js):
+               * the page multiplies its estimate by it. Null before a clip. */
+              speedFactor: videoSpeed.factor(k), speedSamples: videoSpeed.samples(k),
+              /* The step count each resolved file was distilled for, by slot
+               * (config.js loraStepsOf), so the screen names "the 4-step
+               * build" by the file that loads rather than by the
+               * turbo4MaxSteps threshold, which is 5. */
+              loraSteps: Object.fromEntries(["turboLora", "turboLora4", "turboLora3", "refTurboLora", "refTurboLora4"]
+                .map((k) => [k, loraStepsOf(e[k])])),
               /* The distillations this engine loads by itself: the Video screen's
                * LoRA picker leaves them out, because stacking one again would
                * apply it twice. */
               ownLoras: [e.turboLora, e.turboLora4, e.turboLora3, e.refTurboLora, e.refTurboLora4]
                 .filter(Boolean).map((n) => path.basename(String(n))),
+              /* The base a LoRA must have been made for (config.js), which the
+               * Video screen's picker judges against and /api/video checks: null
+               * means this engine takes none, and the picker hides. */
+              loraBase: e.loraBase ?? null,
+              /* An engine offered under Advanced only (FastH3): its label and
+               * note there. The Video screen's main list leaves it out unless
+               * it is the saved choice, which keeps rendering on it. */
+              advanced: e.advanced ?? null,
+              /* H3's sparse attention on the Fast setting (config.js solAttn):
+               * the saved choice and its measured note, for the Advanced switch. */
+              sparse: e.solAttn ? { value: e.sparse ?? "off", options: ["sol-attn", "off"], note: e.solAttn.note } : null,
+              /* The reference slots' sentence on an engine that takes no
+               * references (server/video-plain.js), null on H3. */
+              refsIgnored: refsIgnored(k, e.label),
+              /* Whether H3's card tiers (the size chips, the start size, the
+               * RAM line, More motion) are about this engine: the server's
+               * call, so the page never decides it from a label. */
+              h3Tiers: isH3Family(k),
+              /* The Fast chip's note, which follows the disk and the saved
+               * sparse attention (sol-attn makes Fast slightly softer). */
+              fastNote: fastNote(e),
             }])),
             seconds: videoEngine().seconds,
-            width: videoEngine().width, height: videoEngine().height },
+            width: videoEngine().width, height: videoEngine().height,
+            /* H3's tier for THIS card (server/h3tier.js): the size and longest
+             * clip it is offered at, the need table for that size, the fit's
+             * inputs and the RAM warning. From the same readings as `gpu` and
+             * `ram` below; arithmetic only, cheap enough to poll. */
+            h3: (() => {
+              const h = h3Status({ gpu: gpuStatus(), ram: ramStatus(), cpuOnly: cpuOnlyEngine(), vaeMeasured: h3VaeMeasured() });
+              /* The Video screen's start size for this card and, where H3 is
+               * not offered, its one sentence (friend first, own key second). */
+              return { ...h, start: h3StartSize(h), notOffered: h3NotOfferedLine(h) };
+            })() },
           tier: comfy.tier || "auto",
           tiers: Object.entries(config.vramTiers).map(([k, v]) => ({ id: k, label: v.label, note: v.note })),
+          /* Said beside every tier: it restarts the engine for every model, video included. */
+          tierScope: config.vramTierScope,
           // The two provenance toggles (display + Tier-2 record). Tier 1 has
           // no setting to report because it has no setting.
           provenance: { ...config.provenance },
         },
+        power: powerSnapshot(),
         gpu: gpuStatus(),
         ram: ramStatus(),
+        cpu: cpuStatus(),
+        disk: await modelsDisk(),
         ...art.status(),
         ...jobs.snapshot(),
         // Disk is the source of truth, so the library survives restarts and shows
@@ -2640,18 +3590,35 @@ const server = http.createServer(async (req, res) => {
     // Overnight batches. The plan lives on the server and on disk, so closing the
     // browser -- or losing it to a crash -- does not touch a run in progress.
     if (p === "/api/batch" && req.method === "POST") {
+      /* A night of renders, which with the hosted engine on is a night of
+       * bills: only Studio's page and local clients start or steer one. */
+      if (!sameOriginLocalJson(req)) return json(res, 403, { error: "Overnight runs are only queued from Studio's own page or a local client." });
       const b = await readBody(req);
       try {
         /* The actor is taken from the REQUEST, not from the body: a caller must
          * not be able to claim to be a human. Every picture the run makes is
          * then stamped with it. */
-        if (b.action === "start") return json(res, 200, batch.start({ ...b, actor: prov.actorFrom(req) }));
+        if (b.action === "start") {
+          /* A music night with the hosted engine on bills every song: asked
+           * once, with the night's estimate, and carried on each job as
+           * paidConfirmed (server/cloud-switch.js). Never assumed. */
+          const paidNight = (b.kind || "music") === "music" && hostedWouldBill({ apiEnabled: !!config.api.enabled, engine: null });
+          const night = paidNight ? plannedSongs(b) : null;
+          /* No idea with a style: nothing to pay for, and start() says so. */
+          if (paidNight && b.confirmSpend !== true && night.songs) {
+            const refusal = paidRefusal(await hostedQuote(night.longestSeconds), { songs: night.songs });
+            return json(res, refusal.status, refusal.body);
+          }
+          return json(res, 200, batch.start({ ...b, actor: prov.actorFrom(req), paidConfirmed: paidNight && b.confirmSpend === true }));
+        }
         if (b.action === "pause") return json(res, 200, batch.pause());
         if (b.action === "resume") return json(res, 200, batch.resume());
         if (b.action === "stop") return json(res, 200, batch.stop());
         if (b.action === "clear") return json(res, 200, batch.clear());
         return json(res, 400, { error: "Unknown action." });
       } catch (err) {
+        /* An overnight plan refused under the minors rule (batch.js) says so. */
+        if (err?.safety) return json(res, 422, { error: String(err.message), code: err.code, ...(err.hint ? { hint: err.hint } : {}) });
         return json(res, 400, { error: String(err.message || err) });
       }
     }
@@ -2674,10 +3641,7 @@ const server = http.createServer(async (req, res) => {
         catch(err) { return json(res, 400, {error:err.message}); }
       }
       if (req.method !== "POST") return json(res, 405, {error:"Use GET or POST."});
-      const host=req.headers.host || '';
-      const allowedHosts=[`127.0.0.1:${config.uiPort}`,`localhost:${config.uiPort}`,`[::1]:${config.uiPort}`];
-      if (!allowedHosts.includes(host) || (req.headers.origin && req.headers.origin!==`http://${host}`)
-        || !/^application\/json(?:;|$)/i.test(req.headers['content-type']||'')) {
+      if (!sameOriginLocalJson(req)) {
         return json(res,403,{error:"Native setup requires a same-origin local JSON request."});
       }
       const b=await readBody(req);
@@ -2690,6 +3654,8 @@ const server = http.createServer(async (req, res) => {
       } catch(err) {return json(res,400,{error:err.message});}
     }
     if (p === "/api/models" && req.method !== "POST") {
+      // The selected engine (REQUIRED badge, the recommendation's music slot) follows the disk when unchosen.
+      if (typeof machineDefaults === "function") await machineDefaults().catch(() => null);
       const [cat, pkgs, disk] = await Promise.all([models.status(), pythonPackages(), diskFree()]);
 
       /* THE MACHINE, READ ONCE. Both readings are already taken for the status
@@ -2698,14 +3664,17 @@ const server = http.createServer(async (req, res) => {
        * against the SAME reading — nvidia-smi is polled on a timer and a fit
        * table where row 3 saw a different card than row 11 would be indefensible
        * on the one screen whose job is to be trusted. */
-      const machine = readMachine(gpuStatus(), ramStatus());
+      const machine = readMachine(gpuStatus(), ramStatus(), { cpuOnly: cpuOnlyEngine(), vaeMeasured: h3VaeMeasured() });
       machine.amdMusicFixed = hasAmdMusicFix(studioLaunchArgs());
       machine.engineFix = { mode: config.comfy.amdFix, vendor: vendorOf(config.gpu, config.torchBackend), applies: machine.amdMusicFixed };
 
       const nativeSetup = await ggufSetup.status();
       const nativeReadyLabels = Object.entries(nativeSetup.variants || {})
         .filter(([, variant]) => variant.ready).map(([precision]) => precision.toUpperCase());
-      const capabilities = cat.map((c) => ({
+      /* markRequired() again, over the overlaid rows: the native GGUF row's
+       * readiness is known only here, from its setup, and the badge follows
+       * the selected engine's readiness (models.js says why). */
+      const capabilities = markRequired(cat.map((c) => ({
         ...c,
         ...(c.nativeSetup ? {ready:Object.values(nativeSetup.variants || {}).some(v=>v.ready) || nativeSetup.ready,
           nativeVariants:nativeSetup.variants,totalBytes:nativeSetup.downloadBytes,progress:nativeSetup.progress,
@@ -2716,7 +3685,10 @@ const server = http.createServer(async (req, res) => {
         // A capability can have every weight on disk and still not run if its
         // python package is absent. Saying so is the difference between a
         // useful message and a mystery.
-        packageReady: c.needsPackage ? !!pkgs[c.needsPackage] : true,
+        packageReady: modulesOf(c).every((m) => !!pkgs[m]),
+        /* WHICH ones are missing, so the row can name stable_whisper when it is
+         * the one absent, rather than the faster_whisper it does have. */
+        packageMissing: modulesOf(c).filter((m) => !pkgs[m]),
         /* "4 GB to download" and "will it run on my card" are different
          * questions and only the first one was ever answered here. `requires`
          * has been on every row since the catalogue was written; this is the
@@ -2726,7 +3698,7 @@ const server = http.createServer(async (req, res) => {
         files: (c.files || []).map((f) => ({ ...f, shelf: f.folder ? shelfOf(f.folder) : null })),
         group: modelGroupOf(c),
         ...(c.id === "engine" && minimaxAmdRisk() ? { note: [`⚠ ${MINIMAX_AMD_WARNING}`, c.note].filter(Boolean).join(" ") } : {}),
-      }));
+      })));
 
       return json(res, 200, {
         disk,
@@ -2738,7 +3710,10 @@ const server = http.createServer(async (req, res) => {
         /* WHAT TO ACTUALLY DOWNLOAD. Seventeen rows and no advice is not a
          * neutral position — it is the position that made a newcomer give up and
          * hand the job to an agent. */
-        recommended: recommendFor({ capabilities, machine, disk }),
+        /* The music slot is the default machineDefaults() applied above, and
+         * who chose it, so the recommendation and the Music screen agree. */
+        recommended: recommendFor({ capabilities, machine, disk,
+          music: (await machineDefaults().catch(() => null))?.find((d) => d.key === "music.engine") || null }),
         /* THE FOUR WORDS, SENT RATHER THAN RETYPED IN THE PAGE.
          *
          * Every row on the Models screen needs a short label for its verdict,
@@ -2752,7 +3727,7 @@ const server = http.createServer(async (req, res) => {
          * the single definition in fit.js. web/modelfit.js renders these and
          * writes none of its own; server/modelfit_test.js fails if it starts. */
         fitStates: FIT_STATES,
-        python: { path: SYSTEM_PYTHON, packages: pkgs, probed: probedBy },
+        python: { path: config.systemPython, packages: pkgs, probed: probedBy },
         /* The models folder, every folder the engine loads from, and what is in
          * them — so a file the catalogue does not name is still visible, and can
          * stand in for one it does. */
@@ -2770,6 +3745,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === "/api/models" && req.method === "POST") {
+      /* EVERY action here chooses what the engine loads or fetches: the main
+       * models folder (setModelsDir, which also makes a folder the page names),
+       * the extra ones (addAlso, dropAlso), a catalogue file's stand-in
+       * (override), a download, a folder scan, the OS folder dialog. A guard
+       * on addAlso alone left setModelsDir, which does more, open to any page,
+       * so the one guard is the handler's first line, before the body is read. */
+      if (!sameOriginLocalJson(req)) return json(res, 403, { error: "Changing models or model folders is only accepted from Studio's own page or a local client." });
       const b = await readBody(req);
       try {
         /* The OS folder picker. Blocks until the dialog closes. */
@@ -2781,6 +3763,29 @@ const server = http.createServer(async (req, res) => {
         /* Preview a folder (scanFolder), or adopt it as the models folder
          * (setModelsDir). Adopting needs a restart: the catalogue's download
          * paths and the engine's model paths are both fixed at start. */
+        /* One more models folder to check and load from, beside the main one.
+         * Downloads still go to the main folder. Needs a restart: the engine's
+         * model paths are written when it starts. */
+        if (b.action === "addAlso") {
+          /* It decides which folders the engine LOADS from: the handler's
+           * first line has already asked whether the request is Studio's own. */
+          const raw = String(b.dir || "").trim();
+          if (!raw) return json(res, 400, { error: "Give a folder." });
+          const dir = path.resolve(raw);
+          if (!(await stat(dir).catch(() => null))?.isDirectory()) return json(res, 400, { error: `Not a folder: ${dir}` });
+          if (samePath(dir, config.modelsDir)) return json(res, 400, { error: "That is already the models folder." });
+          const files = await scanBases([dir]);
+          if (!files.length) {
+            return json(res, 400, {
+              error: `No model files in the usual subfolders of ${dir} (checkpoints, diffusion_models, vae, …). `
+                + "Pick the folder that CONTAINS those subfolders.",
+            });
+          }
+          const next = uniqueDirs([...(config.modelsAlso || []), dir]);
+          await mergeSettings({ modelsAlso: next });
+          return json(res, 200, { ok: true, also: next, needsRestart: true,
+            note: `Saved. Restart AIPLAY Studio to load the ${files.length} model files in ${dir}. Downloads still go to the models folder.` });
+        }
         /* Stop loading from an earlier models folder (it stays on disk). */
         if (b.action === "dropAlso") {
           if (typeof b.dir !== "string" || !b.dir.trim()) return json(res, 400, { error: "Give the previous folder to stop using." });
@@ -2936,6 +3941,11 @@ const server = http.createServer(async (req, res) => {
             cfg: m.cfg, shift: config.sampling.shift, model: m.model || "int8",
             date: new Date(m.createdAt || Date.now()).toISOString().slice(0, 10),
             ...(await songProvMeta(src)),
+            /* ⚠ THE CREDIT TRAVELS WITH THE EXPORT. The conversion writes a
+             * fresh container, and this re-tag used to carry no attribution,
+             * so an MP3 or FLAC of a YuE2 song left Studio without the model's
+             * name or its licence in COPYRIGHT/ATTRIBUTION. */
+            ...songCredit(src),
           };
           const tagRes = await library.tagFile(rel, meta);
           embedded = tagRes?.ok ? "tags" : null;
@@ -3011,6 +4021,23 @@ const server = http.createServer(async (req, res) => {
      * (model licences + EU AI Act Art 50(2)), and a gap in the user's own
      * record only ever costs the user.
      */
+    /* Battery Safe: the switch, the countdown length, and the person's answer
+     * to "this is running on battery". `allow: true` keeps generating until the
+     * power comes back; `allow: false` withdraws that; `stopNow` stops at once. */
+    if (p === "/api/power") {
+      if (req.method === "POST") {
+        const b = await readBody(req);
+        let save = false;
+        if (typeof b.batterySafe === "boolean") { config.power.batterySafe = b.batterySafe; save = true; }
+        if (Number.isInteger(b.graceMinutes) && b.graceMinutes >= 1 && b.graceMinutes <= 60) { config.power.graceMinutes = b.graceMinutes; save = true; }
+        if (typeof b.allow === "boolean") batteryGuard.allow(b.allow);
+        if (b.stopNow === true) await stopForBattery("You pressed Stop");
+        if (save) savePrefs();
+        await powerTick();
+      }
+      return json(res, 200, powerSnapshot());
+    }
+
     if (p === "/api/provenance/settings" && req.method === "POST") {
       const b = await readBody(req);
       if (typeof b.showBadges === "boolean") config.provenance.showBadges = b.showBadges;
@@ -3037,6 +4064,13 @@ const server = http.createServer(async (req, res) => {
        * in foldOrigin. A door that fabricates a human is worse than a door that
        * records nothing. */
       const who = prov.actorFrom(req);
+      /* ⚠ THE MINORS RULE, before a bar is analysed. Pictures made from this
+       * prompt go through /api/image, the Paint look through /api/engine and
+       * the Motion look through the engine door, and each checks again. */
+      if (typeof b.prompt === "string" && b.prompt.trim()) {
+        const refused = safetyRefusal({ door: "api.reactive", actor: who, texts: [b.prompt] });
+        if (refused) return json(res, 422, refused);
+      }
       const loop = async (door, body) => {
         const r = await fetch(`http://127.0.0.1:${config.uiPort}${door}`, {
           method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -3121,17 +4155,34 @@ const server = http.createServer(async (req, res) => {
           waitIdle,
           /* The Paint look's renderer: frames through the engine door, the
            * clip into the library, progress on the console. */
-          paint: (po) => paintClip({ ...po, clipDir: CLIP_DIR, imageDir: IMAGE_DIR }, {
-            actor: who,
-            onProgress: (p) => console.log(`  [reactive paint] ${p.frame}/${p.frames} frames`),
-          }),
+          /* ⚠ THE MINORS RULE, on the look's words with what the source clip
+           * and the style pictures were made from (server/safety/lineage.js).
+           * Paint's frames reach the engine one by one through /api/engine,
+           * which sees the words but not this history, so it is judged here. */
+          paint: (po) => {
+            const lin = lineage([po.clip, ...(Array.isArray(po.styles) ? po.styles : [])]);
+            const d = paintDials(po.dials || {});
+            assertSafe({ door: "reactive.paint", via: "reactive.paint", actor: who, texts: [d.styleA, d.styleB],
+              context: lin.texts, flags: lin.flags });
+            return paintClip({ ...po, clipDir: CLIP_DIR, imageDir: IMAGE_DIR }, {
+              actor: who,
+              onProgress: (p) => console.log(`  [reactive paint] ${p.frame}/${p.frames} frames`),
+            });
+          },
           /* The Motion look: AnimateDiff through the engine door, adopted
-           * into the clips library like any other render. */
-          motion: (mo) => motionClip({ ...mo, clipDir: CLIP_DIR, imageDir: IMAGE_DIR }, { engine: engineDoor, actor: who }),
+           * into the clips library like any other render. The door judges
+           * its graph with the source clip's and the pictures' history. */
+          motion: (mo) => {
+            const lin = lineage([mo.clip, ...(Array.isArray(mo.pictures) ? mo.pictures : [])]);
+            return motionClip({ ...mo, clipDir: CLIP_DIR, imageDir: IMAGE_DIR, safetyContext: lin.texts, safetyFlags: lin.flags },
+              { engine: engineDoor, actor: who });
+          },
         });
         return json(res, 200, out);
       } catch (err) {
-        return json(res, 400, { error: String(err.message || err) });
+        if (err?.safety) return json(res, 422, bodyOfError(err));
+        /* The drum stem's refusal (no demucs here) keeps its 409 and setup id. */
+        return json(res, refusalStatus(err, 400), { error: String(err.message || err), ...refusalFields(err) });
       }
     }
 
@@ -3296,9 +4347,14 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === "/api/generate" && req.method === "POST") {
+      /* A song costs GPU time, and with API mode on it bills the person's own
+       * fal.ai or MiniMax key: only Studio's page and local clients queue one. */
+      if (!sameOriginLocalJson(req)) return json(res, 403, { error: "Songs are only queued from Studio's own page or a local client." });
       const body = await readBody(req);
       if (typeof body?.caption !== "string" || !body.caption.trim()) return json(res, 400, { error: "Add a style description." });
       if (body.engine !== undefined && !Object.hasOwn(config.music.engines, body.engine)) return json(res, 400, {error:"Unknown music engine. Nothing was queued."});
+      // No engine named: the default follows the disk when nobody chose (machineDefaults).
+      if (body.engine === undefined && typeof machineDefaults === "function") await machineDefaults().catch(() => null);
       const requestedEngine=body.engine || config.music.engine;
       if (config.musicOnly && requestedEngine !== "yue2-gguf" && !(requestedEngine === "yue2-comfy" && comfyWanted)) return json(res, 400, {error:"Music-only mode runs YuE2 (native GGUF, or through ComfyUI when a YuE2 checkpoint is found). Start full Studio for other engines."});
       if (requestedEngine === "yue2-gguf") {
@@ -3340,7 +4396,9 @@ const server = http.createServer(async (req, res) => {
           && musicEngine !== "yue2-comfy") {
         const capId = MODEL_TO_CAPABILITY[musicEngine];
         const cap = capId ? (await models.status()).find((c) => c.id === capId) : null;
-        if (cap && !cap.ready) {
+        /* RunPod GPU mode: the song renders on the Pod, whose worker checks the
+         * graph against ITS files and names any that are missing. */
+        if (cap && !cap.ready && !config.remoteOnly) {
           const gb = ((cap.totalBytes - cap.haveBytes) / 1e9).toFixed(1);
           return json(res, 400, {
             error: cap.gated
@@ -3363,6 +4421,17 @@ const server = http.createServer(async (req, res) => {
             reason: "no-render-path",
           });
         }
+      }
+
+      /* PAID, SO ASKED FOR EVERY TIME (server/cloud-switch.js). With the hosted
+       * engine switched on, a MiniMax song bills the person's own key: it is
+       * queued only when THIS request carries confirmSpend: true, and the
+       * refusal says what it would cost and which key it would bill. The job
+       * carries paidConfirmed, which the runner checks again before it sends. */
+      const paidSong = hostedWouldBill({ apiEnabled: !!config.api.enabled, engine: musicEngine });
+      if (paidSong && body.confirmSpend !== true) {
+        const refusal = paidRefusal(await hostedQuote(Math.min(Math.max(Number(body.maxDuration) || 240, 30), 300)));
+        return json(res, refusal.status, refusal.body);
       }
 
       /* ── YuE2: the second kind of job. ─────────────────────────────────
@@ -3553,7 +4622,8 @@ const server = http.createServer(async (req, res) => {
               const got = await ensureStem(coverFile, coverStem, { art, outputDir: config.outputDir, actor: prov.actorFrom(req) });
               coverSource = got.path;
             } catch (e) {
-              return json(res, 500, { error: `The ${coverStem} stem could not be separated: ${e?.message || e}`, engine: musicEngine, reason: "stem-failed" });
+              const fail = stemFailure(e, coverStem, { engine: musicEngine });
+              return json(res, fail.status, fail.body);
             }
           }
           const busy = await engineDoor.status().then((s) => (s.running || []).length > 0).catch(() => true);
@@ -3562,7 +4632,7 @@ const server = http.createServer(async (req, res) => {
             coverCodes = r.dir;
             coverTokenized = { frames: r.frames, seconds: r.seconds, device: r.device, cached: !!r.cached, stem: coverStem };
           } catch (e) {
-            return json(res, e?.status || 500, { error: e?.message || String(e), engine: musicEngine, reason: e?.reason || "tokenizer-failed" });
+            return json(res, e?.status || 500, { error: e?.message || String(e), engine: musicEngine, reason: e?.reason || "tokenizer-failed", ...refusalFields(e) });
           }
           /* The render is prime + new, so the memory plan and the sampler's
            * stop are sized on the total rather than on the new part alone. */
@@ -3649,8 +4719,10 @@ const server = http.createServer(async (req, res) => {
           return json(res, 400, { error: "ACE-Step has no preview pass; turbo is already 8 steps. Press Create instead.", engine: musicEngine, reason: "no-preview" });
         }
         const ace = await aceShelf();
-        const dit = ace.dits.includes(config.music.aceModel) ? config.music.aceModel : ace.dits[0];
-        if (!dit || !ace.ready) {
+        const dit = ace.dits.includes(config.music.aceModel) ? config.music.aceModel
+          : ace.dits[0] || (config.remoteOnly ? (config.music.aceModel || "acestep_v1.5_turbo.safetensors") : undefined);
+        if (config.remoteOnly && !ace.lm) ace.lm = config.music.aceLm || "qwen_4b_ace15.safetensors";
+        if (!config.remoteOnly && (!dit || !ace.ready)) {
           return json(res, 400, {
             error: `ACE-Step 1.5 is not ready: ${ace.missing || "no ACE-Step 1.5 DiT in a diffusion_models folder"}. Open the Models screen.`,
             engine: musicEngine, reason: "weights-missing", needsModel: "musicAceStep15",
@@ -3714,18 +4786,40 @@ const server = http.createServer(async (req, res) => {
       }
 
       /* YuE2 through ComfyUI: the refusals that cost nothing. */
-      let yueLora = null, yueLoraStrength = 1, yueLoraClip = null, yueLoraClipStrength = 1, yueSheet = null, yueCheckpoint = null;
+      let yueLora = null, yueLoraStrength = 1, yueLoraClip = null, yueLoraClipStrength = 1, yueSheet = null, yueCheckpoint = null, yueComfy = null;
       if (musicEngine === "yue2-comfy") {
         if (body.preview) {
           return json(res, 400, { error: "YuE2 has no preview pass: every render is the full model. Press Create instead.", engine: musicEngine, reason: "no-preview" });
         }
+        /* THE SCORE AND THE DIALS (server/music/yue2-comfy-input.js). A
+         * supplied score is carried to the graph; what the graph cannot do
+         * (an open score, a key/tempo/meter seed, the cover prime) is refused
+         * by sentence. The first version read `abc` only for the Python kit,
+         * so a hummed score was accepted here and never sung. */
+        try {
+          yueComfy = yue2ComfyFields(body, { cot: ["full", "melody", "off"].includes(body.cot) ? body.cot : "full" });
+        } catch (e) {
+          return json(res, e.status || 400, { error: e.message, engine: "yue2-comfy", reason: e.reason });
+        }
         if (body.checkpoint !== undefined && (typeof body.checkpoint !== "string" || !body.checkpoint.trim() || /[/\\]|\.\./.test(body.checkpoint))) {
           return json(res, 400, { error: "Choose an installed YuE2 checkpoint filename.", reason: "checkpoint" });
         }
-        const ckpt = body.checkpoint ?? config.music.yue2Checkpoint;
+        const ckpt = body.checkpoint ?? config.music.yue2Checkpoint ?? (config.remoteOnly ? "yue2_3b_int8_convrot.safetensors" : undefined);
         const shelf = await scanBases(await modelBases());
         const found = ckpt && shelf.find((f) => f.folder === "checkpoints" && f.name === ckpt);
-        if (!found) {
+        if (!found && !config.remoteOnly) {
+          /* NONE AT ALL: a fresh install whose music default is YuE2 through
+           * ComfyUI (server/music-default.js). The page opens the download for
+           * that row (needsModel), not a list to pick from. */
+          const anyYue = shelf.some((f) => f.folder === "checkpoints" && /yue2?/i.test(f.name) && /\.(safetensors|sft)$/i.test(f.name));
+          if (!ckpt && !anyYue) {
+            /* The size from the catalogue row the Models screen fetches, never typed here. */
+            const get = CATALOG.find((c) => c.id === MODEL_TO_CAPABILITY["yue2-comfy"])?.files?.[0]?.bytes;
+            return json(res, 400, {
+              error: `YuE2 3B for ComfyUI is not on this PC yet${get ? ` (the ${(get / 1e9).toFixed(2)} GB int8 build)` : ""}. Open the Models screen to get it.`,
+              engine: musicEngine, reason: "weights-missing", needsModel: MODEL_TO_CAPABILITY["yue2-comfy"],
+            });
+          }
           return json(res, 400, {
             error: ckpt
               ? `The YuE2 checkpoint ${bareName(ckpt)} is no longer in a checkpoints folder. Pick another in the music model list.`
@@ -3733,7 +4827,7 @@ const server = http.createServer(async (req, res) => {
             engine: musicEngine, reason: "weights-missing",
           });
         }
-        if (body.checkpoint !== undefined && (await probeModel(found.full)).family !== "yue2") {
+        if (found && body.checkpoint !== undefined && (await probeModel(found.full)).family !== "yue2") {
           return json(res, 400, { error: "That checkpoint is not a detected YuE2 model.", reason: "checkpoint" });
         }
         yueCheckpoint = ckpt;
@@ -3746,7 +4840,7 @@ const server = http.createServer(async (req, res) => {
         const loraName = typeof askedLora === "string" && askedLora.trim() ? path.basename(askedLora.trim()) : null;
         if (loraName && !(/\.safetensors$/i.test(loraName) && shelf.some((f) => f.folder === "loras" && f.name === loraName))) {
           return json(res, 400, {
-            error: `The LoRA ${bareName(loraName)} is not in a loras folder. Pick another under Advanced Options, or choose none.`,
+            error: `The LoRA ${bareName(loraName)} is not in a loras folder. Pick another under Melody & score, or choose none.`,
             engine: musicEngine, reason: "lora-missing",
           });
         }
@@ -3764,12 +4858,16 @@ const server = http.createServer(async (req, res) => {
         const onShelf = (n) => /\.safetensors$/i.test(n) && shelf.some((f) => f.folder === "loras" && f.name === n);
         const askedClip = body.loraClip === undefined ? config.music.yue2LoraClip : body.loraClip;
         let clipName = typeof askedClip === "string" && askedClip.trim() ? path.basename(askedClip.trim()) : null;
-        if (!clipName && body.loraClip === undefined && body.instrumental && onShelf(INSTRUMENTAL_PLANNER_LORA)) {
+        /* Not beside a supplied score: the planner does not run then (node 4
+         * is left out), so the reason for the pick is gone, and the same
+         * language model would sing the score through an adapter nobody has
+         * measured there. A planner LoRA the request names is still honoured. */
+        if (!clipName && body.loraClip === undefined && body.instrumental && !yueComfy.abc && onShelf(INSTRUMENTAL_PLANNER_LORA)) {
           clipName = INSTRUMENTAL_PLANNER_LORA;
         }
         if (clipName && !onShelf(clipName)) {
           return json(res, 400, {
-            error: `The planner LoRA ${bareName(clipName)} is not in a loras folder. Pick another under Advanced Options, or choose none.`,
+            error: `The planner LoRA ${bareName(clipName)} is not in a loras folder. Pick another under Melody & score, or choose none.`,
             engine: musicEngine, reason: "lora-missing",
           });
         }
@@ -3788,12 +4886,18 @@ const server = http.createServer(async (req, res) => {
           yue2Checkpoint: yueCheckpoint,
           lora: yueLora, loraStrength: yueLoraStrength,
           loraClip: yueLoraClip, loraClipStrength: yueLoraClipStrength,
+          /* The pump hands these three to buildYue2ComfyGraph (jobs.js); the
+           * score's lineage rides only with a score, as on the Python kit. */
+          abc: yueComfy.abc, sampling: yueComfy.sampling, planSampling: yueComfy.planSampling,
+          scoreSlug: yueComfy.abc && typeof body.scoreSlug === "string" && /^[a-z0-9][a-z0-9-]{0,79}$/.test(body.scoreSlug) ? body.scoreSlug : null,
+          scoreVersion: yueComfy.abc && typeof body.scoreVersion === "string" && /^[\w.-]{1,40}$/.test(body.scoreVersion) ? body.scoreVersion : null,
         } : {}),
         /* WHO asked, stamped at the API boundary (provenance.js). The browser
          * carries no actor header → "user"; MCP always sends agent:<name>;
          * nothing can claim "user" through the header. Rides the job so the
          * ledger's generate event carries it when the song lands. */
         actor: prov.actorFrom(req),
+        ...(paidSong ? { paidConfirmed: true } : {}),
         ...(body.postprocess === false ? { stages: { cover: false, stems: false, lrc: false, video: false } } : {}),
         /* Derived here rather than in the browser, so an overnight run, an API
          * caller and the Create form all get the same treatment. The client's
@@ -3847,15 +4951,22 @@ const server = http.createServer(async (req, res) => {
      */
     /* A hummed melody → the two-voice score YuE2 takes verbatim. CPU only:
      * ffmpeg converts the recording, the engine's python runs a pitch tracker
-     * (server/music/hum.js). The answer is ABC for Advanced Options or for
+     * (server/music/hum.js). The answer is ABC for Melody & score or for
      * make_song's `abc`, plus what was heard. */
     /* A finished song → the two-voice score YuE2 sings from: SheetSage2 as
      * ComfyUI's own audio-encoder node (server/music/cover.js). Holds the card
-     * for the transcription. The answer is ABC for Advanced Options or for
+     * for the transcription. The answer is ABC for Melody & score or for
      * make_song's `abc`; the cover itself is then an ordinary render under a
      * new style line. */
     if (p === "/api/song_to_score" && req.method === "POST") {
-      const b = await readBody(req);
+      /* It runs the transcriber on a path the body names and can start a
+       * separation: only Studio's own page or a local client may ask. */
+      if (!sameOriginLocalJson(req)) return json(res, 403, { error: "Song to score is only accepted from Studio's own page or a local client." });
+      let b;
+      try { b = await readBody(req, 72 * 1024 * 1024); } catch (err) {
+        if (err.tooBig) return json(res, 413, { error: `That song is too large to send (${err.message}). Send a library song by name (source.library_file) or a path on this PC instead.` });
+        return json(res, 400, { error: "could not read that body as JSON" });
+      }
       try {
         let source = b.source;
         let stemUsed = null;
@@ -3877,7 +4988,7 @@ const server = http.createServer(async (req, res) => {
         const r = await songToScore({ source, mode: b.mode || "melody", engine: engineDoor, actor: prov.actorFrom(req) });
         return json(res, 200, { ok: true, ...r, ...(stemUsed ? { stem: stemUsed } : {}) });
       } catch (e) {
-        return json(res, e?.status || 400, { error: e?.message || String(e), ...(e?.needsModel ? { needsModel: e.needsModel } : {}) });
+        return json(res, e?.status || 400, { error: e?.message || String(e), ...(e?.needsModel ? { needsModel: e.needsModel } : {}), ...refusalFields(e) });
       }
     }
 
@@ -4096,7 +5207,8 @@ const server = http.createServer(async (req, res) => {
           const got = await ensureStem(file, stem, { art, outputDir: config.outputDir, actor: prov.actorFrom(req) });
           source = got.path;
         } catch (e) {
-          return json(res, 500, { error: `The ${stem} stem could not be separated: ${e?.message || e}`, reason: "stem-failed" });
+          const fail = stemFailure(e, stem);
+          return json(res, fail.status, fail.body);
         }
       }
       try {
@@ -4106,7 +5218,7 @@ const server = http.createServer(async (req, res) => {
           device: r.device, cached: !!r.cached, timing: r.timing ?? null, distinctCodes: r.distinctCodes ?? null,
         });
       } catch (e) {
-        return json(res, e?.status || 500, { error: e?.message || String(e), reason: e?.reason || "tokenizer-failed" });
+        return json(res, e?.status || 500, { error: e?.message || String(e), reason: e?.reason || "tokenizer-failed", ...refusalFields(e) });
       }
     }
 
@@ -4205,6 +5317,33 @@ const server = http.createServer(async (req, res) => {
       const file = path.join(dir, name);
       await writeFile(file, Buffer.concat(chunks));
       return json(res, 200, { ok: true, file, name, bytes: n });
+    }
+
+    /* WATCH A RETURNED TAKE BEFORE KEEPING IT. A take that failed its checks
+     * may still be the one somebody wants — "Keep anyway" exists for that — and
+     * nobody should keep a friend's render unseen. Read-only; the name is
+     * checked against the one shape quarantine.js writes. A page on another
+     * site could otherwise embed a friend's unreleased take, so a request that
+     * says it came from elsewhere is refused. */
+    if (p.startsWith("/api/collab-take/") && req.method === "GET") {
+      const site = String(req.headers["sec-fetch-site"] || "");
+      if (site && site !== "same-origin" && site !== "none") {
+        return json(res, 403, { error: "Returned takes play only on the Collab screen of this machine.", reason: "not-same-origin" });
+      }
+      const [fromFp = "", name = ""] = p.slice("/api/collab-take/".length).split("/").map((s) => { try { return decodeURIComponent(s); } catch { return ""; } });
+      let take;
+      try { take = await quarantineTake({ outDir: path.join(config.outputDir, "collab"), fromFp, file: name }); }
+      catch (e) { return json(res, e.status || 400, { error: e.message, reason: e.reason }); }
+      const base = { "Content-Type": take.type, "Accept-Ranges": "bytes", "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store" };
+      const range = byteRange(req.headers.range, take.size);
+      if (range?.unsatisfiable) { res.writeHead(416, { ...base, "Content-Range": `bytes */${take.size}` }); return res.end(); }
+      if (range) {
+        const { start, end } = range;
+        res.writeHead(206, { ...base, "Content-Range": `bytes ${start}-${end}/${take.size}`, "Content-Length": end - start + 1 });
+        return createReadStream(take.file, { start, end }).pipe(res);
+      }
+      res.writeHead(200, { ...base, "Content-Length": take.size });
+      return createReadStream(take.file).pipe(res);
     }
 
     if (p === "/api/collab" && req.method === "POST") {
@@ -4330,7 +5469,8 @@ const server = http.createServer(async (req, res) => {
          * order is re-opened and re-checked (never trusted from a previous
          * `open`), its pictures are written under names derived from their own
          * bytes, and a one-scene project is created carrying a plan that a
-         * human must still approve on the Plan screen. The card is not touched.
+         * human must still approve: the Plan card on the new "Order … from
+         * <name>" project (lending.js planPlace). The card is not touched.
          */
         if (action === "accept") {
           const asked = String(b.file || "");
@@ -4385,7 +5525,7 @@ const server = http.createServer(async (req, res) => {
            * taken away, and neither is a person you have agreed to render for. */
           if (sender.role !== "lender" && sender.role !== "collaborator") {
             return json(res, 400, {
-              error: `${sender.nickname || sender.fp} is not a lender or a collaborator here, so this machine has not agreed to render for them. Give them a role on the Collab screen first.`,
+              error: `${sender.nickname || sender.fp} is not a lending friend or a collaborator here, so this machine has not agreed to render for them. To agree: Collab → Friends → their row → “${LENDER_ROLE_LABEL}”, then accept again.`,
               reason: "role",
             });
           }
@@ -4400,15 +5540,24 @@ const server = http.createServer(async (req, res) => {
            *
            * Stateless on purpose: the refusal carries the prompt, and the same
            * call with `seen: true` goes through. No mistake on the page can skip
-           * it, and there is no `collab_accept` tool, so no agent can answer it
-           * on somebody's behalf either. */
+           * it. The `collab_accept` tool must send `seen: true` itself, and its
+           * description tells an agent to get the person's word on that exact
+           * file first; the in-app chat asks before it (chat/router.js
+           * "writes"). */
           if (b.seen !== true) {
+            /* ⚠ WHAT A YES WOULD COST THIS PC, ON THE SAME CARD AS WHAT IT WOULD
+             * DRAW: a speed-up file it lacks for this step count, and the
+             * friend's minutes a day. Both are said before anybody agrees. */
+            const speedUp = collabLending.speedUpForOrder(orderDoc);
+            const minutes = await collabLending.budgetCheck({ peer: sender, orderDoc,
+              rows: await book.listOrders({ outDir, side: "in" }), readProject: readMvProject, now: Date.now() });
             return json(res, 409, {
               error: `${sender.nickname || sender.fp.slice(0, 8)} is asking this machine to render this, and it will be a file on your disk when it is done. Read it, then accept again if you want to.`,
               reason: "not-seen",
               prompt: String(orderDoc.shot?.prompt || ""),
               describes: describeOrder(orderDoc, Date.now()),
               from: { fp: sender.fp, nickname: sender.nickname },
+              speedUp: speedUp.why, minutes: minutes.why, overBudget: minutes.over,
               /* ⚠ THE PICTURES THEMSELVES, NOT A COUNT. They are the render's
                * reference conditioning — the model sees every one of them — so a
                * card that shows the prompt and says "2 pictures" hides the half
@@ -4436,20 +5585,34 @@ const server = http.createServer(async (req, res) => {
             engineStatus: async () => engineDoor.status(),
           });
           const busy = machineBusy(readings);
+          /* ⚠ `anyway` OVERRIDES A BUSY CARD OR THIS FRIEND'S MINUTES A DAY AND
+           * NOTHING ELSE, and two of the busy readings are not overridable at
+           * all: a PAUSED queue will accept work that never starts, and an
+           * engine this machine cannot read is not a machine anybody can promise
+           * a render on. Everything else in this branch — verification, the
+           * role, the return address, the expiry — is a refusal and has no
+           * override. Every overridable reason is listed in ONE refusal, so the
+           * confirmation a person reads names everything `anyway` will walk
+           * past — a yes to "busy" never silently spends minutes too. */
+          const overrides = [];
           if (busy.busy) {
-            /* ⚠ `anyway` OVERRIDES A BUSY CARD AND NOTHING ELSE, and two of the
-             * readings are not overridable at all: a PAUSED queue will accept
-             * work that never starts, and an engine this machine cannot read is
-             * not a machine anybody can promise a render on. Everything else in
-             * this branch — verification, the role, the return address, the
-             * expiry — is a refusal and has no override. */
             const overridable = !["art-paused", "engine-unreachable"].includes(busy.reason);
-            if (!overridable || b.anyway !== true) {
-              return json(res, 409, {
-                error: busy.why + (overridable ? " Send it again with anyway:true if you want your friend's scene queued behind this." : ""),
-                reason: busy.reason, busy: true, overridable,
-              });
-            }
+            if (!overridable) return json(res, 409, { error: busy.why, reason: busy.reason, busy: true, overridable });
+            overrides.push({ reason: busy.reason, why: busy.why });
+          }
+          /* ⚠ THE MINUTES ARE READ HERE, NOT ONLY REMEMBERED. The friend row has
+           * always held `lendMinutesPerDay` and nothing read it, while two screens
+           * promised the card would not be lent without that number. Accept
+           * checks it against what this card has spent for them today (timed)
+           * and promised (the plan's own estimate) — see lending.js. */
+          const minutes = await collabLending.budgetCheck({ peer: sender, orderDoc,
+            rows: await book.listOrders({ outDir, side: "in" }), readProject: readMvProject, now: Date.now() });
+          if (minutes.over) overrides.push({ reason: minutes.reason, why: minutes.why });
+          if (overrides.length && b.anyway !== true) {
+            return json(res, 409, {
+              error: `${overrides.map((o) => o.why).join(" ")} It can still be taken: on the Collab screen press “Yes — take the job” again and answer “Accept anyway” (a tool sends anyway: true)${busy.busy ? ", and your friend's scene waits its turn behind what is running" : ""}.`,
+              reason: overrides[0].reason, busy: !!busy.busy, overridable: true, overrides,
+            });
           }
 
           const from = { fp: sender.fp, nickname: sender.nickname };
@@ -4467,7 +5630,7 @@ const server = http.createServer(async (req, res) => {
             const created = await createMvProject(errandTitle(orderDoc, from), "mv");
             slug = created.slug;
             const staged = await stageOrderFiles({ orderDoc, assetsDir: mvAssetsDir(slug) });
-            built = errandDoc({ orderDoc, from, staged, now: Date.now() });
+            built = errandDoc({ orderDoc, from, staged, now: Date.now(), expect: collabLending.expectForOrder(orderDoc) });
             await updateMvProject(slug, (d) => ({ ...built, slug: d.slug, id: d.id, createdAt: d.createdAt }));
           } catch (err) {
             /* The claim goes back, so an honest retry is possible. */
@@ -4502,7 +5665,7 @@ const server = http.createServer(async (req, res) => {
           if (proposed?.error || !planId) {
             await book.releaseOrder({ outDir, id: orderDoc.id }).catch(() => {});
             return json(res, 500, {
-              error: `The project was made (${slug}) but the plan could not be proposed: ${proposed?.error || "the plan screen answered without a plan id"}. Nothing will render. The order was not filed, so you can accept it again once that is fixed; delete ${slug} if you do.`,
+              error: `The project was made (${slug}) but the plan could not be proposed: ${proposed?.error || "the plan door (/api/mv/plan) answered without a plan id"}. Nothing will render. The order was not filed, so you can accept it again once that is fixed; delete ${slug} if you do.`,
               reason: "plan-not-proposed", slug,
             });
           }
@@ -4514,10 +5677,18 @@ const server = http.createServer(async (req, res) => {
             expect: built.collab.expect, landedAt: Date.now(),
           } });
 
+          /* ⚠ THE PLAN IS A CARD ON A PROJECT, NOT A PLACE OF ITS OWN. It is the
+           * Plan card of the project this accept just made, so the sentence
+           * names that project (lending.js planPlace, one place name for every
+           * sentence here) and the page offers a button that opens it. */
+          const title = errandTitle(orderDoc, from);
+          const speedUp = collabLending.speedUpForOrder(orderDoc);
           return json(res, 200, {
-            ok: true, slug, order: orderDoc.id, from, row, plan: planId,
+            ok: true, slug, title, order: orderDoc.id, from, row, plan: planId,
             describes: describeOrder(orderDoc, Date.now()),
-            note: "Accepted as a project on this machine, with a plan that is PROPOSED. Nothing has rendered and nothing will until you approve it on the Plan screen.",
+            speedUp: speedUp.why, minutes: minutes.why,
+            note: `Accepted as the project “${title}” on this machine, with a plan that is PROPOSED. Nothing has rendered and nothing will until you approve that plan: ${collabLending.planPlace(title)} (the “Open its plan” button under “What you agreed to render” takes you there).`
+              + (speedUp.why ? ` ⚠ ${speedUp.why}` : ""),
           });
         }
 
@@ -4532,7 +5703,7 @@ const server = http.createServer(async (req, res) => {
           const takes = clip?.takes || [];
           const take = takes[takes.length - 1];
           if (!take?.clip) {
-            return json(res, 400, { error: "That errand has not rendered yet. Approve its plan on the Plan screen and let it finish.", reason: "not-rendered" });
+            return json(res, 400, { error: `That errand has not rendered yet. Approve its plan — ${collabLending.planPlace(doc.title || row.slug)} — and let it finish.`, reason: "not-rendered", slug: row.slug });
           }
           const clipPath = path.join(CLIP_DIR, take.clip);
           const bytes = await readFile(clipPath).catch(() => null);
@@ -4562,6 +5733,10 @@ const server = http.createServer(async (req, res) => {
               engine: ranOn, steps: doc.brief?.videoSteps ?? null,
               seed: take.seed ?? null, ms: take.ms ?? null,
               actor: "agent:plan",
+              /* Which step count this PC's speed-up file was made for — a
+               * number, so the owner is told when it was not the ordered one. */
+              turboSteps: collabLending.speedUpCheck({ engine: ranOn, steps: doc.brief?.videoSteps,
+                refs: typeof take.refsSent === "boolean" ? take.refsSent : ranOn === "h3" && (take.refs || []).length > 0 }).madeFor,
             },
             now: Date.now(),
           });
@@ -4635,11 +5810,13 @@ const server = http.createServer(async (req, res) => {
             await book.noteReturn({ outDir, id: orderRow.id, entry: { ok: landed.ok, reason: landed.reason, file: landed.file } });
             await book.setOrderState({ outDir, id: orderRow.id, state: landed.ok ? "returned" : "refused", note: landed.why });
           }
+          const landedNotes = Array.isArray(landed.notes) ? landed.notes : [];
           return json(res, landed.ok ? 200 : 400, {
             ok: landed.ok, take: landed, reason: landed.reason,
-            note: landed.ok
+            note: (landed.ok
               ? "In quarantine. It has been measured here and it matches the order. Nothing is in your film yet — adopting it is a separate press."
-              : landed.why,
+              : `${landed.why} It waits under “Finished scenes waiting for you”: watch it there if this browser can play it, and keep it anyway if it is what you wanted.`)
+              + (landedNotes.length ? ` ${landedNotes.join(" ")}` : ""),
           });
         }
 
@@ -4652,19 +5829,27 @@ const server = http.createServer(async (req, res) => {
             file: String(b.file || ""), force: b.anyway === true, now: Date.now(),
           });
           const orderRow = await book.findOrder({ outDir, id: got.row.orderId, side: "out" });
+          const notes = Array.isArray(got.row.notes) ? got.row.notes : [];
+          const tail = notes.length ? ` ${notes.join(" ")}` : "";
           if (!orderRow?.slug) {
-            return json(res, 200, { ok: true, ...got, note: "Adopted into the clips library. The order it answers names no project on this machine, so it was not filed onto a scene." });
+            return json(res, 200, { ok: true, ...got, notes, note: `Adopted into the clips library. The order it answers names no project on this machine, so it was not filed onto a scene.${tail}` });
           }
           /* ⚠ THE SCENE THE OWNER ORDERED, NOT THE ONE THE LENDER NAMED. The
            * return's `segmentId` is a string from somebody else's machine; the
-           * order row is this machine's own record of what it asked for. */
+           * order row is this machine's own record of what it asked for.
+           *
+           * ⚠ AND A SCENE NEVER RENDERED HERE IS STILL A SCENE. Clip rows are
+           * made by a first render, so this used to file only onto scenes this
+           * machine had rendered — which, for a borrower with no card, is none
+           * of them — and then said the scene did not exist. lending.js makes
+           * the row the way generate.js does, and still picks nothing. */
           const wanted = orderRow.order?.segmentId || got.row.segmentId;
-          let filed = false;
+          let filedAs = { filed: false, created: false };
           await updateMvProject(orderRow.slug, (d) => {
-            const clip = (d.clips || []).find((c) => c.segmentId === wanted);
-            if (clip) { clip.takes = [...(clip.takes || []), got.take]; filed = true; }
+            filedAs = collabLending.fileTakeOnScene(d, wanted, got.take);
             return d;
           });
+          const filed = filedAs.filed;
           /* ⚠ THE LEDGER LINE IS WRITTEN HERE, ONCE, BY THE DOOR. quarantine.js
            * builds the event and does not append it: one writer on a hash
            * chain. */
@@ -4676,10 +5861,13 @@ const server = http.createServer(async (req, res) => {
            * scene it MEANT to file onto whether or not that scene existed, so a
            * take that landed nowhere read as filed. */
           return json(res, 200, {
-            ok: true, ...got, slug: orderRow.slug, filed, segmentId: wanted,
-            note: filed
-              ? `Filed onto ${wanted} in ${orderRow.slug} as a take nobody has picked. The scene keeps whatever it was using until you choose this one.`
-              : `Adopted into the clips library as ${got.take.clip}, but ${orderRow.slug} has no scene called ${wanted} any more, so it was not filed onto one. The clip is yours; put it where you want it.`,
+            ok: true, ...got, slug: orderRow.slug, filed, created: filedAs.created, segmentId: wanted, notes,
+            note: (filed
+              ? (filedAs.created
+                ? `Filed onto ${wanted} in ${orderRow.slug} as a take nobody has picked. Nothing was ever rendered for that scene here, so nothing plays there until you choose it: ${collabLending.pickPlace()} on that scene.`
+                : `Filed onto ${wanted} in ${orderRow.slug} as a take nobody has picked. The scene keeps whatever it was using until you choose this one (${collabLending.pickPlace()}).`)
+              : `Adopted into the clips library as ${got.take.clip}, but ${orderRow.slug} has no scene called ${wanted} any more, so it was not filed onto one. The clip is yours; put it where you want it.`)
+              + tail,
           });
         }
         if (action === "drop") {
@@ -4742,6 +5930,18 @@ const server = http.createServer(async (req, res) => {
            * and printed nothing in the module. A card is a message and not a
            * window, and the sentence that says so may not have two authors. */
           const now = Date.now();
+          /* WHAT EACH LENDING FRIEND HAS USED OF THIS CARD TODAY, counted the
+           * way accept counts it (lending.js lentToday) and said in one
+           * sentence written there — so the Friends row and collab_roster show
+           * the number behind "Minutes of my card per day" without a refused
+           * accept being the only place it appears. */
+          const lends = (x) => x.role === "lender" || x.role === "collaborator";
+          const lendRows = peers.some(lends) ? await book.listOrders({ outDir, side: "in" }).catch(() => []) : [];
+          const usedToday = await Promise.all(peers.map(async (x) => {
+            if (!lends(x)) return null;
+            const used = await collabLending.lentToday({ rows: lendRows, readProject: readMvProject, fp: x.fp, now });
+            return { ...used, said: collabLending.usedSentence(used) };
+          }));
           return json(res, 200, {
             ok: true,
             /* ⚠ TWO DIFFERENT SETS OF TWELVE WORDS, AND ONLY ONE WAS EVER ON
@@ -4751,10 +5951,11 @@ const server = http.createServer(async (req, res) => {
              * that says "I read the words and they matched" sitting on a row
              * with no words anywhere near it. Derived from the fingerprint the
              * roster already returns, so nothing new leaves this machine. */
-            peers: peers.map((x) => ({
+            peers: peers.map((x, i) => ({
               ...x,
               words: collabWords(x.fp),
               ...(x.resources ? { resourcesSaid: ageOf(x.resources.at, now) } : {}),
+              ...(usedToday[i] ? { usedToday: usedToday[i] } : {}),
             })),
           });
         }
@@ -4790,8 +5991,8 @@ const server = http.createServer(async (req, res) => {
             b.kind = frozen.payload.kind; b.to = frozen.peer.fp;
           }
           const kind = String(b.kind || "");
-          if (!["shot", "project", "resources", "order"].includes(kind)) {
-            return json(res, 400, { error: "kind must be shot, project, resources or order.", reason: "kind" });
+          if (!["shot", "project", "resources", "order", "video-recipe"].includes(kind)) {
+            return json(res, 400, { error: "kind must be shot, project, resources, order or video-recipe.", reason: "kind" });
           }
           const { peers } = await collabRoster.roster({ appData });
           const peer = peers.find((x) => x.fp === String(b.to || ""));
@@ -4865,7 +6066,9 @@ const server = http.createServer(async (req, res) => {
               id: packet.id, at: packet.at, expires: packet.expires,
               to: { fp: peer.fp, nickname: peer.nickname, role: peer.role },
               slug: frozen.slug, order: packet.order,
-              expect: { width: packet.shot.width, height: packet.shot.height, frames: Math.round((Number(packet.shot.seconds) || 5) * 24) },
+              /* The renderer's own frame count for this order (H3's 17k+5 grid,
+               * LTX's 8k+1), and whether lip-sync stays home — see lending.js. */
+              expect: collabLending.expectForOrder(packet), songUnder: packet.shot.songUnder ?? null,
             } });
             return json(res, 200, { ok: true, ...wrote, kind, previewId: b.previewId,
               ...(kind === "order" ? { order: packet.id } : {}),
@@ -4873,6 +6076,14 @@ const server = http.createServer(async (req, res) => {
               note: "Packed exactly the reviewed snapshot. Send this file using your usual file-sharing method." });
           }
 
+          if (kind === "video-recipe") {
+            if (action !== "preview") return json(res,400,{error:"Preview this recipe before preparing it.",reason:"preview-required"});
+            const recipe=makeVideoRecipe(b.video);
+            return previewFor(recipe, `${recipe.id}-to-${peer.fp.slice(0,8)}.aiplay`, {
+              describes:describeVideoRecipe(recipe),
+              note:"Text-only recipe. Uses the receiver's default models with custom LoRAs and conditioning bridge off. Review before rendering. Return tracking is not included."
+            });
+          }
           if (kind === "resources") {
             /* ⚠ `gpuStatus()` ANSWERS FROM A CACHE a background nvidia-smi
              * fills, so the first call after a restart is null on a machine
@@ -4922,12 +6133,17 @@ const server = http.createServer(async (req, res) => {
             const meO = await collabIdentity({ appData });
             const orderDoc = makeOrder({
               shot: shotO, files: filesO,
+              /* THE MINORS RULE, with the words behind each <Picture n>: the
+               * named rows' own descriptions, which stay on this machine. What
+               * each picture was made as also travels, wordless, on its row. */
+              safetyContext: mvRowWords(docO, (shotO.refs || []).map((r) => r.name)),
               order: {
                 segmentId: shotO.segmentId,
                 /* The defaults are the SCENE's own, so an order with nothing
                  * typed into it asks for what this machine would have made. */
                 seed: Number.isInteger(b.seed) ? b.seed : Math.floor(Math.random() * 4294967296),
-                steps: Number.isInteger(b.steps) ? b.steps : (docO.brief?.videoSteps ?? 8),
+                steps: Number.isInteger(b.steps) ? b.steps
+                  : Number.isInteger(shotO.steps) ? shotO.steps : (docO.brief?.videoSteps ?? 8),
                 engineMode: String(b.engineMode || shotO.engineMode || "hybrid"),
               },
               returnTo: { fp: meO.fp, nickname: String(b.nickname || "") },
@@ -4942,7 +6158,7 @@ const server = http.createServer(async (req, res) => {
               id: orderDoc.id, at: orderDoc.at, expires: orderDoc.expires,
               to: { fp: peer.fp, nickname: peer.nickname, role: peer.role },
               slug: slugO, order: orderDoc.order,
-              expect: { width: shotO.width, height: shotO.height, frames: Math.round((Number(shotO.seconds) || 5) * 24) },
+              expect: collabLending.expectForOrder(orderDoc), songUnder: shotO.songUnder ?? null,
             } });
             return json(res, 200, {
               ok: true, ...wroteO, kind, order: orderDoc.id,
@@ -4968,6 +6184,12 @@ const server = http.createServer(async (req, res) => {
           const packet = kind === "shot"
             ? await shotPacket({ doc, segmentId: String(b.segmentId || ""), assetsDir: assets })
             : await projectBundle({ doc, assetsDir: assets });
+          /* ⚠ THE MINORS RULE ON A SHOT SENT FOR SOMEBODY ELSE TO RENDER: the
+           * same check an order gets, before anything is sealed or shown. */
+          if (kind === "shot") {
+            assertSafe({ door: "collab.shot", via: "collab", texts: [String(packet.prompt || "")],
+              context: mvRowWords(doc, (packet.refs || []).map((r) => r.name)), flags: shotFlags(packet) });
+          }
           if (action === "preview") return previewFor(packet, `${slug}-${kind}${kind === "shot" ? `-${String(b.segmentId || "")}` : ""}-to-${peer.fp.slice(0, 8)}.aiplay`, {
             slug, document: doc, describes: describePacket(packet),
           });
@@ -5034,6 +6256,21 @@ const server = http.createServer(async (req, res) => {
            * sentence that names both numbers. */
           const talk = speaks(packet?.v);
           if (!talk.ok) return json(res, 409, { error: talk.why, reason: talk.reason, protocol: talk.theirs, from: { fp: sender.fp, nickname: sender.nickname } });
+          /* ⚠ THE MINORS RULE BEFORE THE CARD. An order or a shot this Studio
+           * would refuse to accept is refused when it is OPENED, so its words
+           * are never put on a screen here either: only the sentence, and who
+           * sent it. */
+          if (packet?.kind === "order" || packet?.kind === "shot") {
+            const shotIn = packet.kind === "order" ? packet.shot : packet;
+            const refusedIn = safetyRefusal({ door: "collab.open", via: "collab",
+              texts: [String(shotIn?.prompt || "")], flags: shotFlags(shotIn) });
+            if (refusedIn) return json(res, 422, { ...refusedIn, from: { fp: sender.fp, nickname: sender.nickname } });
+          }
+          let videoRecipe = null;
+          if (packet?.kind === "video-recipe") {
+            if (!sender.verified || !["lender","collaborator"].includes(sender.role)) return json(res,403,{error:"Verify this sender and assign a role before using a video recipe.",reason:"role"});
+            videoRecipe = readVideoRecipe(packet);
+          }
           /* Their build, recorded on their row: a caption, never a gate. */
           if (packet?.by) await collabRoster.setBuild({ appData, fp: sender.fp, by: packet.by }).catch(() => {});
           return json(res, 200, {
@@ -5042,13 +6279,14 @@ const server = http.createServer(async (req, res) => {
             ...(talk.why ? { compatNote: talk.why } : {}),
             from: { fp: sender.fp, nickname: sender.nickname, verified: !!sender.verified, role: sender.role },
             kind: packet.kind ?? null,
+            ...(videoRecipe ? {videoRecipe, makeClipArgs:videoRecipeMcpArgs(packet)} : {}),
             /* The prompt as its own field: a screen must be able to show it
              * whole and unstyled rather than trimmed into a sentence. */
             ...(packet?.kind === "order" ? { prompt: String(packet.shot?.prompt || "") } : {}),
             /* ⚠ THE ACCEPT CARD. Without this an order opened as "an unreadable
              * packet" and the four words a person is being asked to agree to
              * were only ever visible after they had already agreed. */
-            describes: packet?.kind === "resources" ? describeResources(packet, Date.now())
+            describes: videoRecipe ? describeVideoRecipe(packet) : packet?.kind === "resources" ? describeResources(packet, Date.now())
               : packet?.kind === "order" ? describeOrder(packet, Date.now())
                 : packet?.kind === "return" ? `A finished take for scene ${packet.segmentId} of order ${packet.orderId}, rendered on ${packet.record?.model || "their machine"}. Press Receive to check it against what you ordered.`
                   : describeAnyPacket(packet),
@@ -5060,18 +6298,33 @@ const server = http.createServer(async (req, res) => {
         }
         return json(res, 400, { error: `Unknown action: ${action}`, reason: "action" });
       } catch (e) {
+        /* A minors refusal answers like every other door: 422, the sentence, its code. */
+        if (e?.safety) return json(res, 422, { ...bodyOfError(e), reason: e.reason });
         const status = e?.status || (e?.reason ? 400 : 500);
         return json(res, status, { error: e?.message || String(e), ...(e?.reason ? { reason: e.reason } : {}) });
       }
     }
 
     if (p === "/api/hum" && req.method === "POST") {
-      const b = await readBody(req);
+      /* The pitch tracker runs the engine's python on a path the body names:
+       * only Studio's own page or a local client may ask (a page elsewhere
+       * could POST text/plain and have it read any file on this PC). */
+      if (!sameOriginLocalJson(req)) return json(res, 403, { error: "Hum to score is only accepted from Studio's own page or a local client." });
+      /* A recording arrives as a data URL: the 50 MB the tracker accepts is
+       * about 67 MB of base64, so 72 MB, refused WHILE reading, before
+       * JSON.parse can hold a heap's worth of string. */
+      let b;
+      try { b = await readBody(req, 72 * 1024 * 1024); } catch (err) {
+        if (err.tooBig) return json(res, 413, { error: `That recording is too large to send (${err.message}). Hum to score reads one to sixty seconds of one voice.` });
+        return json(res, 400, { error: "could not read that body as JSON" });
+      }
       try {
         const r = await transcribeHum({ source: b.source, bpm: b.bpm, key: b.key });
         return json(res, 200, { ok: true, ...r });
       } catch (e) {
-        return json(res, e?.status || 400, { error: e?.message || String(e) });
+        /* A missing module (librosa, scipy…) comes back with its setup id and
+         * pip line (hum.js HumRefusal), so the page offers the Install button. */
+        return json(res, e?.status || 400, { error: e?.message || String(e), ...refusalFields(e) });
       }
     }
 
@@ -5136,6 +6389,9 @@ const server = http.createServer(async (req, res) => {
           wantSeconds: want, rung, fitCeiling: chosen.ceiling, maxTokens: maxTokensFor(want),
           instrumental: !!meta.instrumental, preview: false, model: "YuE2 3B",
           extendFrom: yueDir, fromSeconds: fromSec, extendedFrom: file,
+          /* Continuing a cover or a continued recording replays codes that
+           * came through the tokenizer: the marker travels with them. */
+          ...(meta.tokenized ? { tokenized: meta.tokenized } : {}),
           replaceTo,
         });
         await trackReplacement(job, replacing);
@@ -5154,7 +6410,10 @@ const server = http.createServer(async (req, res) => {
         const tok = await tokenizerStatus();
         if (!tok.ready) {
           return json(res, 400, {
-            error: "This track has no saved performance. Download the YuE2 real-audio tokenizer from the Models screen and any recording can be continued.",
+            /* One plain sentence. Every MiniMax take made on an engine Studio
+             * installed lands here: the codes capture is one of the rig's
+             * app patches, which that engine does not ship (server/setup/pins.js). */
+            error: "This track has no saved performance, so continuing it needs the YuE2 real-audio tokenizer: download it on the Models screen, and any recording can be continued.",
             reason: "tokenizer-missing", missing: tok.missing,
           });
         }
@@ -5183,13 +6442,14 @@ const server = http.createServer(async (req, res) => {
             const got = await ensureStem(file, tokStem, { art, outputDir: config.outputDir, actor: prov.actorFrom(req) });
             tokSource = got.path;
           } catch (e) {
-            return json(res, 500, { error: `The ${tokStem} stem could not be separated: ${e?.message || e}`, reason: "stem-failed" });
+            const fail = stemFailure(e, tokStem);
+            return json(res, fail.status, fail.body);
           }
         }
         const busy = await engineDoor.status().then((s) => (s.running || []).length > 0).catch(() => true);
         let tok2;
         try { tok2 = await tokenizeTrack({ source: tokSource, device: busy ? "cpu" : null }); }
-        catch (e) { return json(res, e?.status || 500, { error: e?.message || String(e), reason: e?.reason || "tokenizer-failed" }); }
+        catch (e) { return json(res, e?.status || 500, { error: e?.message || String(e), reason: e?.reason || "tokenizer-failed", ...refusalFields(e) }); }
         const dur = meta.durationSeconds || tok2.seconds || 0;
         const fromSec = Number.isFinite(b.fromSeconds)
           ? Math.max(1, Math.min(b.fromSeconds, Math.max(1, dur - 1)))
@@ -5231,6 +6491,17 @@ const server = http.createServer(async (req, res) => {
                + "Only tracks generated after the capture update can be.",
         });
       }
+      /* A continuation always renders on this PC's Music 3: the hosted engine
+       * cannot resume from a take's codes. With it switched on, say so here
+       * instead of queueing a job that can only fail (the runner refuses a
+       * requiresLocal job with the switch on, and sends nothing). */
+      if (hostedWouldBill({ apiEnabled: !!config.api.enabled, engine: null })) {
+        return json(res, 409, {
+          error: `${replacing ? "Replace" : "Extend"} always renders on this PC's own Music 3, and the paid hosted engine is switched on, so nothing was queued or sent. `
+               + `Switch the hosted engine off in ${CLOUD_CARD_PLACE}, then try again.`,
+          reason: "hosted-on",
+        });
+      }
       // Resume from a POINT, not from the end. Replaying a whole trajectory
       // leaves the model exactly where it chose to stop, so the next token is
       // end-of-audio and nothing is generated. Default to 80% through, which
@@ -5269,6 +6540,9 @@ const server = http.createServer(async (req, res) => {
         extendedFrom: file,
         resumeFrames,
         replaceTo,
+        /* The hosted engine cannot continue a song from its codes: with it
+         * switched on this fails in words, and no paid request is sent. */
+        requiresLocal: true,
       });
       await trackReplacement(job, replacing);
       return json(res, 200, {
@@ -5347,8 +6621,8 @@ const server = http.createServer(async (req, res) => {
         mergedFrom: files, createdAt: Date.now(),
       });
       // Give it a cover like anything else, rather than leaving one track in the
-      // library conspicuously without art.
-      art.request({ file: out, title: `${base.title || "Merged"} · merged`, caption: base.caption, lyrics: base.lyrics, seed: base.seed });
+      // library conspicuously without art — when a picture model can draw one.
+      if (await coverCanRun()) art.request({ file: out, title: `${base.title || "Merged"} · merged`, caption: base.caption, lyrics: base.lyrics, seed: base.seed });
       return json(res, 200, { file: out, ...info, merged: files.length });
     }
 
@@ -5381,26 +6655,52 @@ const server = http.createServer(async (req, res) => {
        * which is outside this change. `stopAll()` itself is left alone: as the
        * engine-wide sledgehammer reached from the Engine panel it is honest
        * about what it does. It is just not what a Stop button may mean. */
+      /* THE RAIL'S STOP ALSO PAUSES A RUNNING WORKFLOW PLAN, first
+       * (server/mv/routes.js pauseRunningPlans): otherwise the clip cancelled
+       * below fails its plan item and the plan walks on to the next one. In
+       * flight is three queues, and that button reads all three: the plan
+       * runner here, the app's queues and the engine below. Only the rail's
+       * Stop asks for it (?plans=1): the Music screen's Cancel and the Chat's
+       * Cancel post this route to stop a song or a picture, and a night of
+       * approved plan items is not theirs to touch. Paused, not cancelled, so
+       * Run on the Plan card carries on. */
+      const plansPaused = url.searchParams.get("plans") === "1"
+        ? await mvRoutes.pauseRunningPlans().catch(() => []) : [];
       await jobs.cancel();
-      const wasRunning = art.status().art?.current?.title ?? null;
-      /* Every distinct file once: drop() is keyed on file and removes every job
-       * carrying it, so a `for` over the queue itself would skip entries as it
-       * shortened. */
-      let dropped = 0;
-      for (const f of [...new Set(art.queue.map((j) => j.file))]) dropped += art.drop(f).removed;
       /* A Stop button must never fail because a status read did. Nothing to
        * cancel is the right answer when the door cannot say what is running. */
       const live = await engineDoor.status().catch(() => ({ running: [] }));
-      /* The person's own song-to-score transcription (a remix's first step,
-       * music.cover) is theirs to stop too; it used to run on to the end. */
-      const mine = (live.running || []).filter((r) => String(r.via || "").startsWith("art.") || r.via === "music.cover");
-      const stops = await Promise.all(mine.map((r) => engineDoor.cancelRun({ runId: r.runId })));
-      const artStopped = {
-        dropped, wasRunning,
-        interrupted: stops.some((s) => s.stopped === true),
-        engineCancelled: stops.filter((s) => s.stopped === true).length,
+      /* ⚠ STOP NOW REACHES THE STEM SPLITTER. art.stopMine() drops the art
+       * queue and stops the running job itself: demucs and the lyrics timer
+       * are processes Studio starts, which no engine interrupt ever reached,
+       * so a separation ran on to the end while the button said "stopped".
+       * It kills the process tree, and reports `stopping` until it is gone.
+       * The engine runs it cancels (via "art.") add into interrupted and
+       * engineCancelled below. */
+      let artStopped, mine;
+      if (typeof art.stopMine === "function") {
+        artStopped = await art.stopMine();
+        /* The person's own song-to-score transcription (a remix's first step,
+         * music.cover) is not an art job; it is stopped here. */
+        mine = (live.running || []).filter((r) => r.via === "music.cover");
+      } else {
+        /* Until art.js carries stopMine (lane C): the queue drop and the door
+         * runs by hand, as before. Every distinct file once: drop() is keyed on
+         * file and removes every job carrying it. */
+        const wasRunning = art.status().art?.current?.title ?? null;
+        let dropped = 0;
+        for (const f of [...new Set(art.queue.map((j) => j.file))]) dropped += art.drop(f).removed;
+        artStopped = { dropped, wasRunning, interrupted: false, engineCancelled: 0 };
+        mine = (live.running || []).filter((r) => String(r.via || "").startsWith("art.") || r.via === "music.cover");
+      }
+      const stops = await Promise.all(mine.map((r) => engineDoor.cancelRun({ runId: r.runId }).catch(() => ({}))));
+      const stoppedHere = stops.filter((s) => s?.stopped === true).length;
+      artStopped = {
+        ...artStopped,
+        interrupted: !!artStopped?.interrupted || stoppedHere > 0,
+        engineCancelled: (Number(artStopped?.engineCancelled) || 0) + stoppedHere,
       };
-      return json(res, 200, { ...jobs.snapshot(), artStopped });
+      return json(res, 200, { ...jobs.snapshot(), artStopped, plansPaused });
     }
 
     // Community feed. Proxied so the UI never talks to aiplay directly (CORS, and
@@ -5438,9 +6738,9 @@ const server = http.createServer(async (req, res) => {
       if (!name || name.includes("..") || path.isAbsolute(name)) return json(res, 400, { error: "bad file" });
       const src = path.join(config.outputDir, name);
       const out = path.join(config.outputDir, `edit_${Date.now()}.flac`);
-      /* \u26a0 `file` WAS GUARDED AND `with` WAS NOT, AND THEY ARE THE SAME RULE.
-       * Two ops carry a second path \u2014 {"op":"join","with":\u2026} and
-       * {"op":"replace","with":\u2026} \u2014 and edit_audio.py opens it directly. The
+      /* ⚠ `file` WAS GUARDED AND `with` WAS NOT, AND THEY ARE THE SAME RULE.
+       * Two ops carry a second path — {"op":"join","with":\u2026} and
+       * {"op":"replace","with":\u2026} — and edit_audio.py opens it directly. The
        * check three lines above was simply never written for the other half of
        * the same request, so any caller could name any file this user can read.
        *
@@ -5512,6 +6812,14 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/art" && req.method === "POST") {
       const b = await readBody(req);
       try {
+        /* A cover that could only fail is not queued: with no picture model on
+         * this PC (or the chosen one missing) say the one sentence instead. */
+        if (b.action === "backfill" || b.action === "regenerate") {
+          const cover = (await machineDefaults().catch(() => null))?.find((d) => d.key === "art.engine");
+          if (cover && cover.canRun === false) {
+            return json(res, 409, { error: cover.why, needsModel: MODEL_TO_CAPABILITY[cover.value] || null, ...art.status() });
+          }
+        }
         if (b.action === "backfill") {
           const n = await art.backfill(await library.list());
           return json(res, 200, { ok: true, queued: n, ...art.status() });
@@ -5530,6 +6838,7 @@ const server = http.createServer(async (req, res) => {
             seed: Math.floor(Math.random() * 4294967296), force: true,
           });
           if (!redraw) {
+            if (art.lastRefusalBody) return json(res, 422, art.lastRefusalBody);
             return json(res, 409, {
               error: `The cover was not queued — ${art.lastRefusal || "the queue refused it"}.`,
               ...art.status(),
@@ -5602,8 +6911,11 @@ const server = http.createServer(async (req, res) => {
          */
         if (b.action === "embed") {
           const rows = await library.list();
+          /* MP3 cannot take the picture this way, and a native YuE2 WAV cannot
+           * take one at all: both are left alone rather than rewritten for
+           * nothing and counted as failures. */
           const todo = rows.filter((t) => t.cover && !t.coverEmbedded
-            && !/\.mp3$/i.test(t.file));
+            && !/\.mp3$/i.test(t.file) && !isNativeLibraryWav(t.file));
           res.writeHead(200, { "Content-Type": "application/json" });
           let done = 0, failed = 0;
           for (const t of todo) {
@@ -5613,6 +6925,7 @@ const server = http.createServer(async (req, res) => {
           return res.end(JSON.stringify({
             ok: true, done, failed,
             skippedMp3: rows.filter((t) => t.cover && /\.mp3$/i.test(t.file)).length,
+            skippedNativeWav: rows.filter((t) => t.cover && isNativeLibraryWav(t.file)).length,
             library: await library.list(),
           }));
         }
@@ -5633,7 +6946,10 @@ const server = http.createServer(async (req, res) => {
      * delay music: both wait for the generation queue to empty.
      */
     if (p === "/api/stems" && req.method === "POST") {
-      const b = await readBody(req);
+      let b;
+      try { b = await readBody(req, 1024 * 1024); } catch (err) {
+        return json(res, err.tooBig ? 413 : 400, { error: err.tooBig ? `That request is too large (${err.message}).` : "could not read that body as JSON" });
+      }
       if (b.action === "when") {
         if (!["off", "all", "starred", "liked"].includes(b.value)) {
           return json(res, 400, { error: "Must be off, all, starred or liked." });
@@ -5642,21 +6958,65 @@ const server = http.createServer(async (req, res) => {
         savePrefs();
         return json(res, 200, { ok: true, stems: config.stems });
       }
+      /* WHICH PYTHON SEPARATES STEMS: Settings > Songs > "stem separation
+       * python" and the stems_python tool (answerStemsPython, above). */
+      if (b.action === "python") return answerStemsPython(req, res, b);
+      /* SEPARATE ONE SONG. This runs demucs, so only Studio's page or a local
+       * client may ask (the page, daw/refprofile.js and MCP all send local
+       * JSON). Four answers and never ok after a refusal:
+       *   409 — this machine cannot separate yet (the preflight: no python, no
+       *         demucs or no PyTorch), before anything is queued (a missing
+       *         file within a second, an import probe a few), with setup "stems";
+       *   200 joined — the song is already being separated: that job, not a
+       *         second one (a second Voice-only or Separate press used to queue
+       *         another copy of the same four-minute run);
+       *   200 — queued;
+       *   409 refused — the queue said no, and why. */
       if (b.action === "run") {
+        if (!sameOriginLocalJson(req)) {
+          return json(res, 403, { error: "Separating stems runs a program on this machine, so it needs a same-origin local JSON request." });
+        }
         const file = String(b.file || "");
         if (!file || file.includes("..") || file.includes("/") || file.includes("\\")) {
           return json(res, 400, { error: "bad file" });
         }
+        const pre = await stemsReady();
+        if (!pre?.ok) {
+          return json(res, pre?.status || 409, {
+            error: pre?.error || "Stem separation cannot run on this machine yet.",
+            ...(pre?.setup ? { setup: pre.setup } : {}),
+            python: pre?.python || config.systemPython,
+            reason: pre?.reason || "stems-not-ready",
+            ...(pre?.pip ? { pip: pre.pip } : {}),
+          });
+        }
+        const running = typeof art.findJob === "function" ? art.findJob(file, "stems") : null;
+        if (running) return json(res, 200, { ok: true, joined: true, jobId: running.id ?? null, ...art.status() });
         const m = library.meta.get(file) || {};
-        art.request({ file, title: m.title, kind: "stems", force: true });
-        return json(res, 200, { ok: true, ...art.status() });
+        const job = art.request({ file, title: m.title, kind: "stems", force: true, actor: prov.actorFrom(req) });
+        if (!job) {
+          return json(res, 409, { error: art.lastRefusal || "The queue did not take the separation.", reason: "refused", ...art.status() });
+        }
+        return json(res, 200, { ok: true, jobId: job.id ?? null, ...art.status() });
       }
       return json(res, 400, { error: "Unknown action." });
     }
 
     /** Video clips — enable flag and manual trigger. */
     if (p === "/api/video" && req.method === "POST") {
-      const b = await readBody(req);
+      /* A DOOR THAT CHOOSES WHAT RUNS: the engine, and a render. Studio's own
+       * page or a local client only (sameOriginLocalJson, which the page's,
+       * make_clip's and the Video Lab's posts all satisfy), and a body capped
+       * before it is parsed: a request is a description and a few names. */
+      if (!sameOriginLocalJson(req)) {
+        return json(res, 403, { error: "Video settings and renders are only accepted from Studio's own page or a local client." });
+      }
+      let b;
+      try { b = await readBody(req, 1024 * 1024); }
+      catch (err) {
+        return json(res, err.tooBig ? 413 : 400, { error: err.tooBig
+          ? `A video request is at most 1 MB (${err.message}). Nothing was queued.` : "could not read that body as JSON" });
+      }
       if (b.action === "enable") {
         config.video.enabled = !!b.value;
         // Switching the model off must not leave `when` pointing at a mode that
@@ -5702,6 +7062,14 @@ const server = http.createServer(async (req, res) => {
         const prior = clipMeta.get(name);
         const prompt = String(b.prompt || prior?.prompt || "").trim();
         if (!prompt) return json(res, 400, { error: "Describe what happens next — this clip carries no prompt of its own." });
+        /* ⚠ THE MINORS RULE: the continuation's words, with the clip it
+         * continues (and that clip's own history) as context. */
+        const extendLineage = lineage([name]);
+        {
+          const refused = safetyRefusal({ door: "api.video.extend", actor: prov.actorFrom(req), texts: [prompt],
+            context: extendLineage.texts, flags: extendLineage.flags });
+          if (refused) return json(res, 422, refused);
+        }
         // Staged under a content name so the engine's LoadVideo can pick it from its input folder.
         const staged = `aiplay_cont_${createHash("sha1").update(`${name}:${st.size}:${Math.round(st.mtimeMs)}`).digest("hex").slice(0, 12)}${path.extname(name).toLowerCase()}`;
         await mkdir(config.inputDir, { recursive: true });
@@ -5726,6 +7094,7 @@ const server = http.createServer(async (req, res) => {
               overlapFrames: overlap, extensionFrames: ext,
             },
             extendedFrom: name,
+            safetyContext: extendLineage.texts, safetyFlags: extendLineage.flags,
             bridge: typeof b.bridge === "string" && b.bridge ? path.basename(b.bridge) : undefined,
             bridgeAlpha: Number.isFinite(Number(b.bridgeAlpha)) && b.bridgeAlpha !== "" && b.bridgeAlpha !== null
               ? Math.min(Math.max(Number(b.bridgeAlpha), 0), 1) : undefined,
@@ -5733,12 +7102,32 @@ const server = http.createServer(async (req, res) => {
             loras: videoLoras(b.loras),
           },
         });
+        if (!job && art.lastRefusalBody) return json(res, 422, art.lastRefusalBody);
         return json(res, 200, {
           ok: true, id, job: job && { id: job.id },
           overlapFrames: overlap, extensionFrames: ext, windowFrames: overlap + ext,
           extensionSeconds: Number((ext / (probe.fps || 24)).toFixed(2)),
           ...art.status(),
         });
+      }
+      /* THE PLAN WITHOUT THE RENDER (server/video-plain.js videoPlan): what a
+       * `create` with this body would run on this card, the size, the steps,
+       * sparse attention, what the size needs, and every warning or refusal it
+       * would carry. Stages nothing and queues nothing, and answers with video
+       * switched off too. The Video screen's Advanced line and make_clip's
+       * check_only read it, so both say what a render does before it is asked
+       * for. Reference names are counted, not staged. */
+      if (b.action === "check") {
+        const gate = await videoWeightsGate();
+        if (gate.error) return json(res, 200, { ok: false, refusal: gate.error, warnings: [] });
+        /* Frames and a control video are named, not staged: the plan only
+         * needs to know they ride. */
+        const plan = videoPlan(b, { engineKey: gate.engine, eng: videoEngine(gate.engine),
+          persona: await clipPersona(b.persona), characters: await clipCharacters(),
+          h3: h3Status({ gpu: gpuStatus(), ram: ramStatus(), cpuOnly: cpuOnlyEngine(), vaeMeasured: h3VaeMeasured() }),
+          framed: !!(b.fromCover || b.fromUpload || b.toCover || b.toUpload || b.framed === true),
+          control: !!(b.sourceVideo || b.source_video) });
+        return json(res, 200, { ok: !plan.refusal, engine: gate.engine, enabled: !!config.video.enabled, ...plan });
       }
       if (b.action === "create") {
         if (!config.video.enabled) return json(res, 400, { error: "Video is switched off in Settings." });
@@ -5754,6 +7143,32 @@ const server = http.createServer(async (req, res) => {
         catch (err) { return json(res, 400, { error: err.message }); }
         const prompt = String(b.prompt || "").trim();
         if (!prompt) return json(res, 400, { error: "Describe the clip first." });
+        /* A SAVED CHARACTER, resolved FIRST, so the check below sees what will
+         * really be sent: its pictures in the lineage, its words bound into the
+         * prompt ("<Picture N> is Name." and its fragment, personas.js
+         * bindPersonaForClip). A name the shelf does not have is refused by
+         * name before anything is staged. */
+        const persona = await clipPersona(b.persona);
+        if (persona?.missing) return json(res, 400, { error: personaUnknown(persona.name), reason: "persona" });
+        const boundPrompt = persona ? bindPersonaForClip(persona, { prompt, refImages: b.refImages }).prompt : prompt;
+        /* ⚠ THE MINORS RULE, before anything is staged: the prompt with the
+         * character's words bound in, with the stored prompts of every library
+         * picture or clip it is handed (the opening and closing frames, the
+         * waypoints, the character's pictures, the references, the driving
+         * video) as context. The check moved after the character's resolution;
+         * it is not skipped. */
+        const clipLineage = lineage([
+          b.fromCover, b.toCover,
+          ...(Array.isArray(b.midUploads) ? b.midUploads : []),
+          ...(persona?.refImages || []),
+          ...(Array.isArray(b.refImages) ? b.refImages : []),
+          b.sourceVideo || b.source_video,
+        ]);
+        {
+          const refused = safetyRefusal({ door: "api.video.create", actor: prov.actorFrom(req), texts: [boundPrompt],
+            context: clipLineage.texts, flags: clipLineage.flags });
+          if (refused) return json(res, 422, refused);
+        }
 
         /* Opening and closing frames have to be readable by LoadImage, which only
          * looks in ComfyUI's input directory — so a cover living in output/covers
@@ -5843,7 +7258,7 @@ const server = http.createServer(async (req, res) => {
           control.start = num(b.controlStart ?? b.control_start, 0, 0, 1);
           control.end = num(b.controlEnd ?? b.control_end, 1, 0, 1);
         }
-        let firstFrame, lastFrame, midFrames = [], refImages = [], refAudios = [], audioTrack;
+        let firstFrame, lastFrame, midFrames = [], refImages = [], refAudios = [], audioTrack, personaStaged = null, personaLost = 0;
         try {
           firstFrame = staged(b.fromUpload) || await stageFrame(b.fromCover);
           // A closing frame is a separate choice from the loop tick. `loop`
@@ -5863,9 +7278,16 @@ const server = http.createServer(async (req, res) => {
            * <Picture 1>…, audio it can call <Audio 1>…. Staged like the frames;
            * a bad name drops that reference rather than failing the clip. */
           const wantedRefs = Array.isArray(b.refImages) ? b.refImages.slice(0, 9) : [];
-          refImages = (await Promise.all(wantedRefs.map(async (v) => {
-            try { return staged(v) || await stageFrame(v); } catch { return undefined; }
-          }))).filter(Boolean);
+          /* One resolver for every reference picture: a name /api/frame minted
+           * (already in ComfyUI's input folder: a picture uploaded on Pictures,
+           * which is what a character saved from uploads holds), else a library
+           * picture copied there. */
+          const stageRef = async (v) => { try { return staged(v) || await stageFrame(v); } catch { return undefined; } };
+          refImages = (await Promise.all(wantedRefs.map(stageRef))).filter(Boolean);
+          /* The character's pictures, staged the same way and only the ones
+           * that can ride (personas.js stagePersonaForClip); one that cannot be
+           * found drops out and the reply says so (persona-missing). */
+          ({ persona: personaStaged, lost: personaLost } = await stagePersonaForClip(persona, { own: refImages.length, stage: stageRef }));
           /* Ref audio: an upload this server named, or a song straight out of
            * the library. A library file is copied into ComfyUI's input dir the
            * same way a cover is — content of the graph, not a path, so the
@@ -5894,9 +7316,11 @@ const server = http.createServer(async (req, res) => {
               return name ? { name, start } : undefined;
             } catch { return undefined; }
           }))).filter(Boolean);
-          /* SOUNDTRACK (LTX) — one audio the clip is generated ON: its latent
-           * is frozen during sampling and the output's sound IS this segment.
-           * Staged exactly like a reference audio. */
+          /* SONG UNDER THE CLIP, both engines — one audio the clip is generated
+           * ON: its latent is frozen during sampling and the output's sound IS
+           * this segment; on H3 it is also anchored at frame 0, so the model
+           * hears the vocal (frozen + anchored = lip-sync). Staged exactly like
+           * a reference audio. */
           if (b.audioTrack && b.audioTrack.name) {
             const start = Math.min(Math.max(Number(b.audioTrack.start) || 0, 0), 7200);
             try {
@@ -5907,18 +7331,28 @@ const server = http.createServer(async (req, res) => {
         } catch {
           return json(res, 400, { error: "That cover image is not on disk." });
         }
-        /* References are an H3 capability — the ref2va conditioning path does
-         * not exist in the LTX graph. Refusing beats silently rendering
-         * without them, which would look like the model ignoring the user. */
-        /* References stay H3-only, but the reason is now the MODEL, not this
-         * route: every LTX node that takes an image pins it to a frame index —
-         * there is no non-frame-pinned reference input anywhere in the LTX
-         * family, and the one IC-LoRA that adds it is 2.3-only and gated. The
-         * message points at the real substitute rather than just saying no. */
-        if ((refImages.length || refAudios.length) && eng !== "h3") {
-          return json(res, 400, {
-            error: "References need MiniMax H3 — LTX has no reference input (a model limit, not a setting). On LTX: compose the identity still first (Images can edit with references), then use it as the opening frame.",
-          });
+        /* THE PLAN (server/video-plain.js videoPlan), on the references that
+         * really staged. References are an H3 capability: FastH3 was distilled
+         * without them, and every LTX node that takes an image pins it to a
+         * frame index. So on those a clip WITH references is refused, in the
+         * sentence the Video screen's reference slots and make_clip show,
+         * rather than rendered without them. A <Picture n> / <Audio n> nothing
+         * answers is taken out of the description and said, never sent as
+         * plain words; a Fast render with references runs the reference
+         * build's own step count; a render naming no size gets this card's
+         * size. Each change is a warning in the reply. */
+        const plan = videoPlan({ ...b, refImages, refAudios }, { engineKey: eng, eng: videoEngine(eng),
+          persona: personaStaged,
+          h3: h3Status({ gpu: gpuStatus(), ram: ramStatus(), cpuOnly: cpuOnlyEngine(), vaeMeasured: h3VaeMeasured() }), framed: !!(firstFrame || lastFrame),
+          control: !!control.video });
+        if (plan.refusal) return json(res, 400, { error: plan.refusal.error, reason: plan.refusal.reason,
+          ...(plan.refusal.needsModel ? { needsModel: plan.refusal.needsModel } : {}) });
+        /* What the render really carries: the request's references, then the
+         * character's (bound in plan.prompt). A character picture that could
+         * not be found is said, not dropped unsaid. */
+        refImages = plan.refImages || refImages;
+        if (persona && personaLost > 0) {
+          plan.warnings.push({ id: "persona-missing", text: personaMissing(persona.name, personaLost) });
         }
         /* Soundtrack works on BOTH engines now. LTX freezes the audio latent
          * (measured r=0.995 mel); H3 freezes AND anchors so the DiT can read
@@ -5950,7 +7384,8 @@ const server = http.createServer(async (req, res) => {
             engine: eng,
             /* Undefined unless something was named — see videoModelPatch. */
             models: picked.models || undefined,
-            prompt,
+            // The plan's: unanswered reference tags taken out (and said).
+            prompt: plan.prompt,
             firstFrame,
             lastFrame,
             // Only meaningful on the guided path, which needs both ends. The
@@ -5966,7 +7401,7 @@ const server = http.createServer(async (req, res) => {
             controlStrength: control.strength,
             controlStart: control.start,
             controlEnd: control.end,
-            // LTX only — the clip is generated ON this audio (frozen latent).
+            // Song under the clip, both engines (H3: frozen + anchored = lip-sync).
             audioTrack,
             /* ⚠ Defaults come from the ENGINE, not from `config.video`.
              *
@@ -5981,17 +7416,27 @@ const server = http.createServer(async (req, res) => {
              * four explicitly — so the default path had never once run. The
              * first caller to omit them was an MCP client, and all four of its
              * clips failed validation before a single frame was rendered. */
-            seconds: Math.min(Math.max(Number(b.seconds) || videoEngine(eng).seconds, 1), 20),
+            /* The plan's, which clamps as this did and, for a render that names
+             * no size, starts at this card's tier (and says so). */
+            seconds: plan.seconds,
             /* 3840, not 1920. Native resolution retains detail an upscaler can
              * only invent, so the ceiling is the hardware's rather than a round
              * number's — and the honest limit here is TIME and free system RAM,
              * not VRAM: both engines stream weights from pinned host memory.
              * The render deadline already scales with pixels x frames, so a big
              * ask gets a big budget instead of being killed mid-render. */
-            width: Math.min(Math.max(Number(b.width) || videoEngine(eng).width, 256), 3840),
-            height: Math.min(Math.max(Number(b.height) || videoEngine(eng).height, 256), 3840),
-            steps: Math.min(Math.max(Number(b.steps) || videoEngine(eng).steps || 20, 2), 40),
+            width: plan.width,
+            height: plan.height,
+            // A fixed-schedule distillation (FastH3) records the steps it will run;
+            // the reference path runs its build's own count (the plan says so).
+            steps: videoEngine(eng).fixedSteps || plan.steps,
+            /* H3's sparse attention for this render ("sol-attn" | "off"); unset
+             * means the saved setting. art.js videoSparse() decides with the
+             * engine's answer, and the graph takes it on the Fast setting only. */
+            sparse: b.sparse === "sol-attn" || b.sparse === "off" ? b.sparse : undefined,
             keepAudio: b.keepAudio !== false,
+            // FastH3's dense attention backend; anything else means its default.
+            attention: b.attention === "kitchen" || b.attention === "pytorch" ? b.attention : undefined,
             negative: typeof b.negative === "string" ? b.negative.slice(0, 500) : undefined,
             // One dial for both CFG scales — see videoGraphLtx for why they must
             // not be settable apart.
@@ -6009,9 +7454,12 @@ const server = http.createServer(async (req, res) => {
               ? Math.min(Math.max(Number(b.bridgeAlpha), 0), 1) : undefined,
             // The person's own LoRAs, [{name, strength}]; cleaned, at most eight.
             loras: videoLoras(b.loras),
+            safetyContext: clipLineage.texts, safetyFlags: clipLineage.flags,
           },
         });
-        return json(res, 200, { ok: true, id, job: job && { id: job.id }, ...art.status() });
+        if (!job && art.lastRefusalBody) return json(res, 422, art.lastRefusalBody);
+        return json(res, 200, { ok: true, id, job: job && { id: job.id }, warnings: plan.warnings, ...art.status(),
+          character: plan.character ?? null, sampler: plan.sampler ?? null });
       }
 
       if (b.action === "engine") {
@@ -6026,7 +7474,11 @@ const server = http.createServer(async (req, res) => {
          * report H3's download size for a model that is not H3. */
         const capId = MODEL_TO_CAPABILITY[e];
         const cap = (await models.status()).find((c) => c.id === capId);
-        if (cap && !cap.ready) {
+        /* Refused only when the RENDERER cannot run it (videoReady: the files
+         * config.js resolved, stand-ins included). The Models row alone said
+         * "not downloaded" for an H3 missing one optional speed-up, and for an
+         * LTX holding the template's VAE, and left FastH3 the only choice. */
+        if (cap && !cap.ready && !videoReady(e).ready) {
           const gb = ((cap.totalBytes - cap.haveBytes) / 1e9).toFixed(1);
           return json(res, 400, {
             /* A gated engine gets the hand-fetch, not "open the Models screen"
@@ -6068,7 +7520,10 @@ const server = http.createServer(async (req, res) => {
           return json(res, 400, { error: "bad file" });
         }
         const m = library.meta.get(file) || {};
-        art.request({ file, title: m.title, caption: m.caption, seed: m.seed, kind: "video", force: true });
+        const queued = art.request({ file, title: m.title, caption: m.caption, seed: m.seed, kind: "video", force: true });
+        /* No typed prompt here: the caption becomes one, and the queue checks
+         * THAT under the minors rule. */
+        if (!queued && art.lastRefusalBody) return json(res, 422, art.lastRefusalBody);
         return json(res, 200, { ok: true, ...art.status() });
       }
       return json(res, 400, { error: "Unknown action." });
@@ -6089,14 +7544,49 @@ const server = http.createServer(async (req, res) => {
      * and the style line every auto cover prompt opens with. Takes effect on
      * the NEXT cover — nothing needs a restart. */
     if (p === "/api/artconfig" && req.method === "GET") {
+      await machineDefaults().catch(() => null);   // an unchosen engine follows the disk
       return json(res, 200, {
         engine: config.art.engine, checkpoint: config.art.checkpoint,
         quality: config.art.quality, style: config.art.style,
         styleDefault: config.artStyleDefault,
+        /* The Images screen's engine (a picture with none named), and which
+         * of the two somebody chose rather than the machine. */
+        imageEngine: config.image.engine,
+        chosen: { engine: prefChosen("art", "engine"), imageEngine: prefChosen("image", "engine") },
       });
     }
     if (p === "/api/artconfig" && req.method === "POST") {
-      const b = await readBody(req);
+      /* This door chooses what paints every cover and every picture made with
+       * no engine named, and saves it: Studio's own page or a local client
+       * only, asked before the body is read (cross-origin-doors_test.js). */
+      if (!sameOriginLocalJson(req)) return json(res, 403, { error: "Picture and cover settings are only accepted from Studio's own page or a local client." });
+      /* A few settings, never a file: capped at 64 KB before JSON.parse, as /api/cloud is. */
+      let b;
+      try { b = await readBody(req, 64 * 1024); } catch (err) {
+        return json(res, err.tooBig ? 413 : 400, { error: err.tooBig ? `That request is too large (${err.message}).` : "could not read that body as JSON" });
+      }
+      const answer = () => ({ ok: true, engine: config.art.engine, checkpoint: config.art.checkpoint,
+        quality: config.art.quality, style: config.art.style, imageEngine: config.image.engine,
+        chosen: { engine: prefChosen("art", "engine"), imageEngine: prefChosen("image", "engine") } });
+      /* "auto" (Settings' "Let Studio pick", set_image_engine engine "auto"):
+       * forget the choice, so the machine picks from the disk again. */
+      if (b.engine === "auto" || b.imageEngine === "auto") {
+        if (b.engine === "auto") forgetPref("art", "engine");
+        if (b.imageEngine === "auto") forgetPref("image", "engine");
+        defaultsCache.at = 0;
+        await machineDefaults().catch(() => null);
+        savePrefs();
+        return json(res, 200, answer());
+      }
+      /* The Images screen's engine, remembered when the person picks it there
+       * (or set_image_engine with use_for "pictures"). Kept even when its
+       * files are missing: Make says what to download, and nothing switches. */
+      if (b.imageEngine !== undefined) {
+        /* config.js's own check for the saved value (the covers' list minus "checkpoint"). */
+        if (!PREF_PATHS.find(([g, k]) => g === "image" && k === "engine")[2](b.imageEngine)) {
+          return json(res, 400, { error: "imageEngine must be flux2 | zimage | zimage-base | anima | ideogram4 | krea2 | qwen-image-2.1 (your own model file is picked per picture)" });
+        }
+      }
       if (b.engine !== undefined) {
         if (!["flux2", "zimage", "zimage-base", "anima", "ideogram4", "krea2", "qwen-image-2.1", "checkpoint"].includes(b.engine)) {
           return json(res, 400, { error: "engine must be flux2 | zimage | zimage-base | anima | ideogram4 | krea2 | qwen-image-2.1 | checkpoint" });
@@ -6118,7 +7608,11 @@ const server = http.createServer(async (req, res) => {
           const cap = (await models.status()).find((c) => c.id === "imageIdeogram");
           if (cap && !cap.ready) return json(res, 400, { error: "Ideogram 4 is not downloaded — open the Models screen first. And mind its NON-COMMERCIAL licence before making it the library default." });
         }
-        config.art.engine = b.engine;
+        /* Apply on the covers card posts the engine with the style line; the
+         * machine's own pick sent back unchanged is not a choice to freeze.
+         * Picked on purpose it is: `choose` (the card when its engine was
+         * touched, set_image_engine always) remembers even the machine's pick. */
+        if (b.choose === true || b.engine !== config.art.engine || prefChosen("art", "engine")) config.art.engine = b.engine;
       }
       if (b.checkpoint !== undefined) {
         const nm = b.checkpoint === null ? null : path.basename(String(b.checkpoint));
@@ -6140,9 +7634,10 @@ const server = http.createServer(async (req, res) => {
         if (!st || st.length > 1500) return json(res, 400, { error: "The style line must be 1-1500 characters." });
         config.art.style = st;
       }
+      if (b.imageEngine !== undefined) config.image.engine = b.imageEngine;   // checked above, applied with the rest
+      defaultsCache.at = 0;   // the covers line says "you" from the next read
       savePrefs();
-      return json(res, 200, { ok: true, engine: config.art.engine, checkpoint: config.art.checkpoint,
-                              quality: config.art.quality, style: config.art.style });
+      return json(res, 200, answer());
     }
 
     /**
@@ -6166,7 +7661,16 @@ const server = http.createServer(async (req, res) => {
      * model that was not H3.
      */
     if (p === "/api/music" && req.method === "POST") {
-      const b = await readBody(req);
+      /* Every action here chooses what runs or saves a file name (the model,
+       * its build, the LoRAs, "auto"), and its "model" action switches the
+       * paid hosted engine on or off: Studio's own page or a local client
+       * only, asked before the body is read (cross-origin-doors_test.js). */
+      if (!sameOriginLocalJson(req)) return json(res, 403, { error: "Music settings are only accepted from Studio's own page or a local client." });
+      /* A model choice and a few names, never a file: capped at 64 KB before JSON.parse. */
+      let b;
+      try { b = await readBody(req, 64 * 1024); } catch (err) {
+        return json(res, err.tooBig ? 413 : 400, { error: err.tooBig ? `That request is too large (${err.message}).` : "could not read that body as JSON" });
+      }
       /* THE MUSIC MODEL PICKER: an engine and its build in one choice. A build
        * that cannot render here is refused at the click; native YuE2 GGUF may be
        * chosen while not installed, because choosing it is how its setup panel
@@ -6292,6 +7796,16 @@ const server = http.createServer(async (req, res) => {
         savePrefs();
         return json(res, 200, { ok: true, music: { yue2LoraClip: config.music.yue2LoraClip, yue2LoraClipStrength: config.music.yue2LoraClipStrength } });
       }
+      /* "auto": forget the choice, so the machine picks from the disk again
+       * (server/fit.js defaultFor). Only ever on an explicit ask. */
+      if (b.action === "engine" && b.value === "auto") {
+        forgetPref("music", "engine"); forgetPref("music", "yue2Checkpoint");
+        defaultsCache.at = 0;
+        const d = (await machineDefaults()).find((x) => x.key === "music.engine");
+        musicChoicesCache.at = 0;
+        savePrefs();
+        return json(res, 200, { ok: true, music: { engine: config.music.engine }, chosenBy: "machine", why: d?.why ?? null });
+      }
       if (b.action === "model") {
         const choice = (await musicModelChoices(await models.status())).find((x) => x.value === String(b.value || ""));
         if (!choice) return json(res, 400, { error: "Unknown music model." });
@@ -6310,9 +7824,9 @@ const server = http.createServer(async (req, res) => {
         if (choice.engine === "minimax-music3") {
           const want = !!choice.api;
           if (want !== !!config.api.enabled || (want && config.api.provider !== choice.api)) {
-            config.api.enabled = want;
-            if (want) config.api.provider = choice.api;
-            await saveApiSettings();
+            /* The switch's one writer (applyApiConfig), as for /api/apimode and
+             * /api/cloud. Switching it on bills nothing: each song still asks. */
+            await applyApiConfig({ enabled: want, ...(want ? { provider: choice.api } : {}) });
           }
         }
         musicChoicesCache.at = 0;
@@ -6325,6 +7839,7 @@ const server = http.createServer(async (req, res) => {
         if (jobs.loaded && jobs.loaded.key !== nextKey && !jobs.current && !jobs.queue.length) {
           await jobs.unloadModels().catch(() => {});
         }
+        defaultsCache.at = 0;
         savePrefs();
         return json(res, 200, { ok: true, music: { engine: choice.engine, precision: choice.precision } });
       }
@@ -6334,7 +7849,9 @@ const server = http.createServer(async (req, res) => {
         if (config.musicOnly && e !== "yue2-gguf" && !(e === "yue2-comfy" && comfyWanted)) return json(res,400,{error:"Start full Studio to use other engines."});
         const capId = MODEL_TO_CAPABILITY[e];
         const cap = capId ? (await models.status()).find((c) => c.id === capId) : null;
-        if (e !== "yue2-gguf" && cap && !cap.ready) {
+        /* RunPod GPU mode: the ComfyUI engines' files are on the Pod, not here. */
+        const onPod = config.remoteOnly && ["minimax-music3", "ace-step15", "yue2-comfy"].includes(e);
+        if (e !== "yue2-gguf" && cap && !cap.ready && !onPod) {
           const gb = ((cap.totalBytes - cap.haveBytes) / 1e9).toFixed(1);
           return json(res, 400, {
             error: cap.gated
@@ -6346,6 +7863,7 @@ const server = http.createServer(async (req, res) => {
           });
         }
         config.music.engine = e;
+        defaultsCache.at = 0;
         savePrefs();
         return json(res, 200, { ok: true, music: { engine: e } });
       }
@@ -6386,7 +7904,22 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === "/api/settings" && req.method === "POST") {
+      /* The rig is the folder whose ComfyUI/main.py Studio RUNS at its next
+       * start, and the output folder is where every render lands: a web page in
+       * another origin must not choose either. Refused before the body is read. */
+      if (!sameOriginLocalJson(req)) return json(res, 403, { error: "Changing the rig or output folder is only accepted from Studio's own page or a local client." });
       const b = await readBody(req);
+      /* A folder on this computer's own disk. \\server\share is absolute to
+       * path.win32, so a UNC or device path (\\?\, \\.\) would pass the stat
+       * below and make Studio run, or write to, another machine; it is refused
+       * before anything touches it (the mkdir probe would already reach the
+       * host). The same rule as the timed lyrics python. */
+      for (const key of ["outputDir", "rig"]) {
+        if (typeof b[key] !== "string" || !b[key].trim()) continue;
+        const raw = b[key].trim();
+        if (/^[\\/]{2}/.test(raw)) return json(res, 400, { error: "Choose a folder on this computer's own disk, not a network or device path." });
+        if (!path.isAbsolute(raw) || /[\r\n\0]/.test(raw) || raw.length > 1024) return json(res, 400, { error: "Give the full path to the folder, not a relative one." });
+      }
       const next = {};
       if (typeof b.outputDir === "string" && b.outputDir.trim()) {
         const dir = path.resolve(b.outputDir.trim());
@@ -6553,6 +8086,10 @@ const server = http.createServer(async (req, res) => {
      * cost this month. Never the key itself.
      */
     if (p === "/api/apimode" && req.method !== "POST") {
+      /* The keys' status says where the key file is and which copy of Studio
+       * saved each key: this machine's own page and local clients only, the
+       * same Host check as GET /api/cloud. */
+      if (!localUiHost(req, config.uiPort)) return json(res, 403, { error: "Only Studio on this machine may read its paid services." });
       const st = await apiStatus();
       st.protection = protectionAvailable();
       st.keys = {};
@@ -6563,6 +8100,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === "/api/apimode" && req.method === "POST") {
+      /* The paid API mode: its switch, its spending cap and the provider keys it
+       * bills. Another origin must not turn it on, raise the cap, or swap in its
+       * own key so later prompts and lyrics go to its account. */
+      if (!sameOriginLocalJson(req)) return json(res, 403, { error: "API mode settings are only accepted from Studio's own Settings page or a local client." });
       const b = await readBody(req);
 
       /* Saving a key. It is written straight to the encrypted store and dropped
@@ -6588,20 +8129,7 @@ const server = http.createServer(async (req, res) => {
       /* Toggling the mode and the cap. Both live in settings.json rather than in
        * memory: an overnight run that starts under one cap and continues under
        * another after a restart would make the ceiling meaningless. */
-      if (b.action === "config") {
-        const patch = {};
-        if (typeof b.enabled === "boolean") patch.enabled = b.enabled;
-        if (typeof b.provider === "string" && PROVIDERS[b.provider]) patch.provider = b.provider;
-        if (Number.isFinite(b.monthlyCapUsd)) {
-          // Clamped rather than free-form: a typo'd extra zero is the exact
-          // accident the cap exists to prevent.
-          patch.monthlyCapUsd = Math.min(Math.max(b.monthlyCapUsd, 0), 1000);
-        }
-        Object.assign(config.api, patch);
-        await saveApiSettings();
-        musicChoicesCache.at = 0;
-        return json(res, 200, { ok: true, api: config.api, spend: await spendSummary() });
-      }
+      if (b.action === "config") return json(res, 200, await applyApiConfig(b));
 
       /* A cheap "is this key real" check. Deliberately does NOT generate — the
        * point is to fail for free rather than to spend money finding out. */
@@ -6788,6 +8316,9 @@ const server = http.createServer(async (req, res) => {
       if (!Number.isInteger(refs) || refs < 0 || refs > 10) return json(res, 400, { ready: false, filesReady: false, runtimeReady: false, missingFiles: [], missingNodes: [], totalBytes: 0, error: "refs must be an integer from 0 to 10." });
       options.refImages = Array.from({ length: refs }, (_, i) => `reference-${i + 1}.png`);
       options.transparent = url.searchParams.get("transparent") === "true";
+      /* Fast draft: `ready` then covers its LoRA and nodes too. Every answer
+       * carries `draft` (its own readiness) whether or not this asked. */
+      if (url.searchParams.get("draft") === "true") options.draft = true;
       options.count = 4; // includes the latent batch node available to the UI
       return json(res, 200, await qwenImageStatus({ options }));
     }
@@ -6870,18 +8401,41 @@ const server = http.createServer(async (req, res) => {
           }
         }
       }
+      /* No engine named (make_image without one): the saved picture engine, or
+       * the machine's pick from the disk when nobody chose (machineDefaults). */
+      if (!b.engine && typeof machineDefaults === "function") await machineDefaults().catch(() => null);
       const engine = b.engine || config.image.engine;
       if (!["flux2", "zimage", "zimage-base", "anima", "ideogram4", "krea2", "qwen-image-2.1", "checkpoint"].includes(engine)) return json(res, 400, { error: `Unknown image engine: ${engine}.` });
+      /* FAST DRAFT (QWEN_DRAFT in qwen-image.js): Viggle's 5-step turbo LoRA on
+       * Qwen Image 2.1, about 3x quicker and worse at small text. Refused, never
+       * ignored, on any other engine; the base-only cases (transparent, more
+       * than 3 references, CFG above 1, a negative, other step counts, a canvas
+       * above the measured ~2 MP) are
+       * refused by the graph builder below with its own sentences. */
+      if (b.draft !== undefined && typeof b.draft !== "boolean") return json(res, 400, { error: QWEN_DRAFT.refusals.type });
+      if (b.draft === true && engine !== QWEN_IMAGE_ENGINE) return json(res, 400, { error: QWEN_DRAFT.refusals.engine, draftRefused: "engine" });
       if (engine === QWEN_IMAGE_ENGINE) {
         try {
           const graph = qwenImageGraph({ ...b, prompt: b.prompt || "readiness check", seed: b.seed ?? 0 });
-          b.steps = graph[8].inputs.steps; b.cfg = graph[8].inputs.cfg;
+          const sampled = qwenImageSettings(graph);
+          b.steps = sampled.steps; b.cfg = sampled.cfg;
           b.count = graph[7]?.inputs.batch_size || graph[7]?.inputs.amount || 1;
           if (graph[7]?.class_type === "EmptyLatentImage") { b.width = graph[7].inputs.width; b.height = graph[7].inputs.height; }
           b.refSizing = b.refSizing ?? "reference"; b.refResolution = graph[4].inputs.resolution;
           b.transparent = b.transparent ?? false;
+          /* TextEncodeQwenImage21 shows its vision tower a reference's alpha
+           * over white, but its VAE encodes all four channels, so one cutout
+           * reference turned a whole opaque generation transparent. Unless
+           * transparency is asked for, a reference goes in as the vision tower
+           * sees it. "keep" is for a caller that prepared its own. */
+          b.refAlpha = b.refAlpha ?? (b.transparent ? "keep" : "white");
+          if (!["white", "keep"].includes(b.refAlpha)) throw new TypeError("refAlpha must be white or keep.");
           const readiness = await qwenImageStatus({ options: { ...b, prompt: "readiness check", seed: b.seed ?? 0 } });
-          if (!readiness.ready) return json(res, 400, { ...readiness, ...(readiness.missingFiles?.length ? { needsModel: QWEN_IMAGE_ENGINE } : {}) });
+          /* needsModel opens that Models row: Fast draft's own when its LoRA is
+           * the only file missing (the Qwen row would read "installed"). */
+          const loraOnly = readiness.missingFiles?.length > 0 && readiness.draft?.lora != null
+            && readiness.missingFiles.every((name) => name === readiness.draft.lora);
+          if (!readiness.ready) return json(res, 400, { ...readiness, ...(readiness.missingFiles?.length ? { needsModel: loraOnly ? QWEN_DRAFT.capability : QWEN_IMAGE_ENGINE } : {}) });
         } catch (err) { return json(res, 400, { error: err.message }); }
       }
       if (engine === "anima") {
@@ -7016,6 +8570,25 @@ const server = http.createServer(async (req, res) => {
         }
       }
 
+      /* ⚠ THE MINORS RULE, on the words this picture will really be made from:
+       * the template expanded and the persona's words folded in exactly as
+       * applyPersona folds them below. The stored prompts of the library
+       * pictures handed over as references (the caller's and the persona's)
+       * count as well. Before anything is staged: 422 and nothing copied,
+       * queued or recorded but the refusal. The art queue and the engine door
+       * check again, the door on the final graph. */
+      const imageLineage = lineage([
+        ...(Array.isArray(b.refImages) ? b.refImages : []),
+        ...(personaUsed?.refImages || []),
+      ]);
+      {
+        const refused = safetyRefusal({
+          door: "api.image", actor: prov.actorFrom(req),
+          texts: [applyPersona(personaUsed, { prompt }).prompt], context: imageLineage.texts, flags: imageLineage.flags,
+        });
+        if (refused) return json(res, 422, refused);
+      }
+
       /* Reference images — FLUX in-context editing. Staged into ComfyUI's
        * input dir exactly the way video frames are: an already-staged upload
        * name passes through, a cover or Images-screen file is copied in. The
@@ -7026,8 +8599,14 @@ const server = http.createServer(async (req, res) => {
           const own = b.refImages ?? [];
           if (!Array.isArray(own)) throw new Error("refImages must be an array of image filenames.");
           const personaRefs = personaUsed?.refImages || [];
+          /* A character's pictures count toward Fast draft's three, and the
+           * refusal comes before anything is copied. */
+          if (b.draft === true && personaRefs.length + own.length > QWEN_DRAFT.maxRefs) {
+            return json(res, 400, { error: QWEN_DRAFT.refusals.refs, draftRefused: "refs" });
+          }
           const staged = await stageQwenReferences([...personaRefs, ...own], {
             inputDir: config.inputDir, coverDir: COVER_DIR, imageDir: IMAGE_DIR,
+            flatten: b.refAlpha === "white" ? imageEditor.flattenReferences : null,
           });
           if (personaUsed) personaUsed = { ...personaUsed, refImages: staged.slice(0, personaRefs.length) };
           refImages = staged.slice(personaRefs.length);
@@ -7073,6 +8652,7 @@ const server = http.createServer(async (req, res) => {
       const id = `i${Date.now().toString(36)}`;
       const file = `image:${id}`;
       pendingImagePrompt.set(file, finalPrompt);
+      if (b.private === true) pendingImagePrivate.set(file, true);
       pendingImageActor.set(file, prov.actorFrom(req));
       if (wild) pendingImageWild.set(file, { template, promptChoices: choices });
       /* Everything the render is, BEFORE it is queued — so the duplicate
@@ -7094,6 +8674,8 @@ const server = http.createServer(async (req, res) => {
         video: {
           prompt: finalPrompt,
           engine,
+          /* Carried to the engine door, which checks the final graph with it. */
+          safetyContext: imageLineage.texts, safetyFlags: imageLineage.flags,
           quality: b.quality === "quality" ? "quality" : "default",
           checkpoint: b.checkpoint || undefined,
           /* The model file a person picked, and the halves they named for it.
@@ -7107,6 +8689,10 @@ const server = http.createServer(async (req, res) => {
           refSizing: engine === QWEN_IMAGE_ENGINE ? b.refSizing : undefined,
           refResolution: engine === QWEN_IMAGE_ENGINE ? b.refResolution : undefined,
           transparent: engine === QWEN_IMAGE_ENGINE ? b.transparent : undefined,
+          /* Fast draft rides to art.js's qwenOptions and on to the picture's
+           * provenance (draft: true and the LoRA). Absent unless asked for, so
+           * every other render's job is unchanged. */
+          ...(engine === QWEN_IMAGE_ENGINE && b.draft === true ? { draft: true } : {}),
           // One text encode serves up to four pictures — see coverGraph.
           count: Math.min(Math.max(Number(b.count) || 1, 1), 4),
           width: Math.min(Math.max(Number(b.width) || config.art.size, 256), engine === QWEN_IMAGE_ENGINE ? 4096 : 2048),
@@ -7171,7 +8757,7 @@ const server = http.createServer(async (req, res) => {
         negative: shot.video.negative || "", seed: shot.seed,
         width: shot.video.width, height: shot.video.height,
         steps: shot.video.steps, cfg: shot.video.cfg, refImages,
-        ...(engine === QWEN_IMAGE_ENGINE ? { refSizing: b.refSizing, refResolution: b.refResolution, transparent: b.transparent, dit: b.dit, encoder: b.encoder, vae: b.vae } : {}),
+        ...(engine === QWEN_IMAGE_ENGINE ? { refSizing: b.refSizing, refResolution: b.refResolution, transparent: b.transparent, dit: b.dit, encoder: b.encoder, vae: b.vae, draft: b.draft === true } : {}),
       };
       let dupNote = null;
       if (dedupe) {
@@ -7182,6 +8768,7 @@ const server = http.createServer(async (req, res) => {
       }
       imageDupGuard.remember(identityJob);
 
+      shot.private = b.private === true;
       const job = art.request(shot);
       /* NOTHING QUEUED IS NOT A SUCCESS. This answered `ok: true` with
        * `job: null` and the screen dutifully reported "Queued." for a render
@@ -7192,6 +8779,8 @@ const server = http.createServer(async (req, res) => {
         pendingImagePrompt.delete(file);
         pendingImageActor.delete(file);
         pendingImageWild.delete(file);
+        /* The queue's own minors check said no: the one sentence, as a 422. */
+        if (art.lastRefusalBody) return json(res, 422, art.lastRefusalBody);
         return json(res, 409, {
           error: `The render was not queued — ${art.lastRefusal || "the queue refused it"}.`,
           ...art.status(),
@@ -7199,6 +8788,7 @@ const server = http.createServer(async (req, res) => {
       }
       return json(res, 200, {
         ok: true, id, job: job && { id: job.id }, seed: shot.seed,
+        ...(shot.video.draft ? { draft: true } : {}),
         /* The expansion travels back so the screen and an MCP caller both see
          * WHAT WAS ACTUALLY ASKED, not the template. `promptChoices` fed back
          * into a later call reproduces this exact prompt. */
@@ -7310,6 +8900,8 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, {
         personas: eng ? rows.map((x) => ({ ...x, fits: personaFits(eng) })) : rows,
         ...(eng ? { engine: eng, fits: personaFits(eng) } : {}),
+        /* In a clip, how many of a character's pictures ride (personas.js). */
+        ...(eng === "h3" ? { clipPictures: CLIP_PERSONA_PICTURES } : {}),
       });
     }
 
@@ -7413,7 +9005,12 @@ const server = http.createServer(async (req, res) => {
      * with the video engine each one can drive, plus the encoder and VAE
      * shelves. One request, because the screen shows all four together. */
     if (p === "/api/videomodels" && req.method === "GET") {
-      const [models, parts] = await Promise.all([listVideoPickable(config), listParts(config)]);
+      /* listVideoParts, not listParts: the encoder and VAE rows arrive with a
+       * per-engine verdict on them. It is decided from the safetensors headers
+       * on disk against the file each engine came with, which the browser
+       * cannot do — and it is 169 ms for the whole shelf, measured, because
+       * only headers are read and the prints are cached on path+size+mtime. */
+      const [models, parts] = await Promise.all([listVideoPickable(config), listVideoParts(config)]);
       return json(res, 200, { models, ...parts, engines: VIDEO_DIT_ENGINE });
     }
 
@@ -7617,7 +9214,7 @@ const server = http.createServer(async (req, res) => {
           });
           return json(res, 200, JSON.parse(line));
         } catch (err) {
-          return json(res, 503, { error: `The layer document is not readable: ${err.message}` });
+          return imageFailure(res, err, 503, `The layer document is not readable: ${err.message}`);
         }
       }
 
@@ -7732,7 +9329,7 @@ const server = http.createServer(async (req, res) => {
           warnings: r.warnings?.length ? r.warnings : undefined,
         });
       } catch (err) {
-        return json(res, 400, { error: String(err.message || err) });
+        return imageFailure(res, err, 400, String(err.message || err));
       } finally {
         unlink(jobPath).catch(() => {});
       }
@@ -7806,7 +9403,7 @@ const server = http.createServer(async (req, res) => {
         });
         return json(res, 200, JSON.parse(line));
       } catch (err) {
-        return json(res, 503, { error: `Could not read the capabilities: ${err.message}` });
+        return imageFailure(res, err, 503, `Could not read the capabilities: ${err.message}`);
       }
     }
 
@@ -7922,15 +9519,15 @@ const server = http.createServer(async (req, res) => {
                                 quality: r.quality, ignored: r.ignored,
                                 provenance: r.provenance ?? null });
       } catch (err) {
-        return json(res, 400, { error: String(err.message || err) });
+        return imageFailure(res, err, 400, String(err.message || err));
       } finally {
         unlink(jobPath).catch(() => {});
       }
     }
 
-    /* WHAT A SELECTION ACTUALLY CAUGHT \u2014 before an edit is spent on it.
+    /* WHAT A SELECTION ACTUALLY CAUGHT — before an edit is spent on it.
      *
-     * \u26a0 AN EMPTY SELECTION IS A SILENT NO-OP EVERYWHERE ELSE. imgselect's
+     * ⚠ AN EMPTY SELECTION IS A SILENT NO-OP EVERYWHERE ELSE. imgselect's
      * resolve() is explicit that an empty or degenerate shape list is a mask of
      * zeros and "every op becomes a no-op", so a wand tolerance that catches
      * nothing writes a file identical to its input and answers ok. This is the
@@ -7942,9 +9539,9 @@ const server = http.createServer(async (req, res) => {
       if (!name || !imageMeta.get(name)) {
         return json(res, 404, { error: `${name || "(no name)"} is not in the image library.`, reason: "name" });
       }
-      /* \u26a0 THE FRAME THE SHAPES WERE WRITTEN IN. A selection is resolved at
+      /* ⚠ THE FRAME THE SHAPES WERE WRITTEN IN. A selection is resolved at
        * stage 4, after canvas/crop/geometry, and the editor writes its shapes
-       * in exactly those coordinates \u2014 so describing one against the raw
+       * in exactly those coordinates — so describing one against the raw
        * source while a crop is pending measures a DIFFERENT PICTURE and
        * reports the coverage of it, confidently. Only the stages that move a
        * coordinate travel: the adjustments and effects cannot, and running
@@ -8015,7 +9612,7 @@ const server = http.createServer(async (req, res) => {
         if (r.ok === false) return json(res, 400, { error: r.error || "the type could not be measured" });
         return json(res, 200, { ok: true, ...r });
       } catch (err) {
-        return json(res, 400, { error: `measure failed: ${err.message}` });
+        return imageFailure(res, err, 400, `measure failed: ${err.message}`);
       } finally {
         unlink(jobPath).catch(() => {});
       }
@@ -8075,7 +9672,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, { ...rep, ok: true, clean: rep.ok === true,
                                 says, notes: r.notes || undefined });
       } catch (err) {
-        return json(res, 400, { error: `check failed: ${err.message}` });
+        return imageFailure(res, err, 400, `check failed: ${err.message}`);
       } finally {
         unlink(jobPath).catch(() => {});
       }
@@ -8264,7 +9861,7 @@ const server = http.createServer(async (req, res) => {
         if (r.ok === false) return json(res, 400, { error: r.error || "the styles could not be described" });
         return json(res, 200, { ok: true, ...r });
       } catch (err) {
-        return json(res, 400, { error: `describe-styles failed: ${err.message}` });
+        return imageFailure(res, err, 400, `describe-styles failed: ${err.message}`);
       } finally {
         unlink(jobPath).catch(() => {});
       }
@@ -8330,7 +9927,7 @@ const server = http.createServer(async (req, res) => {
         delete r.out;
         return json(res, 200, { ok: true, name: outName, ...r });
       } catch (err) {
-        return json(res, 400, { error: `svg export failed: ${err.message}` });
+        return imageFailure(res, err, 400, `svg export failed: ${err.message}`);
       } finally {
         unlink(jobPath).catch(() => {});
       }
@@ -8391,7 +9988,7 @@ const server = http.createServer(async (req, res) => {
         }
         return json(res, 200, r);
       } catch (err) {
-        return json(res, 400, { error: `the document shelf failed: ${err.message}` });
+        return imageFailure(res, err, 400, `the document shelf failed: ${err.message}`);
       } finally {
         unlink(jobPath).catch(() => {});
       }
@@ -8407,22 +10004,22 @@ const server = http.createServer(async (req, res) => {
      * back, because the undo buffer is in the browser that is now wrong. */
     /* PAINT ONTO ONE LAYER OF A DOCUMENT.
      *
-     * \u26a0 THE RASTER LAYER ALREADY EXISTED. The standing conclusion was that
+     * ⚠ THE RASTER LAYER ALREADY EXISTED. The standing conclusion was that
      * imgdoc stores NAMES and never bytes, so a painted pixel had nowhere to
      * live and a new layer kind had to be built. A layer whose pixels are a
-     * library picture IS a raster layer \u2014 the `image` kind \u2014 and its bytes
+     * library picture IS a raster layer — the `image` kind — and its bytes
      * live where every picture's bytes live. What was missing was a door.
      *
-     * \u26a0 IT IS NOT AN EDIT_OP, and that is deliberate. Every entry in
+     * ⚠ IT IS NOT AN EDIT_OP, and that is deliberate. Every entry in
      * imgdoc's EDIT_OPS is a pure doc -> doc transform: apply_edits has no
      * resolver, no writer and no way to reach a pixel. Painting happens here,
      * where I/O lives, and the document only learns the new name.
      *
-     * \u26a0 AND IT GOES THROUGH apply_edit, the flat editor's own engine, so an
+     * ⚠ AND IT GOES THROUGH apply_edit, the flat editor's own engine, so an
      * agent painting a layer and a person dragging a brush commit the same
-     * bytes \u2014 which is what imgstroke's docstring asks for in as many words.
+     * bytes — which is what imgstroke's docstring asks for in as many words.
      *
-     * \u26a0 THE SOURCE IS NEVER OVERWRITTEN. One library picture can be the
+     * ⚠ THE SOURCE IS NEVER OVERWRITTEN. One library picture can be the
      * source of several layers in several documents; painting writes a new one
      * and repoints this layer, or it would edit pictures nobody asked about. */
     if (p === "/api/images/document-paint" && req.method === "POST") {
@@ -8486,7 +10083,9 @@ const server = http.createServer(async (req, res) => {
           layers: after.layers ?? null, doc: after.doc ?? null,
         });
       } catch (err) {
-        return json(res, 400, { error: String(err.message || err) });
+        /* A missing module (the warm worker's, or imgdoc's 409) keeps its
+         * setup id and pip line; anything else keeps its own sentence. */
+        return imageFailure(res, await imageRefusal(err), 400, String(err.message || err));
       }
     }
 
@@ -8517,7 +10116,7 @@ const server = http.createServer(async (req, res) => {
         });
         return json(res, 200, r);
       } catch (err) {
-        return json(res, 400, { error: `the document edit failed: ${err.message}` });
+        return imageFailure(res, err, 400, `the document edit failed: ${err.message}`);
       } finally {
         unlink(jobPath).catch(() => {});
       }
@@ -8547,8 +10146,8 @@ const server = http.createServer(async (req, res) => {
       const outName = `${stem}_m${tag}.png`;
       const scratch = path.join(IMAGE_DIR, `.bake_${tag}.png`);
       const jobPath = path.join(IMAGE_DIR, `.bake_${tag}.json`);
-      /* \u26a0 ONLY THE STAGES THAT MOVE A COORDINATE. The selection is resolved
-       * at stage 4 \u2014 after canvas, crop and geometry \u2014 so a bake sent without
+      /* ⚠ ONLY THE STAGES THAT MOVE A COORDINATE. The selection is resolved
+       * at stage 4 — after canvas, crop and geometry — so a bake sent without
        * them resolves the editor's shapes against a frame they were never
        * written in: right numbers, wrong picture, and no error anywhere.
        * Whitelisted by name because `ops` also carries the adjustments and the
@@ -8760,7 +10359,7 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    /* A layer by id, anywhere in the tree \u2014 groups nest, so this recurses.
+    /* A layer by id, anywhere in the tree — groups nest, so this recurses.
      * Returns the LAYER, not a path to it: the caller only wants to read it. */
     function findDocLayer(layers, ref) {
       for (const l of layers || []) {
@@ -8823,26 +10422,26 @@ const server = http.createServer(async (req, res) => {
 
     /* A NEW PAGE, OR WHATEVER IS ON THE CLIPBOARD.
      *
-     * Two ways in because they end in the same place \u2014 a picture in the
+     * Two ways in because they end in the same place — a picture in the
      * library, ready to open in the editor:
      *
      *   {width, height, background:[r,g,b,a]}   a blank page
      *   {data_url}                              a pasted image
      *
-     * \u26a0 THE DEFAULT BACKGROUND IS TRANSPARENT, NOT WHITE. A blank page is
+     * ⚠ THE DEFAULT BACKGROUND IS TRANSPARENT, NOT WHITE. A blank page is
      * usually the thing somebody is about to paste a cutout onto, and black at
-     * alpha 0 is not the same picture as opaque black \u2014 one composites away,
+     * alpha 0 is not the same picture as opaque black — one composites away,
      * the other has to be erased first.
      *
-     * \u26a0 EVERY PASTE LANDS AS A PNG, WHICHEVER MIME ARRIVED. The adopt pass
+     * ⚠ EVERY PASTE LANDS AS A PNG, WHICHEVER MIME ARRIVED. The adopt pass
      * reopens the file and re-saves it; PIL sniffs content rather than trusting
-     * the name, and takes its save format from the extension \u2014 so JPEG bytes
+     * the name, and takes its save format from the extension — so JPEG bytes
      * under a .png name come back a real PNG. Measured, not assumed: a JPEG
      * written to fake.png reopened as `PNG (64, 48) RGBA`.
      *
      * Keeping the source extension would cost a broken thumbnail for every
      * pasted photo, because adoptEngineImage builds the thumb name by stripping
-     * a trailing .png \u2014 a .jpg would become `paste_x.jpg_t.png`, which
+     * a trailing .png — a .jpg would become `paste_x.jpg_t.png`, which
      * nothing ever looks for. */
     if (p === "/api/images/create" && req.method === "POST") {
       let b;
@@ -8868,9 +10467,9 @@ const server = http.createServer(async (req, res) => {
           if (buf.length < 8) return json(res, 400, { error: "the pasted image decoded to nothing." });
           outName = `paste_${stamp}.png`;
           note = { op: "paste", bytes: buf.length, mime: `image/${m[1].toLowerCase()}` };
-          /* \u26a0 NOTHING IS DECLARED ABOUT WHERE THIS CAME FROM. foldOrigin reads
+          /* ⚠ NOTHING IS DECLARED ABOUT WHERE THIS CAME FROM. foldOrigin reads
            * an `import` with no `declared` as third-party-licensed, which is the
-           * honest standing for an image off the clipboard \u2014 we know it arrived,
+           * honest standing for an image off the clipboard — we know it arrived,
            * not who made it. Declaring human-recorded to get a friendlier label
            * would be the ledger asserting a provenance nobody established. */
           provType = "import";
@@ -8884,7 +10483,7 @@ const server = http.createServer(async (req, res) => {
           outName = `paint_${stamp}.png`;
           note = { op: "blank", width, height, background: bg };
           /* A person chose a size and a colour and now has a page. That is
-           * author_layer, which folds to human-authored \u2014 and it is the only
+           * author_layer, which folds to human-authored — and it is the only
            * picture in this library that is unambiguously theirs. */
           provType = "author_layer";
           const jobPath = path.join(IMAGE_DIR, `.new_${stamp}.json`);
@@ -8907,7 +10506,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, { ok: true, name: outName, ...note });
       } catch (err) {
         await unlink(tmp).catch(() => {});
-        return json(res, 400, { error: `could not create that image: ${err.message}` });
+        return imageFailure(res, err, 400, `could not create that image: ${err.message}`);
       }
     }
 
@@ -8980,15 +10579,15 @@ const server = http.createServer(async (req, res) => {
      * library name — the engine never takes a path from the client. */
     /* A PREVIEW OF THE EDIT, WHICH IS NOT THE EDIT.
      *
-     * \u26a0 IT COMMITS NOTHING. /api/images/edit writes a library PNG, a
-     * thumbnail, an imageMeta row and a provenance event \u2014 right for a
+     * ⚠ IT COMMITS NOTHING. /api/images/edit writes a library PNG, a
+     * thumbnail, an imageMeta row and a provenance event — right for a
      * commit, ruinous for a preview, because a drag would file a picture and an
      * authorship claim per frame. This renders to a scratch file outside
      * IMAGE_DIR, streams it back and deletes it, so nothing outlives the call.
      *
-     * \u26a0 AND IT GOES THROUGH THE WARM WORKER, which is the only reason it is
+     * ⚠ AND IT GOES THROUGH THE WARM WORKER, which is the only reason it is
      * worth having: the spawning route costs 653 ms at 1024x1024 of which 596 ms
-     * is paid by an edit that does NOTHING \u2014 a fresh interpreter importing
+     * is paid by an edit that does NOTHING — a fresh interpreter importing
      * numpy, cv2 and PIL. The same work through a python that stays is 65-71 ms.
      * The rasterisation was 11 ms all along. */
     if (p === "/api/images/preview" && req.method === "POST") {
@@ -9013,7 +10612,9 @@ const server = http.createServer(async (req, res) => {
         res.end(png);
         return undefined;
       } catch (err) {
-        return json(res, 400, { error: String(err.message || err) });
+        /* The first image-editor call a newcomer makes: a worker that died
+         * on a missing cv2 said "image worker exited (1)" and nothing else. */
+        return imageFailure(res, await imageRefusal(err), 400, String(err.message || err));
       } finally {
         unlink(out).catch(() => {});
       }
@@ -9155,7 +10756,7 @@ const server = http.createServer(async (req, res) => {
           return json(res, 200, { ok: true, name: outName, layers: layers.length,
             clipped: true, warnings: r.warnings?.length ? r.warnings : undefined });
         } catch (err) {
-          return json(res, 400, { error: `composite failed: ${err.message}` });
+          return imageFailure(res, err, 400, `composite failed: ${err.message}`);
         } finally {
           unlink(jobPath).catch(() => {});
         }
@@ -9901,6 +11502,13 @@ const server = http.createServer(async (req, res) => {
       if (!/\.(mp4|webm)$/i.test(name)) return json(res, 400, { error: "not a video clip" });
       const prompt = String(b.prompt || "").trim();
       if (!prompt) return json(res, 400, { error: "Describe the look first." });
+      /* ⚠ THE MINORS RULE: the new look, with the source clip's own history. */
+      const restyleLineage = lineage([name]);
+      {
+        const refused = safetyRefusal({ door: "api.restyle", actor: prov.actorFrom(req), texts: [prompt],
+          context: restyleLineage.texts, flags: restyleLineage.flags });
+        if (refused) return json(res, 422, refused);
+      }
       const vr = videoReady("ltx");
       if (!vr.ready) return json(res, 400, { error: `LTX is not installed: ${vr.missing.join(", ")}` });
 
@@ -9942,6 +11550,7 @@ const server = http.createServer(async (req, res) => {
         seed: Number.isFinite(b.seed) ? Number(b.seed) : Math.floor(Math.random() * 4294967296),
         video: {
           prompt, negative: b.negative,
+          safetyContext: restyleLineage.texts, safetyFlags: restyleLineage.flags,
           guideEvery: every,
           guideStrength: Number.isFinite(b.guideStrength) ? Number(b.guideStrength) : undefined,
           strengths,
@@ -9949,6 +11558,7 @@ const server = http.createServer(async (req, res) => {
           seconds: Number(b.seconds) || undefined,
         },
       });
+      if (!job && art.lastRefusalBody) return json(res, 422, art.lastRefusalBody);
       return json(res, 200, {
         ok: true, job: job && { id: job.id },
         guides: strengths?.length ?? null, strengths, bpm,
@@ -10236,6 +11846,52 @@ const server = http.createServer(async (req, res) => {
         savePrefs();
         return json(res, 200, { ok: true, lyrics: config.lyrics });
       }
+      /* WHICH PYTHON TIMES THE LYRICS: Settings > Songs > "timed lyrics python",
+       * and the timed_lyrics_python tool. No `value` reports; a path chooses it
+       * (at once: art.js reads config.lyrics.python at every spawn, so nothing
+       * restarts); "" or null goes back to the default venv. The answer carries
+       * the same probe the Models screen runs, so a chosen python that lacks
+       * stable-ts says so HERE, not on the first song. */
+      if (b.action === "python") {
+        if (b.value !== undefined) {
+          /* This names a program Studio runs at once (the probe below) and on
+           * every later lyrics job, so only Studio's page or a local client may
+           * set it: the same guard as the native runtime installer. Reading it
+           * stays open (no `value`), because a verdict runs nothing new. */
+          if (!sameOriginLocalJson(req)) {
+            return json(res, 403, { error: "Choosing the timed lyrics python requires a same-origin local JSON request." });
+          }
+          // Explorer's "Copy as path" wraps the path in quotes; take it as pasted.
+          const raw = b.value === null ? "" : String(b.value).trim().replace(/^"(.*)"$/, "$1").trim();
+          if (raw) {
+            /* \\server\share\python.exe is absolute to path.win32 and stat()s as
+             * a file, so a UNC or device path (\\?\, \\.\) would run a program
+             * off another machine. A python lives on a local disk. */
+            if (/^[\\/]{2}/.test(raw)) {
+              return json(res, 400, { error: "Choose a python on this computer's own disk, not a network or device path." });
+            }
+            if (!path.isAbsolute(raw) || /[\r\n\0]/.test(raw) || raw.length > 1024) {
+              return json(res, 400, { error: `Give the full path to the python, for example ${defaultWhisperPython()}.` });
+            }
+            let st = null;
+            try { st = await stat(raw); } catch { /* answered below */ }
+            if (!st?.isFile()) return json(res, 400, { error: `There is no file at ${raw}.` });
+          }
+          config.lyrics.whisperPython = raw ? path.resolve(raw) : null;
+          config.lyrics.python = whisperPython();
+          packageCache = null; // the Models screen probes the new interpreter on its next read
+          savePrefs();
+        }
+        const py = config.lyrics.python;
+        const got = whisperPythonMissing(py) ? {} : await probeOne(py, LYRICS_MODULES).catch(() => ({}));
+        return json(res, 200, {
+          ok: true,
+          lyrics: pythonVerdict({
+            python: py, chosen: config.lyrics.whisperPython,
+            modules: Object.fromEntries(LYRICS_MODULES.map((m) => [m, !!got[m]])),
+          }),
+        });
+      }
       if (b.action === "run") {
         const file = String(b.file || "");
         if (!file || file.includes("..") || file.includes("/") || file.includes("\\")) {
@@ -10251,6 +11907,13 @@ const server = http.createServer(async (req, res) => {
           if (lyr) library.remember(file, { lyrics: lyr });
         }
         if (!lyr) return json(res, 400, { error: "This track has no lyrics to time." });
+        /* Refuse here, where the click can show it, rather than queue a job
+         * that dies at once: a missing whisper python is the usual first
+         * failure on a new machine, and the sentence says how to make it. */
+        const noPython = whisperPythonMissing(config.lyrics.python);
+        /* The page offers [Set up timed lyrics] with this refusal, unless
+         * AIPLAY_WHISPER_PYTHON names the interpreter: a build would not be used. */
+        if (noPython) return json(res, 400, { error: noPython, ...(process.env.AIPLAY_WHISPER_PYTHON ? {} : { setup: "lyrics" }) });
         art.request({ file, title: m.title, kind: "lrc", lyrics: lyr, force: true });
         return json(res, 200, { ok: true, ...art.status() });
       }
@@ -10310,7 +11973,13 @@ const server = http.createServer(async (req, res) => {
           proc.on("exit", (code) => resolve({ code, so, se }));
           proc.on("error", () => resolve({ code: 1, so: "", se: "spawn failed" }));
         });
-        if (r.code !== 0) return json(res, 500, { error: r.se.slice(-200) || "could not make a poster" });
+        if (r.code !== 0) {
+          /* A missing module (OpenCV, most often) is a refusal with its pip line
+           * and, for Studio's own engine, the Install button's setup id. */
+          const refusal = await moduleRefusal(r.se, "Clip posters", config.python);
+          if (refusal) return json(res, 409, { error: refusal.message, ...refusalFields(refusal) });
+          return json(res, 500, { error: r.se.slice(-200) || "could not make a poster" });
+        }
       }
 
       let buf;
@@ -10365,14 +12034,13 @@ const server = http.createServer(async (req, res) => {
         "Content-Type": MIME[path.extname(name).toLowerCase()] || "application/octet-stream",
         "Accept-Ranges": "bytes",
       };
-      const m = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || "");
-      if (m) {
-        const start = m[1] ? Number(m[1]) : 0;
-        const end = Math.min(m[2] ? Number(m[2]) : size - 1, size - 1);
-        if (start > end || start >= size) {
-          res.writeHead(416, { ...base, "Content-Range": `bytes */${size}` });
-          return res.end();
-        }
+      const range = byteRange(req.headers.range, size);
+      if (range?.unsatisfiable) {
+        res.writeHead(416, { ...base, "Content-Range": `bytes */${size}` });
+        return res.end();
+      }
+      if (range) {
+        const { start, end } = range;
         res.writeHead(206, { ...base, "Content-Range": `bytes ${start}-${end}/${size}`, "Content-Length": end - start + 1 });
         return createReadStream(full, { start, end }).pipe(res);
       }
@@ -10518,34 +12186,35 @@ const server = http.createServer(async (req, res) => {
       const name = decodeURIComponent(p.slice("/api/audio/".length));
       if (name.includes("..") || path.isAbsolute(name)) return json(res, 400, { error: "bad name" });
       const full = path.join(config.outputDir, name);
+      /* The Comfy API's results (outputDir/router) have their own door,
+       * /api/router/file/, which serves them sandboxed; a provider's scripted
+       * SVG is not served through this one as well. Judged on the joined path
+       * ("./router/x" is router/x), and on the folder name as Windows opens it:
+       * trailing dots and spaces dropped, a ":stream" suffix ignored. The
+       * sandbox header below is the protection; this is the second fence. */
+      const top = path.relative(config.outputDir, full).split(/[\\/]/)[0].split(":")[0].replace(/[. ]+$/, "").toLowerCase();
+      if (top === "router") return json(res, 404, { error: "not found" });
 
       let size;
       try { size = (await stat(full)).size; } catch { return json(res, 404, { error: "not found" }); }
       const type = MIME[path.extname(name)] || "application/octet-stream";
-      const base = { "Content-Type": type, "Accept-Ranges": "bytes" };
+      /* ⚠ SANDBOXED AND NEVER SNIFFED. Anything under outputDir can be named
+       * here, SVG and HTML included, and a file opened as a PAGE would run its
+       * scripts in Studio's origin, past every same-origin guard. `sandbox`
+       * gives such a page an opaque origin and no scripts; <audio>, <video> and
+       * <img> ignore a subresource's CSP, so playback and scrubbing are
+       * unchanged (the app uses this door only for media and covers). */
+      const base = { "Content-Type": type, "Accept-Ranges": "bytes",
+        "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox" };
 
-      const m = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || "");
-      if (m) {
-        // An open-ended "bytes=N-" is the common case while scrubbing.
-        let start = m[1] ? Number(m[1]) : 0;
-        let end = m[2] ? Number(m[2]) : size - 1;
-        if (Number.isNaN(start) || Number.isNaN(end) || start > end || start >= size) {
-          res.writeHead(416, { ...base, "Content-Range": `bytes */${size}` });
-          return res.end();
-        }
-        end = Math.min(end, size - 1);
-        res.writeHead(206, {
-          ...base,
-          "Content-Range": `bytes ${start}-${end}/${size}`,
-          "Content-Length": end - start + 1,
-        });
-        if (req.method === "HEAD") return res.end();
-        return createReadStream(full, { start, end }).pipe(res);
-      }
-
-      res.writeHead(200, { ...base, "Content-Length": size });
-      if (req.method === "HEAD") return res.end();
-      return createReadStream(full).pipe(res);
+      /* ⚠ THROUGH sendFile, WHICH LETS GO OF THE FILE WHEN THE PLAYER DOES.
+       * This door used to `.pipe(res)` a bare read stream, and a player that
+       * hung up early (seek, pause, next track) left the song open inside
+       * Studio: Windows then refused the tag rewrite's rename over it, and the
+       * cover embed failed with EPERM (server/sendfile.js; audio-door_test.js
+       * aborts a range request and watches the handle close). Ranges are read
+       * by byteRange, so `bytes=-N` is now the last N bytes. */
+      return sendFile(req, res, full, { size, headers: base });
     }
 
     // ---- static ---------------------------------------------------------
@@ -10594,8 +12263,70 @@ jobs.on("update", push);
 // last song -- so the runner gets its own push.
 batch.on("update", () => push(jobs.snapshot()));
 
+/* ── Battery Safe ─────────────────────────────────────────────────────────
+ * server/power.js reads the power state; this decides what to do with it. A
+ * generation running on battery gets a countdown, shown on screen, and is
+ * stopped when it runs out unless the person chose to keep going. */
+let powerNow = { known: false, onBattery: false, hasBattery: false, percent: null };
+const batteryGuard = new BatteryGuard();
+let powerBusy = false;
+
+function powerSnapshot() {
+  return {
+    batterySafe: config.power.batterySafe, graceMinutes: config.power.graceMinutes,
+    ...powerNow, busy: powerBusy, ...batteryGuard.snapshot(),
+  };
+}
+
+/** Anything using the graphics card: a song, a picture or clip, an overnight
+ *  run, or any other run on the engine (chat, training, video lab). */
+async function gpuWorkRunning() {
+  if (jobs.current || jobs.queue.length || art.current || art.queue.length) return true;
+  if (batch.run?.state === "running") return true;
+  const st = await engineDoor.status().catch(() => null);
+  return !!st && ((st.running || []).length > 0 || Number(st.queue?.running || 0) + Number(st.queue?.pending || 0) > 0);
+}
+
+/** Stop every generation, queued ones included, the way the Stop buttons do:
+ *  cancelled work is discarded cleanly rather than cut off mid-write. */
+async function stopForBattery(why) {
+  const what = [];
+  if (batch.run && ["running", "paused"].includes(batch.run.state)) { batch.stop(); what.push("the overnight run"); }
+  if (jobs.current || jobs.queue.length) {
+    what.push(jobs.current?.title ? `"${jobs.current.title}"` : "a song");
+    for (const j of [...jobs.queue]) await jobs.cancelById(j.id).catch(() => {});
+    await jobs.cancel().catch(() => {});
+  }
+  if (art.current || art.queue.length) what.push("pictures and clips");
+  /* The engine-wide stop on purpose: on a draining battery a chat turn or a
+   * training run queued beside the rest must stop too. */
+  await art.stopAll().catch(() => {});
+  batteryGuard.noteStop(`${why}: stopped ${what.length ? what.join(", ") : "the engine's work"}.`);
+  console.log(`  [battery] ${batteryGuard.lastStop.what}`);
+}
+
+let powerTicking = false;
+async function powerTick() {
+  if (powerTicking) return;
+  powerTicking = true;
+  try {
+    /* Only ask the engine when the answer can matter: on mains, with Battery
+     * Safe off, or with the person's go-ahead, nothing will be stopped. */
+    const watch = powerNow.onBattery && config.power.batterySafe && !batteryGuard.consent;
+    powerBusy = watch ? await gpuWorkRunning() : false;
+    const r = batteryGuard.update({ power: powerNow, busy: powerBusy, enabled: config.power.batterySafe, graceMs: config.power.graceMinutes * 60_000 });
+    if (r.stop) {
+      await stopForBattery(`Running on battery for ${config.power.graceMinutes} minute${config.power.graceMinutes === 1 ? "" : "s"}`);
+      powerBusy = false;
+    }
+    const msg = JSON.stringify({ type: "power", ...powerSnapshot() });
+    for (const c of wss.clients) if (c.readyState === 1) c.send(msg);
+  } finally { powerTicking = false; }
+}
+
 server.listen(config.uiPort, "127.0.0.1", async () => {
   console.log(`\n  AIPLAY Studio  →  http://127.0.0.1:${config.uiPort}\n`);
+  persistStartLevel().catch((err) => console.warn(`  [settings] the starting level was not saved: ${err.message}`));
 
   /* Open the browser HERE, not in the launcher.
    *
@@ -10607,13 +12338,22 @@ server.listen(config.uiPort, "127.0.0.1", async () => {
    * second". The launcher sets AIPLAY_OPEN=1; anything else driving this server
    * (tests, headless runs, a restart in place) leaves it unset and keeps its
    * browser to itself. */
+  /* Battery Safe: a reading every ten seconds, and a countdown check every
+   * five so the on-screen timer and the stop are never a reading late. */
+  watchPower((r) => {
+    const was = powerNow.onBattery;
+    powerNow = r;
+    if (r.onBattery !== was) console.log(r.onBattery ? `  [battery] running on battery${r.percent != null ? ` (${r.percent}%)` : ""}` : "  [battery] back on mains power");
+    powerTick().catch(() => {});
+  });
+  setInterval(() => { if (powerNow.onBattery) powerTick().catch(() => {}); }, 5000).unref();
+
   if (process.env.AIPLAY_OPEN === "1") {
     spawn("cmd", ["/c", "start", "", `http://127.0.0.1:${config.uiPort}`],
       { detached: true, stdio: "ignore", windowsHide: true }).unref();
   }
 
   await library.load();
-  await remoteRoutes.start().catch(error => console.warn(`  [runpod] ${error.message}`));
   // Clip provenance, so a clip you liked is still reusable after a restart.
   await loadClipStore();
   // The lab's knobs and comparison groups, applied back into config on the way in.
@@ -10622,10 +12362,29 @@ server.listen(config.uiPort, "127.0.0.1", async () => {
   await batch.load();
   const b = batch.status().run;
   if (b) console.log(`  batch "${b.name}": ${b.done}/${b.total} done, ${b.state}`);
-  if (process.env.AIPLAY_REMOTE_ONLY === "1") {
-    console.log("  remote mode: Images and Video render through the saved RunPod worker. Local ComfyUI is not started.");
+  if (config.remoteOnly) {
+    /* RunPod mode: the saved worker's jobs are picked up again (polling and
+     * downloads resume with their original ids). No local ComfyUI. */
+    await remoteRoutes.start().catch((error) => console.warn(`  [runpod] ${error.message}`));
+    console.log("  RunPod mode: Images and Video render on your RunPod worker. ComfyUI is not started here.");
     return;
   }
+  if (config.cloudOnly) {
+    /* Comfy API mode needs nothing local: no ComfyUI, no card. Runs left
+     * queued by the last session are collected now. */
+    console.log("  Comfy API mode: models run on Comfy's cloud with your key and credits. ComfyUI is not started.");
+    await routerJobs.resume();
+    jobs.emit("update", jobs.snapshot());
+    return;
+  }
+  /* Defaults that follow the disk (machineDefaults), before anything below
+   * reads the music engine. Said once, so the log shows what Studio picked,
+   * and what this session runs instead of a saved choice. machineDefaults
+   * waits for the card's first reading, so vendorNow() below has it too. */
+  for (const d of (await machineDefaults().catch(() => null)) || []) {
+    if (d.chosenBy === "machine" || d.savedValue) console.log(`  default: ${d.why}`);
+  }
+  const vendorNow = () => { const g = gpuStatus(); return g?.totalMb ? (g.vendor || "nvidia") : null; };
   if (config.musicOnly) {
     /* Music-only starts no ComfyUI — unless this machine has a ComfyUI install
      * AND a YuE2 checkpoint, and native GGUF is not the chosen, installed
@@ -10651,12 +12410,14 @@ server.listen(config.uiPort, "127.0.0.1", async () => {
     }
     comfyWanted = true;
     if (!ckpts.includes(config.music.yue2Checkpoint)) {
-      config.music.yue2Checkpoint = ckpts.find((n) => /bf16/i.test(n)) || ckpts[0];
+      settle("music", "yue2Checkpoint", yue2BuildFor(ckpts, vendorNow()), "Your YuE2 build is not in a checkpoints folder");
     }
     const gguf = await ggufSetup.status().catch(() => ({}));
     const ggufReady = Object.values(gguf.variants || {}).some((v) => v?.ready) || gguf.ready === true;
-    if (config.music.engine !== "yue2-comfy" && !ggufReady) config.music.engine = "yue2-comfy";
-    musicChoicesCache.at = 0;
+    if (config.music.engine !== "yue2-comfy" && !ggufReady) {
+      settle("music", "engine", "yue2-comfy", "The music-only launch runs YuE2, and native YuE2 GGUF is not installed");
+    }
+    musicChoicesCache.at = 0; defaultsCache.at = 0;
     console.log(`  music-only mode: YuE2 checkpoint found (${bareName(config.music.yue2Checkpoint)}) — starting ComfyUI for YuE2 3B`);
   } else if (config.music.engine === "yue2-gguf") {
     /* Full Studio remembering native GGUF where it is not installed (it is a
@@ -10667,13 +12428,14 @@ server.listen(config.uiPort, "127.0.0.1", async () => {
     const ggufReady = Object.values(gguf.variants || {}).some((v) => v?.ready) || gguf.ready === true;
     const ckpts = ggufReady ? [] : await findYue2Checkpoints().catch(() => []);
     if (!ggufReady && ckpts.length) {
-      config.music.engine = "yue2-comfy";
+      /* This session only: settings.json keeps native GGUF, and the Studio
+       * runs it again once it is installed (config.js overrideForSession). */
+      settle("music", "engine", "yue2-comfy", "Native YuE2 GGUF is not installed");
       if (!ckpts.includes(config.music.yue2Checkpoint)) {
-        config.music.yue2Checkpoint = ckpts.find((n) => /bf16/i.test(n)) || ckpts[0];
+        settle("music", "yue2Checkpoint", yue2BuildFor(ckpts, vendorNow()), "Your YuE2 build is not in a checkpoints folder");
       }
-      musicChoicesCache.at = 0;
-      savePrefs();
-      console.log(`  native YuE2 GGUF is selected but not installed — using YuE2 through ComfyUI (${bareName(config.music.yue2Checkpoint)}) instead`);
+      musicChoicesCache.at = 0; defaultsCache.at = 0;
+      console.log(`  native YuE2 GGUF is selected but not installed — this session uses YuE2 through ComfyUI (${bareName(config.music.yue2Checkpoint)}); the choice stays saved`);
     }
   }
   console.log("  starting the engine (one long-lived ComfyUI process)…");
