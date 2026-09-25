@@ -9,7 +9,7 @@
     "start:music": "node scripts/start-music.mjs",
     "start:remote": "node scripts/start-remote.mjs",
     "worker:runpod": "node worker/runpod-worker.js",
-    "test:remote": "node --test server/engine/remote_test.js",
+    "test:remote": "node --test server/engine/remote_test.js server/engine/remote_ui_test.js",
     "dev": "node --watch server/index.js",
     "test": "node scripts/trace_load.mjs && node scripts/test_timeline.mjs && node scripts/test_watchdog.mjs && node scripts/test_workflow.mjs && node scripts/test_apimode.mjs",
     "smoke": "node scripts/smoke_api.mjs"

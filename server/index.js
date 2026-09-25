@@ -10608,7 +10608,7 @@ server.listen(config.uiPort, "127.0.0.1", async () => {
    * (tests, headless runs, a restart in place) leaves it unset and keeps its
    * browser to itself. */
   if (process.env.AIPLAY_OPEN === "1") {
-    spawn("cmd", ["/c", "start", "", `http://127.0.0.1:${config.uiPort}${config.remoteOnly ? "/runpod.html" : ""}`],
+    spawn("cmd", ["/c", "start", "", `http://127.0.0.1:${config.uiPort}`],
       { detached: true, stdio: "ignore", windowsHide: true }).unref();
   }
 
@@ -10623,7 +10623,7 @@ server.listen(config.uiPort, "127.0.0.1", async () => {
   const b = batch.status().run;
   if (b) console.log(`  batch "${b.name}": ${b.done}/${b.total} done, ${b.state}`);
   if (process.env.AIPLAY_REMOTE_ONLY === "1") {
-    console.log("  remote mode: open /runpod.html to connect your worker. Local ComfyUI is not started.");
+    console.log("  remote mode: Images and Video render through the saved RunPod worker. Local ComfyUI is not started.");
     return;
   }
   if (config.musicOnly) {

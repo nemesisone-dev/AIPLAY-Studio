@@ -871,6 +871,30 @@
     <div class="ovhead"><h2>Video</h2></div>
     <p class="hint" id="vidIntro">Short looping clips with MiniMax H3.</p>
 
+    <div class="field runpod-inline">
+      <label class="flabel" for="vidRenderWhere">Render on</label>
+      <select id="vidRenderWhere" class="sel2">
+        <option value="local">This PC</option>
+        <option value="runpod">RunPod GPU</option>
+      </select>
+      <div id="vidRunPodOptions" class="runpod-options" hidden>
+        <div class="runpod-summary"><b>LTX 2.5 distilled</b><button class="edtool sm" type="button" data-runpod-settings>Connection…</button></div>
+        <div class="runpod-fields">
+          <label class="flabel" for="vidRunPodSize">Remote size</label>
+          <select id="vidRunPodSize" class="sel2">
+            <option value="512x320">512 × 320 · cheapest test</option>
+            <option value="768x448">768 × 448</option>
+            <option value="1024x576">1024 × 576</option>
+            <option value="1280x704">1280 × 704</option>
+          </select>
+          <label class="flabel" for="vidRunPodGuidance">Remote guidance</label>
+          <input id="vidRunPodGuidance" class="sel2 sm" type="number" min="1" max="8" step="0.5" value="3">
+        </div>
+        <p class="hint" id="vidRunPodState">Checking the saved worker…</p>
+        <p class="hint">Uses the prompt, length, seed and negative prompt below. This first integrated path is text-to-video; frames, references and soundtracks still use the local engine.</p>
+      </div>
+    </div>
+
     <div class="field">
       <label class="flabel" for="vidEngine">Engine</label>
       <select id="vidEngine" class="sel2"></select>
@@ -1145,6 +1169,25 @@
            so it is the "!" beside the engine row now (web/tips.js reads
            this element live) and `tipsrc` keeps it off the screen. -->
       <p class="hint tipsrc" id="imgModelNote"></p>
+
+      <div class="field runpod-inline">
+        <label class="flabel" for="imgRenderWhere">Render on</label>
+        <select id="imgRenderWhere" class="sel2">
+          <option value="local">This PC</option>
+          <option value="runpod">RunPod GPU</option>
+        </select>
+        <div id="imgRunPodOptions" class="runpod-options" hidden>
+          <div class="runpod-summary"><b>Checkpoint image</b><button class="edtool sm" type="button" data-runpod-settings>Connection…</button></div>
+          <label class="flabel" for="imgRunPodCheckpoint">Model on the Pod</label>
+          <select id="imgRunPodCheckpoint" class="sel2"><option value="">Connect to load remote models</option></select>
+          <label class="flabel" for="imgRunPodCfg">Remote CFG</label>
+          <input id="imgRunPodCfg" class="sel2 sm" type="number" min="1" max="30" step="0.5" value="6">
+          <label class="flabel" for="imgRunPodNegative">Remote negative</label>
+          <input id="imgRunPodNegative" class="sel2" placeholder="blur, artifacts, unwanted details">
+          <p class="hint" id="imgRunPodState">Checking the saved worker…</p>
+          <p class="hint">Uses the prompt, size, steps, count and seed below. References remain on this PC.</p>
+        </div>
+      </div>
 
       <label class="lbl" for="imgPrompt">What should it show</label>
       <textarea id="imgPrompt" rows="5" placeholder="a lone payphone on a wet neon street at night, cinematic, shallow depth of field"></textarea>
@@ -5059,6 +5102,27 @@
      re-render mid-click. -->
 <div class="rowmenu" id="rowMenu" role="menu" hidden></div>
 
+<!-- Shared by the Images and Video screens. The worker token is sent once to
+     the local backend's secret store and is never read back into the page. -->
+<div class="overlay" id="runpodConnection" hidden><div class="sheet runpod-sheet">
+  <div class="sheethead">
+    <div><h3>RunPod connection</h3><p class="hint">AIPLAY stays on this PC; this worker runs ComfyUI on your Pod.</p></div>
+    <button class="btn sm" type="button" id="runpodConnectionClose">Close</button>
+  </div>
+  <form id="runpodConnectionForm">
+    <label class="flabel" for="runpodWorkerUrl">Worker URL</label>
+    <input class="line" id="runpodWorkerUrl" type="url" placeholder="https://your-pod-8787.proxy.runpod.net" required>
+    <label class="flabel" for="runpodWorkerToken">Worker token</label>
+    <input class="line" id="runpodWorkerToken" type="password" autocomplete="new-password" placeholder="Leave blank to keep the saved token">
+    <p class="hint">The token is stored in AIPLAY's local secret store and is not your RunPod account API key.</p>
+    <p class="hint" id="runpodConnectionState" role="status"></p>
+    <div class="runpod-connect-actions">
+      <a class="edtool" href="/runpod.html">Advanced workflow panel</a>
+      <button class="btn" id="runpodConnect" type="submit">Connect and check models</button>
+    </div>
+  </form>
+</div></div>
+
 <script type="module" src="app.js"></script>
 <dialog id="musicWorkflows" aria-labelledby="musicWorkflowsTitle">
   <header class="music-workflows-head">
@@ -5102,5 +5166,9 @@
 <script type="module" src="credits.js"></script>
 <script type="module" src="roulette.js"></script>
 <script type="module" src="prompt-tools.js"></script>
+<!-- RunPod is an additive render target for the normal Images and Video forms.
+     It owns only the controls carrying runpod ids and intercepts Create in the
+     capture phase when that target is selected. -->
+<script type="module" src="runpod-integrated.js"></script>
 </body>
 </html>

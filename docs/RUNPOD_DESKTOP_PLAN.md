@@ -1,6 +1,6 @@
 # AIPLAY on Windows with RunPod rendering
 
-Research date: 2026-09-22. Update 2026-09-23: the first remote rendering preview is implemented on `feature/runpod-rendering`. See [setup and current limitations](RUNPOD_SETUP.md). The research and broader roadmap below describe the original proposal; desktop packaging and migration of the existing generation screens remain future work. No cloud deployment or live GPU render has been performed.
+Research date: 2026-09-22. Updated 2026-09-25: the remote rendering preview is implemented on `feature/runpod-rendering`, including RunPod targets in the normal Images and Video screens. See [setup and current limitations](RUNPOD_SETUP.md). Image and LTX 2.5 video paths have passed live GPU acceptance tests; signed desktop packaging remains future work.
 
 ## Intended experience
 

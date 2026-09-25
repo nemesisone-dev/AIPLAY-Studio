@@ -6695,6 +6695,7 @@ function vidWH() {
 
 function vidPaint() {
   const on = !!state.video?.enabled;
+  const remote = $("vidRenderWhere")?.value === "runpod";
   const engines = state.video?.engines || {};
   const cur = state.video?.engine || "ltx";
   const eng = engines[cur] || {};
@@ -6746,8 +6747,10 @@ function vidPaint() {
   /* Never greyed out for being switched off: a disabled button explains
    * nothing, and the switch lived in Settings where nobody on this screen
    * would look. Pressing it asks, in a drawer, and switches it on from there. */
-  $("vidCreate").disabled = false;
-  $("vidIntro").textContent = on
+  $("vidCreate").disabled = $("vidCreate").dataset.runpodBusy === "1";
+  $("vidIntro").textContent = remote
+    ? "Text-to-video on your RunPod with LTX 2.5."
+    : on
     ? "Short clips with " + (eng.label || "the video engine") + "."
     : "Video is switched off. Press Render and Studio asks to switch it on.";
   $("vidEngineNote").textContent = cur === "ltx"
@@ -6756,8 +6759,8 @@ function vidPaint() {
   // LTX has no single step count — it is baked into two fixed sigma schedules.
   const stepRow = $("vidSteps").closest(".pv");
   if (stepRow) {
-    stepRow.hidden = cur === "ltx";
-    if (stepRow.previousElementSibling) stepRow.previousElementSibling.hidden = cur === "ltx";
+    stepRow.hidden = remote || cur === "ltx";
+    if (stepRow.previousElementSibling) stepRow.previousElementSibling.hidden = remote || cur === "ltx";
   }
   $("vidSecsV").textContent = $("vidSecs").value + "s";
   $("vidStepsV").textContent = $("vidSteps").value;
@@ -6916,7 +6919,9 @@ function vidPaint() {
   const refMismatch = cur !== "ltx" && hasRefs && st > t4 && st <= t8;
   const betweenBuilds = cur !== "ltx" && !hasRefs && st > t4 && st < 8;
 
-  $("vidEst").textContent = on
+  $("vidEst").textContent = remote
+    ? "The Pod must stay running until the clip is downloaded to this PC."
+    : on
     ? "about " + fmt(secs) + " once the engine is idle · " + frames + " frames at " + fps + " fps"
       + (short ? " · ⚠ under the model's trained range (124+)" : "")
       + (small && !short ? " · ⚠ below native size, expect softer detail" : "")
@@ -7719,6 +7724,14 @@ async function loadClips() {
   if (d.enhanceLimitBytes) state.enhanceLimitBytes = d.enhanceLimitBytes;
   paintClips();
 }
+
+/* Remote renders are adopted by the same server routes as local renders, but
+ * their completion is announced by the RunPod module rather than the local
+ * engine socket. Re-read only the shelf that changed. */
+document.addEventListener("aiplay:remote-output", (event) => {
+  if (event.detail?.kind === "img") loadImages();
+  if (event.detail?.kind === "vid") loadClips();
+});
 
 /* The clip library. Same job as the music library — find one out of dozens — so
  * it gets the same tools: search, filter, sort. Everything is client-side
@@ -15175,7 +15188,8 @@ function imgEffectiveEngine() {
 let imgQwenStatus = null, imgQwenChecking = false, imgQwenRequest = 0, imgMakePending = false;
 let imgQwenRequestedKey = "", imgQwenStatusKey = "";
 function imgQueueGate() {
-  $("imgGo").disabled = imgMakePending || (imgEffectiveEngine() === "qwen-image-2.1"
+  const remote = $("imgRenderWhere")?.value === "runpod";
+  $("imgGo").disabled = $("imgGo").dataset.runpodBusy === "1" || imgMakePending || (!remote && imgEffectiveEngine() === "qwen-image-2.1"
     && (imgQwenChecking || imgQwenStatus?.ready !== true || imgQwenStatusKey !== imgQwenQuery().toString()));
 }
 function imgQwenShape() {
@@ -18349,7 +18363,7 @@ function applyStatus(s) {
   }
   state.engineReady = s.engine.ready;
   state.engineExpected = !!s.config?.engineExpected;
-  $("engineLine").textContent = s.config?.remoteOnly ? "REMOTE MODE · OPEN RUNPOD"
+  $("engineLine").textContent = s.config?.remoteOnly ? "REMOTE MODE · RUNPOD TARGET"
     : state.musicOnly
     ? (s.config?.musicEngine === "yue2-comfy"
         ? (s.engine.ready ? "MUSIC ONLY · YUE2 VIA COMFYUI" : "MUSIC ONLY · STARTING COMFYUI…")

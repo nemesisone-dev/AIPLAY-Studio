@@ -2,7 +2,7 @@
 
 AIPLAY runs on your Windows PC. A small authenticated worker beside ComfyUI on a dedicated RunPod Pod executes workflows. Results are downloaded, SHA-256 checked, and placed in your local library. Your PC needs Node.js for AIPLAY's backend; it does not need CUDA or local model weights for this remote panel.
 
-This is a source-level preview, not a signed Windows installer. The remote panel has automated integration coverage. The complete image path was validated on 24 September 2026 with a RunPod RTX PRO 4500 Blackwell, ComfyUI 0.30.0 and the SD 1.5 checkpoint. The complete video path was validated on 25 September 2026 with ComfyUI 0.37.0 and the official LTX 2.5 distilled model bundle. Connect, inventory, render, hash-checked download and local-library adoption passed in both cases. Music still requires its exact model bundle and compatible ComfyUI nodes to be installed and tested on the Pod.
+This is a source-level preview, not a signed Windows installer. RunPod is available as a render target in the normal Images and Video screens, and the advanced workflow panel remains available for inspecting or importing graphs. The integration has automated coverage. The complete image path was validated on 24 September 2026 with a RunPod RTX PRO 4500 Blackwell, ComfyUI 0.30.0 and the SD 1.5 checkpoint. The complete video path was validated on 25 September 2026 with ComfyUI 0.37.0 and the official LTX 2.5 distilled model bundle. Connect, inventory, render, hash-checked download and local-library adoption passed in both cases. Music still requires its exact model bundle and compatible ComfyUI nodes to be installed and tested on the Pod.
 
 ## Start on Windows
 
@@ -13,9 +13,9 @@ npm ci --omit=dev
 npm run start:remote
 ```
 
-Open `http://127.0.0.1:4173/runpod.html`. This entry point keeps the full local UI and skips automatic local ComfyUI startup. With `AIPLAY_OPEN=1`, it opens the RunPod panel once the server is listening. The main AIPLAY navigation also has a RunPod link.
+Open `http://127.0.0.1:4173/`. This entry point keeps the full local UI and skips automatic local ComfyUI startup. With `AIPLAY_OPEN=1`, it opens the normal studio once the server is listening.
 
-Use this panel's Render button for remote jobs. Existing image/video/music generation screens still use their original engines. Native GGUF music, mesh tools, compositor processing and final timeline export have not been connected to this worker. Local editing/export tools can still have their own CPU, media-tool or Python requirements.
+On Images or Video, choose **RunPod GPU** under **Render on**. The Images path renders standard ComfyUI checkpoints installed on the Pod. The Video path uses the installed LTX 2.5 distilled bundle for text-to-video. The **RunPod** navigation link opens the advanced graph panel. Native GGUF music, image references, video frames/references/soundtracks, mesh tools, compositor processing and final timeline export have not been connected to the integrated presets. Local editing/export tools can still have their own CPU, media-tool or Python requirements.
 
 ## Prepare one dedicated Pod
 
@@ -77,9 +77,11 @@ The hook starts one worker when ComfyUI imports custom nodes and writes its log 
 
 ## Connect and render
 
-Enter the worker HTTPS URL and token in the local RunPod panel. The local backend stores the token through AIPLAY's existing secret store; it is never returned by the status API. Connect checks worker identity, ComfyUI readiness and its model/node inventory.
+On Images or Video, choose **RunPod GPU**, open **Connection…**, and enter the worker HTTPS URL and token. The local backend stores the token through AIPLAY's existing secret store; it is never returned by the status API or placed in browser storage. Connect checks worker identity, ComfyUI readiness and its model/node inventory.
 
-Select a template and model, enter the prompt, and build the graph. Review the editable workflow before rendering. You can instead import a ComfyUI **API-format** workflow; the canvas-format JSON is not accepted. Templates inherit AIPLAY defaults and may need model filenames edited to match the Pod.
+For a first image, select the checkpoint shown under **Model on the Pod**, keep the default remote CFG 6, choose a small size and render. For a first video, keep **512 × 320 · cheapest test**, use a short duration, and render. Results appear in the normal Images or Clips library after their hashes are verified and the files are downloaded to the PC. The normal render buttons resume an active matching remote job after a page reload.
+
+For custom graphs, open the advanced RunPod panel, select a template and model, enter the prompt, and build the graph. Review the editable workflow before rendering. You can instead import a ComfyUI **API-format** workflow; the canvas-format JSON is not accepted. Templates inherit AIPLAY defaults and may need model filenames edited to match the Pod.
 
 For reference media, expand Add reference files and choose the graph node and input that should receive each file. The local file is uploaded and that input is replaced with a Pod-relative path. Merely importing a workflow that contains a Windows filename does not upload that file.
 
