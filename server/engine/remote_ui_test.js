@@ -13,6 +13,12 @@ test("normal Images and Video screens expose RunPod without replacing local rend
   assert.match(html, /id="imgRenderWhere"[\s\S]*value="local"[\s\S]*value="runpod"/);
   assert.match(html, /id="vidRenderWhere"[\s\S]*value="local"[\s\S]*value="runpod"/);
   assert.match(html, /id="runpodWorkerToken"[^>]*type="password"/);
+  assert.match(html, /id="runpodApiKey"[^>]*type="password"/);
+  assert.match(html, /id="runpodAccountDisconnect"/);
+  assert.match(html, /id="runpodReviewPod"/);
+  assert.match(html, /id="runpodCostConfirm"[^>]*type="checkbox"/);
+  assert.match(html, /id="runpodCreatePod"[^>]*disabled/);
+  assert.match(html, /id="runpodBootstrapCommand"[^>]*readonly/);
   assert.match(html, /id="imgRunPodCfg"[^>]*value="6"/);
   assert.match(html, /id="imgRunPodNegative"/);
   assert.match(html, /id="vidRunPodSize"[\s\S]*value="512x320"/);

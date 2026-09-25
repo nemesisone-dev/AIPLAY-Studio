@@ -5867,3 +5867,10 @@ button, input, select, textarea { font-family: inherit; }
 .runpod-fields .flabel{margin:0}.runpod-fields .sel2{min-width:0}
 .runpod-target #imgQwenStatus,.runpod-target #imgQwenOptions,.runpod-target #imgQwenOptionsNote{display:none!important}
 .runpod-target #vidModelRow,.runpod-target #vidLoraRow,.runpod-target #vidQualityRow{display:none!important}
+.runpod-account{margin-top:16px;border-top:1px solid var(--edge);padding-top:12px}.runpod-account>summary{cursor:pointer;font-weight:700}
+.runpod-balance{margin:10px 0;font-family:var(--mono);font-size:.78rem}.runpod-pods{display:grid;gap:8px;margin:10px 0 16px}
+.runpod-pod{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 10px;align-items:center;padding:9px;border:1px solid var(--edge);border-radius:8px}
+.runpod-pod small{color:var(--ghost)}.runpod-pod-actions{display:flex;gap:6px;grid-row:1/3;grid-column:2}
+.runpod-review{margin-top:10px;padding:10px;border:1px solid color-mix(in srgb,var(--accent) 45%,var(--edge));border-radius:8px;display:grid;gap:8px}
+.runpod-review[hidden]{display:none}.runpod-review .btn{justify-self:start}
+.runpod-bootstrap{margin-top:12px}.runpod-bootstrap textarea{width:100%;box-sizing:border-box;font-family:var(--mono);font-size:.72rem;resize:vertical}

@@ -10,6 +10,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let objectInfo = null;
 let connected = false;
 const active = new Map();
+let runpodAccount = null;
 
 function friendlyError(error) {
   const message = String(error?.message || error || "Unknown worker error");
@@ -41,6 +42,71 @@ async function api(route = "", body) {
   catch { throw new Error(`HTTP ${response.status}`); }
   if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
   return data;
+}
+
+async function accountApi(route = "", body) {
+  return api(`/account${route}`, body);
+}
+
+function money(value) { return `$${Number(value || 0).toFixed(2)}`; }
+
+function renderAccount(data) {
+  runpodAccount = data;
+  $("runpodAccountPanel").hidden = false;
+  $("runpodBalance").textContent = `Balance ${money(data.balance)} · running spend ${money(data.currentSpendPerHr)}/hour`;
+  const list = $("runpodPodList");
+  list.replaceChildren();
+  if (!data.pods?.length) list.textContent = "No Pods in this RunPod account yet.";
+  for (const pod of data.pods || []) {
+    const row = document.createElement("div"); row.className = "runpod-pod";
+    const main = document.createElement("b"); main.textContent = pod.name || pod.id;
+    const meta = document.createElement("small"); meta.textContent = `${pod.gpu} · ${pod.status} · ${money(pod.costPerHr)}/hour`;
+    const actions = document.createElement("div"); actions.className = "runpod-pod-actions";
+    const running = ["RUNNING", "CREATED", "RESTARTING"].includes(pod.status);
+    const power = document.createElement("button"); power.type = "button"; power.className = "edtool sm";
+    power.textContent = running ? "Stop" : "Start"; power.dataset.podPower = running ? "stop" : "start"; power.dataset.podId = pod.id;
+    const use = document.createElement("button"); use.type = "button"; use.className = "edtool sm"; use.textContent = "Use worker URL";
+    use.addEventListener("click", () => { $("runpodWorkerUrl").value = pod.workerUrl; $("runpodWorkerUrl").focus(); });
+    actions.append(power, use); row.append(main, meta, actions); list.append(row);
+  }
+  const select = $("runpodGpu"), before = select.value;
+  select.replaceChildren();
+  for (const gpu of data.gpus || []) {
+    const stock = gpu.stock === "None" ? "unavailable" : gpu.stock;
+    const fit = gpu.memoryInGb >= 32 ? "image + LTX video" : "image; video may not fit";
+    select.add(new Option(`${gpu.name} · ${gpu.memoryInGb} GB · ${money(gpu.pricePerHr)}/hr · ${stock} · ${fit}`, gpu.id));
+  }
+  if ([...select.options].some(option => option.value === before)) select.value = before;
+  else {
+    const recommended = (data.gpus || []).find(gpu => gpu.memoryInGb >= 32 && gpu.stock !== "None");
+    if (recommended) select.value = recommended.id;
+  }
+  $("runpodAccountState").textContent = "RunPod account connected. Prices and availability are live estimates.";
+  $("runpodAccountState").classList.remove("warnline");
+}
+
+async function loadAccount() {
+  try {
+    const status = await accountApi();
+    if (!status.configured) {
+      $("runpodAccountPanel").hidden = true;
+      $("runpodAccountState").textContent = "No RunPod account API key saved.";
+      return;
+    }
+    renderAccount(await accountApi("/overview"));
+  } catch (error) {
+    $("runpodAccountPanel").hidden = true;
+    $("runpodAccountState").textContent = error.message;
+    $("runpodAccountState").classList.add("warnline");
+  }
+}
+
+function reviewPod() {
+  const gpu = runpodAccount?.gpus?.find(row => row.id === $("runpodGpu").value);
+  if (!gpu) { $("runpodAccountState").textContent = "No available GPU is selected."; return; }
+  $("runpodReviewPrice").textContent = `${gpu.name}: estimated ${money(gpu.pricePerHr)} per running hour`;
+  $("runpodReviewDetails").textContent = `${$("runpodPodName").value.trim() || "AIPLAY renderer"} · ${$("runpodCloud").selectedOptions[0].textContent} · ${$("runpodVolume").value} GB persistent disk. Storage is billed separately and can continue after the Pod is stopped.`;
+  $("runpodCostConfirm").checked = false; $("runpodCreatePod").disabled = true; $("runpodCreateReview").hidden = false;
 }
 
 function setState(text, error = false) {
@@ -256,6 +322,47 @@ function init() {
     } catch (error) { connected = false; setState(friendlyError(error), true); }
     finally { button.disabled = false; }
   });
+  $("runpodAccountForm").addEventListener("submit", async (event) => {
+    event.preventDefault(); const button = $("runpodAccountConnect"); button.disabled = true;
+    try {
+      await accountApi("/connect", { apiKey: $("runpodApiKey").value }); $("runpodApiKey").value = "";
+      renderAccount(await accountApi("/overview"));
+    } catch (error) { $("runpodAccountState").textContent = error.message; $("runpodAccountState").classList.add("warnline"); }
+    finally { button.disabled = false; }
+  });
+  $("runpodAccountDisconnect").addEventListener("click", async () => {
+    try {
+      await accountApi("/disconnect", {}); runpodAccount = null; $("runpodAccountPanel").hidden = true;
+      $("runpodAccountState").textContent = "RunPod account API key removed from this PC.";
+    } catch (error) { $("runpodAccountState").textContent = error.message; $("runpodAccountState").classList.add("warnline"); }
+  });
+  $("runpodReviewPod").addEventListener("click", reviewPod);
+  $("runpodCopyBootstrap").addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText($("runpodBootstrapCommand").value); $("runpodBootstrapState").textContent = "Bootstrap command copied."; }
+    catch { $("runpodBootstrapCommand").select(); $("runpodBootstrapState").textContent = "Press Ctrl+C to copy the selected command."; }
+  });
+  $("runpodCostConfirm").addEventListener("change", () => { $("runpodCreatePod").disabled = !$("runpodCostConfirm").checked; });
+  $("runpodCreatePod").addEventListener("click", async () => {
+    const button = $("runpodCreatePod"); button.disabled = true; button.textContent = "Creating Pod…";
+    try {
+      const created = await accountApi("/pods", { confirm: "CREATE PAID POD", name: $("runpodPodName").value,
+        gpuTypeId: $("runpodGpu").value, cloudType: $("runpodCloud").value,
+        volumeInGb: Number($("runpodVolume").value), containerDiskInGb: 20 });
+      $("runpodWorkerUrl").value = created.pod.workerUrl;
+      $("runpodCreateReview").hidden = true; renderAccount(await accountApi("/overview"));
+      $("runpodAccountState").textContent = `Created ${created.pod.name}. ${created.next}`;
+    } catch (error) { $("runpodAccountState").textContent = error.message; $("runpodAccountState").classList.add("warnline"); }
+    finally { button.textContent = "Create paid Pod"; button.disabled = !$("runpodCostConfirm").checked; }
+  });
+  $("runpodPodList").addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-pod-power]"); if (!button) return;
+    const action = button.dataset.podPower;
+    if (action === "start" && !window.confirm("Start this Pod now? Paid GPU billing begins as soon as RunPod allocates the GPU.")) return;
+    button.disabled = true;
+    try { await accountApi(`/pods/${encodeURIComponent(button.dataset.podId)}/${action}`, {}); renderAccount(await accountApi("/overview")); }
+    catch (error) { $("runpodAccountState").textContent = error.message; $("runpodAccountState").classList.add("warnline"); }
+    finally { button.disabled = false; }
+  });
   $("imgGo").addEventListener("click", (event) => {
     if (target("img") !== "runpod") return;
     event.preventDefault(); event.stopImmediatePropagation(); submit("img");
@@ -269,6 +376,7 @@ function init() {
     for (const kind of ["img", "vid"]) { $(`${kind}RenderWhere`).value = "runpod"; paintTarget(kind); }
   }).catch(() => {});
   refreshWorker().catch((error) => setState(error.message, true));
+  loadAccount();
 }
 
 if (typeof document !== "undefined") init();

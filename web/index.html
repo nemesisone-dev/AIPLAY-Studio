@@ -5121,6 +5121,50 @@
       <button class="btn" id="runpodConnect" type="submit">Connect and check models</button>
     </div>
   </form>
+  <details class="runpod-account" id="runpodAccount">
+    <summary>Create or manage a RunPod Pod</summary>
+    <p class="hint">Optional account access. Use a restricted RunPod API key with permission to read GPUs and manage Pods. The key stays in AIPLAY's local secret store.</p>
+    <form id="runpodAccountForm">
+      <label class="flabel" for="runpodApiKey">RunPod API key</label>
+      <input class="line" id="runpodApiKey" type="password" autocomplete="new-password" placeholder="Paste a restricted RunPod API key">
+      <div class="runpod-connect-actions">
+        <a class="edtool" href="https://console.runpod.io/user/settings" target="_blank" rel="noreferrer">Create API key</a>
+        <button class="edtool" id="runpodAccountDisconnect" type="button">Remove saved key</button>
+        <button class="btn" id="runpodAccountConnect" type="submit">Save and load account</button>
+      </div>
+    </form>
+    <p class="hint" id="runpodAccountState" role="status">Checking account configuration…</p>
+    <div id="runpodAccountPanel" hidden>
+      <div class="runpod-balance" id="runpodBalance"></div>
+      <div id="runpodPodList" class="runpod-pods"></div>
+      <h4>Create an AIPLAY Pod</h4>
+      <div class="runpod-fields">
+        <label class="flabel" for="runpodPodName">Name</label>
+        <input class="line" id="runpodPodName" value="AIPLAY renderer" maxlength="80">
+        <label class="flabel" for="runpodGpu">GPU</label>
+        <select class="sel2" id="runpodGpu"></select>
+        <label class="flabel" for="runpodCloud">Cloud</label>
+        <select class="sel2" id="runpodCloud"><option value="ALL">Any available</option><option value="SECURE">Secure only</option><option value="COMMUNITY">Community only</option></select>
+        <label class="flabel" for="runpodVolume">Persistent disk</label>
+        <select class="sel2" id="runpodVolume"><option value="100">100 GB</option><option value="150">150 GB</option><option value="200">200 GB</option><option value="300">300 GB</option></select>
+      </div>
+      <p class="hint">Creates the standard CUDA 12.8 ComfyUI Pod with ports 8080, 8188, 8888 and AIPLAY worker port 8787. Worker and model installation is the next setup step.</p>
+      <button class="edtool" id="runpodReviewPod" type="button">Review price and configuration</button>
+      <div class="runpod-review" id="runpodCreateReview" hidden>
+        <b id="runpodReviewPrice"></b>
+        <p class="hint" id="runpodReviewDetails"></p>
+        <label><input id="runpodCostConfirm" type="checkbox"> I understand this starts paid GPU billing immediately.</label>
+        <button class="btn" id="runpodCreatePod" type="button" disabled>Create paid Pod</button>
+      </div>
+    </div>
+    <details class="runpod-bootstrap">
+      <summary>Install the AIPLAY worker after the Pod starts</summary>
+      <p class="hint">Open the Pod's JupyterLab terminal, paste this command, then copy the printed worker URL and token into the connection fields above.</p>
+      <textarea class="line" id="runpodBootstrapCommand" rows="3" readonly>curl -fsSL https://raw.githubusercontent.com/nemesisone-dev/AIPLAY-Studio/feature/runpod-rendering/worker/bootstrap-runpod.sh -o /tmp/aiplay-bootstrap.sh &amp;&amp; bash /tmp/aiplay-bootstrap.sh</textarea>
+      <button class="edtool" id="runpodCopyBootstrap" type="button">Copy bootstrap command</button>
+      <p class="hint" id="runpodBootstrapState"></p>
+    </details>
+  </details>
 </div></div>
 
 <script type="module" src="app.js"></script>

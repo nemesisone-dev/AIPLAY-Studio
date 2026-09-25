@@ -2327,7 +2327,7 @@ const engineRoutes = createEngineRoutes({
  * injected at construction because the client is a module-level singleton and
  * CLIP_DIR, IMAGE_DIR and the closure above are all built in this file. */
 engineDoor.setAdopter(engineRoutes.adopt);
-const remoteRoutes = createRemoteRoutes({ config, getSecret, setSecret, append: prov.append, actorFrom: prov.actorFrom,
+const remoteRoutes = createRemoteRoutes({ config, getSecret, setSecret, clearSecret, append: prov.append, actorFrom: prov.actorFrom,
   adopt: async (details) => {
     if (/\.(wav|flac|mp3|ogg|opus)$/i.test(details.output.file)) {
       const name = `runpod-${details.runId}-${path.basename(details.output.file)}`;
