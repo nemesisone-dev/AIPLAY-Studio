@@ -1,5 +1,7 @@
 # RunPod rendering preview
 
+**New to RunPod?** Follow the shorter [beginner quick start for Windows](RUNPOD_QUICKSTART.md) first. This page contains the technical details and limitations.
+
 AIPLAY runs on your Windows PC. A small authenticated worker beside ComfyUI on a dedicated RunPod Pod executes workflows. Results are downloaded, SHA-256 checked, and placed in your local library. Your PC needs Node.js for AIPLAY's backend; it does not need CUDA or local model weights for this remote panel.
 
 This is a source-level preview, not a signed Windows installer. RunPod is available as a render target in the normal Images and Video screens, and the advanced workflow panel remains available for inspecting or importing graphs. The integration has automated coverage. The complete image path was validated on 24 September 2026 with a RunPod RTX PRO 4500 Blackwell, ComfyUI 0.30.0 and the SD 1.5 checkpoint. The complete video path was validated on 25 September 2026 with ComfyUI 0.37.0 and the official LTX 2.5 distilled model bundle. Connect, inventory, render, hash-checked download and local-library adoption passed in both cases. Music still requires its exact model bundle and compatible ComfyUI nodes to be installed and tested on the Pod.

@@ -4,7 +4,7 @@
 
 <h1 align="center">AIPLAY Studio</h1>
 
-> **RunPod preview in this fork:** keep the studio on your PC and render from the normal Images and Video screens on your own GPU Pod. Start with `npm run start:remote` or **AIPLAY RunPod.cmd**. See [setup, tests and limitations](docs/RUNPOD_SETUP.md). The complete checkpoint-image and LTX 2.5 text-to-video paths have been validated on a live RunPod GPU; a signed Windows installer is still pending.
+> **RunPod preview in this fork:** keep the studio on your PC and render from the normal Images and Video screens on your own GPU Pod. Start with `npm run start:remote` or **AIPLAY RunPod.cmd**. New users can follow the [beginner quick start](docs/RUNPOD_QUICKSTART.md); technical setup, tests and limitations are in the [complete guide](docs/RUNPOD_SETUP.md). The complete checkpoint-image and LTX 2.5 text-to-video paths have been validated on a live RunPod GPU; a signed Windows installer is still pending.
 
 <p align="center">
   <b>Write a song, draw the cover, cut the video and mix it, all on your own machine.</b><br>
