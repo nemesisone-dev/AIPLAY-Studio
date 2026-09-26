@@ -1725,7 +1725,9 @@ export const config = {
      * LTX 2.5 template loads under the plain name; ComfyUI's VAELoader reads it
      * (comfy/sd.py, "lightricks LTX 2.4 diffusion VAE decoder"). Taken when
      * the conv one is not on disk, so a template install renders here too. */
-    videoVae: pick("vae", "ltx-2.5-video-vae-conv-bf16.safetensors", "ltx-2.5-video-vae-bf16.safetensors"),
+    videoVae: REMOTE_ONLY
+      ? "ltx-2.5-video-vae-conv-bf16.safetensors"
+      : pick("vae", "ltx-2.5-video-vae-conv-bf16.safetensors", "ltx-2.5-video-vae-bf16.safetensors"),
     audioVae: "ltx-2.5-audio-vae-bf16.safetensors",
     upscaler: "ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors",
 
