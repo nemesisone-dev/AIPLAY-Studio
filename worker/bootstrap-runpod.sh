@@ -63,12 +63,19 @@ if [[ ! -f "$ENV_FILE" ]]; then
   cat > "$ENV_FILE" <<EOF
 AIPLAY_WORKER_TOKEN=$TOKEN
 AIPLAY_COMFY_DIR=$COMFY
+AIPLAY_MODELS_DIR=$COMFY/models
 AIPLAY_WORKER_COMFY_URL=http://127.0.0.1:8188
 AIPLAY_WORKER_STATE=$STATE
 AIPLAY_WORKER_PORT=8787
 EOF
 fi
 chmod 600 "$ENV_FILE"
+
+# Older installs predate the in-app model manager. Add only this non-secret
+# location; preserve the existing token and all user-edited values.
+if ! grep -q '^AIPLAY_MODELS_DIR=' "$ENV_FILE"; then
+  printf '\nAIPLAY_MODELS_DIR=%s/models\n' "$COMFY" >> "$ENV_FILE"
+fi
 
 HOOK="$COMFY/custom_nodes/aiplay_worker_autostart"
 mkdir -p "$HOOK"

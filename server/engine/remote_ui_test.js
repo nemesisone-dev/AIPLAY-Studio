@@ -19,11 +19,16 @@ test("the Images and Video screens carry the RunPod controls (shown in RunPod GP
   assert.match(html, /id="runpodCostConfirm"[^>]*type="checkbox"/);
   assert.match(html, /id="runpodCreatePod"[^>]*disabled/);
   assert.match(html, /id="runpodBootstrapCommand"[^>]*readonly/);
+  assert.match(html, /id="runpodModelList"/);
+  assert.match(html, /id="runpodCancelModel"/);
   assert.match(html, /id="imgRunPodCfg"[^>]*value="6"/);
   assert.match(html, /id="imgRunPodNegative"/);
   assert.match(html, /id="vidRunPodSize"[\s\S]*value="512x320"/);
   assert.match(html, /id="vidRunPodGuidance"[^>]*value="3"/);
   assert.match(html, /src="runpod-integrated\.js"/);
+  const worker = read("worker", "runpod-worker.js");
+  assert.match(worker, /\/v1\/setup\/install/);
+  assert.match(worker, /modelSetupVersion: 1/);
 });
 
 test("ComfyUI legacy and 0.37 COMBO model choices both populate the integrated picker", () => {

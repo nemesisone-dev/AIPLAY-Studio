@@ -15,6 +15,8 @@ let objectInfo = null;
 let connected = false;
 const active = new Map();
 let runpodAccount = null;
+let setupTimer = null;
+let setupWasActive = false;
 
 function friendlyError(error) {
   const message = String(error?.message || error || "Unknown worker error");
@@ -53,6 +55,54 @@ async function accountApi(route = "", body) {
 }
 
 function money(value) { return `$${Number(value || 0).toFixed(2)}`; }
+function bytes(value) {
+  const size = Number(value || 0);
+  return size >= 1073741824 ? `${(size / 1073741824).toFixed(1)} GB` : `${Math.round(size / 1048576)} MB`;
+}
+
+function renderSetup(data) {
+  const list = $("runpodModelList");
+  list.replaceChildren();
+  for (const bundle of data.bundles || []) {
+    const row = document.createElement("div"); row.className = "runpod-model"; row.dataset.bundle = bundle.id;
+    const name = document.createElement("b"); name.textContent = bundle.label;
+    const button = document.createElement("button"); button.type = "button"; button.className = "btn sm";
+    button.dataset.modelInstall = bundle.id;
+    button.textContent = bundle.state === "ready" ? "Verified" : bundle.state === "downloading" ? "Downloading…" : bundle.state === "paused" ? "Resume" : bundle.state === "failed" ? "Repair" : "Install";
+    button.disabled = ["ready", "downloading"].includes(bundle.state);
+    const detail = document.createElement("p"); detail.className = "hint";
+    detail.textContent = `${bundle.description} · ${bytes(bundle.totalBytes)} · ${bundle.state}`;
+    const terms = document.createElement("label");
+    const accept = document.createElement("input"); accept.type = "checkbox"; accept.dataset.modelTerms = bundle.id; accept.disabled = bundle.state === "ready";
+    const link = document.createElement("a"); link.href = bundle.licenseUrl; link.target = "_blank"; link.rel = "noreferrer"; link.textContent = "model repository and terms";
+    terms.append(accept, " I reviewed and accept the ", link, ".");
+    row.append(name, button, detail, terms);
+    if (["downloading", "paused"].includes(bundle.state)) {
+      const progress = document.createElement("progress"); progress.max = bundle.totalBytes; progress.value = bundle.downloadedBytes;
+      progress.title = `${bytes(bundle.downloadedBytes)} of ${bytes(bundle.totalBytes)}`; row.append(progress);
+    }
+    if (bundle.error) { const error = document.createElement("p"); error.className = "warnline"; error.textContent = bundle.error; row.append(error); }
+    list.append(row);
+  }
+  const finished = setupWasActive && !data.active;
+  setupWasActive = !!data.active;
+  $("runpodCancelModel").hidden = !data.active;
+  $("runpodModelState").textContent = data.active ? "A verified download is running on the Pod. You may close this window; progress remains on the worker." : "";
+  clearTimeout(setupTimer);
+  if (data.active) setupTimer = setTimeout(() => refreshSetup(), 1500);
+  else if (finished) api("/models").then((info) => { objectInfo = info; fillModels(); }).catch(() => {});
+}
+
+async function refreshSetup() {
+  if (!connected) return;
+  try { renderSetup(await api("/setup")); }
+  catch (error) {
+    $("runpodModelState").textContent = /404/.test(error.message)
+      ? "This worker predates automatic model setup. Run the bootstrap command again to update it."
+      : friendlyError(error);
+    $("runpodModelState").classList.add("warnline");
+  }
+}
 
 function renderAccount(data) {
   runpodAccount = data;
@@ -176,6 +226,7 @@ async function refreshWorker() {
     objectInfo = await api("/models");
     connected = true; fillModels();
     setState("Worker connected · remote models checked.");
+    refreshSetup();
   } catch (error) {
     connected = false; objectInfo = null; fillModels();
     setState(friendlyError(error), true);
@@ -322,6 +373,7 @@ async function init() {
       $("runpodWorkerToken").value = "";
       connected = true;
       objectInfo = await api("/models"); fillModels();
+      refreshSetup();
       const hardware = (result.devices || []).map((d) => d.name || d.type).filter(Boolean).join(" / ");
       setState(`Connected${hardware ? ` · ${hardware}` : ""}.`);
     } catch (error) { connected = false; setState(friendlyError(error), true); }
@@ -334,6 +386,19 @@ async function init() {
       renderAccount(await accountApi("/overview"));
     } catch (error) { $("runpodAccountState").textContent = error.message; $("runpodAccountState").classList.add("warnline"); }
     finally { button.disabled = false; }
+  });
+  $("runpodModelList").addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-model-install]"); if (!button) return;
+    const row = button.closest("[data-bundle]");
+    const accepted = row?.querySelector("[data-model-terms]")?.checked === true;
+    if (!accepted) { $("runpodModelState").textContent = "Review and accept the model repository terms first."; $("runpodModelState").classList.add("warnline"); return; }
+    button.disabled = true;
+    try { $("runpodModelState").classList.remove("warnline"); renderSetup(await api("/setup/install", { bundle: button.dataset.modelInstall, acceptLicense: true })); }
+    catch (error) { $("runpodModelState").textContent = friendlyError(error); $("runpodModelState").classList.add("warnline"); button.disabled = false; }
+  });
+  $("runpodCancelModel").addEventListener("click", async () => {
+    try { renderSetup(await api("/setup/cancel", {})); }
+    catch (error) { $("runpodModelState").textContent = friendlyError(error); $("runpodModelState").classList.add("warnline"); }
   });
   $("runpodAccountDisconnect").addEventListener("click", async () => {
     try {

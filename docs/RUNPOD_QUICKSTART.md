@@ -42,7 +42,7 @@ On the Pod's **Connect** page, open **JupyterLab**. In JupyterLab, choose **File
 curl -fsSL https://raw.githubusercontent.com/nemesisone-dev/AIPLAY-Studio/main/worker/bootstrap-runpod.sh -o /tmp/aiplay-bootstrap.sh && bash /tmp/aiplay-bootstrap.sh
 ```
 
-The script installs the worker under `/workspace`, creates a private token, and arranges for it to start with ComfyUI. It does not download image or video models.
+The script installs the worker under `/workspace`, creates a private token, and arranges for it to start with ComfyUI. It does not download a model until you explicitly choose one in AIPLAY and accept its terms.
 
 When it finishes, it prints two lines similar to these:
 
@@ -64,6 +64,18 @@ Copy both values somewhere private. You can safely run the bootstrap command aga
 The connection screen should report that the worker and ComfyUI are ready and list the models found on the Pod.
 
 The worker token is not your RunPod account API key. Keep both private. The account API key in the optional **Create or manage a RunPod Pod** section lets AIPLAY show and manage your Pods; it is not required when you manage the Pod in the RunPod website.
+
+### Install or repair a supported model
+
+In **RunPod connection**, expand **Install or repair models on this Pod**. For a listed model:
+
+1. Open and review its model repository and terms.
+2. Select the acceptance checkbox.
+3. Click **Install**, **Resume**, or **Repair**.
+
+AIPLAY downloads only pinned files from its curated list. The worker resumes its own interrupted download, checks the exact byte size and SHA-256 checksum, and moves the file into ComfyUI only after verification. Known invalid temporary files for that curated model are removed during an explicit repair. You can close the connection window while the download continues; reopen it to see progress.
+
+The first supported bundle is **YuE2 3B for ComfyUI**. Image and video model bundles will appear here only after their exact files, licences and workflows have been verified.
 
 ## 4. Make the first image
 
@@ -108,7 +120,7 @@ AIPLAY builds the music workflow on your PC, renders it through ComfyUI on the P
 
 The native **YuE2 GGUF** engine is a separate local Windows engine and is not sent to RunPod. Choose **YuE2 3B (ComfyUI)** when you want a YuE2 workflow to use the Pod.
 
-Music model bundles are large and can have separate licences or access requirements. The worker does not install them automatically. The RunPod music path has automated integration coverage, but it still needs a complete live acceptance render with each installed music model. Start with a short test and confirm the audio reaches your local library before making a long song.
+Music model bundles are large and can have separate licences or access requirements. AIPLAY installs a bundle only after you select it and accept its terms. YuE2 has passed a complete live RunPod acceptance render and returned a verified FLAC file to the local Music library. Other music engines still need the exact models and nodes installed and independently tested.
 
 ## Normal daily use
 
@@ -133,7 +145,7 @@ The token normally remains the same when the persistent `/workspace` volume is p
 | Worker unavailable | The Pod must be running and port 8787 must be ready. Check that the URL contains the current Pod ID. |
 | Token rejected | Paste the worker token printed by the bootstrap, not the RunPod account API key. |
 | ComfyUI unavailable | Wait for port 8188 to become ready, then reconnect. |
-| No models listed | Install the model in the Pod's actual ComfyUI model folder, then restart or refresh ComfyUI. |
+| No models listed | Open **RunPod connection → Install or repair models on this Pod**. If the model is not curated there yet, install it in the Pod's actual ComfyUI model folder, then refresh ComfyUI. |
 | Model or node missing | The selected workflow needs a model file or custom node that is not installed on the Pod. |
 | Music Create is unavailable or fails validation | Select MiniMax Music 3, ACE-Step 1.5, or YuE2 3B (ComfyUI), and install that engine's exact models and nodes on the Pod. Native YuE2 GGUF runs locally. |
 | Connection broke after migration | Change the Worker URL to use the new Pod ID. |
