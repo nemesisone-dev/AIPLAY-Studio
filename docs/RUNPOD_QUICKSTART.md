@@ -1,6 +1,6 @@
 # AIPLAY + RunPod: beginner quick start for Windows
 
-This setup keeps AIPLAY Studio and your finished files on your Windows PC. A RunPod GPU does the heavy image or video rendering, and AIPLAY downloads the result back to your PC.
+This setup keeps AIPLAY Studio and your finished files on your Windows PC. A RunPod GPU does the heavy image, video, or compatible music rendering, and AIPLAY downloads the result back to your PC.
 
 You do not need an NVIDIA GPU in your PC. You do need a RunPod account with credit, a running GPU Pod, and the required models on that Pod.
 
@@ -85,6 +85,31 @@ After the image works, try a short video with the **512 × 320 · cheapest test*
 %USERPROFILE%\.aiplay-studio\output\clips
 ```
 
+## 5. Create music on the RunPod GPU
+
+The RunPod mode can send music from AIPLAY's normal **Music** screen through the same worker. The Pod must have the exact ComfyUI nodes and model files for one of these engines:
+
+- **MiniMax Music 3**
+- **ACE-Step 1.5**
+- **YuE2 3B (ComfyUI)**
+
+Connect the worker from the **Images** or **Video** screen first. Then:
+
+1. Open **Music**.
+2. Select a supported ComfyUI music engine that is installed on the Pod.
+3. Enter the title, lyrics, and musical style, or choose instrumental mode.
+4. Click **Create**.
+
+AIPLAY builds the music workflow on your PC, renders it through ComfyUI on the Pod, downloads the audio, and adds it to the normal local Music library under:
+
+```text
+%USERPROFILE%\.aiplay-studio\output
+```
+
+The native **YuE2 GGUF** engine is a separate local Windows engine and is not sent to RunPod. Choose **YuE2 3B (ComfyUI)** when you want a YuE2 workflow to use the Pod.
+
+Music model bundles are large and can have separate licences or access requirements. The worker does not install them automatically. The RunPod music path has automated integration coverage, but it still needs a complete live acceptance render with each installed music model. Start with a short test and confirm the audio reaches your local library before making a long song.
+
 ## Normal daily use
 
 1. Start the Pod in the RunPod console.
@@ -110,6 +135,7 @@ The token normally remains the same when the persistent `/workspace` volume is p
 | ComfyUI unavailable | Wait for port 8188 to become ready, then reconnect. |
 | No models listed | Install the model in the Pod's actual ComfyUI model folder, then restart or refresh ComfyUI. |
 | Model or node missing | The selected workflow needs a model file or custom node that is not installed on the Pod. |
+| Music Create is unavailable or fails validation | Select MiniMax Music 3, ACE-Step 1.5, or YuE2 3B (ComfyUI), and install that engine's exact models and nodes on the Pod. Native YuE2 GGUF runs locally. |
 | Connection broke after migration | Change the Worker URL to use the new Pod ID. |
 | Render finished but is not visible | Return to the Images or Clips library and refresh the page. Also check the local output folders shown above. |
 
