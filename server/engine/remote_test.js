@@ -23,6 +23,7 @@ async function rig(t, { dropSubmit = false, targetedCancel = true, clientFetch =
   const queue = [], history = {}, events = [];
   const fake = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://fake");
+    if (url.pathname === "/health") return sendJSON(res, 200, { data: { status: "ok" }, code: 200, error: null });
     if (url.pathname === "/system_stats") return sendJSON(res, 200, { system: { comfyui_version: "test" }, devices: [{ name: "FAKE GPU", vram_total: 24000000000 }] });
     if (url.pathname === "/object_info") {
       const assets = await readdir(path.join(inputDir, "aiplay_remote")).catch(() => []);
@@ -58,7 +59,7 @@ async function rig(t, { dropSubmit = false, targetedCancel = true, clientFetch =
     sendJSON(res, 404, {});
   });
   const comfyURL = await listen(fake);
-  let worker = await createWorker({ token: TOKEN, comfyURL, inputDir, outputDir, stateDir, pollMs: 3600000 });
+  let worker = await createWorker({ token: TOKEN, comfyURL, aceURL: comfyURL, inputDir, outputDir, stateDir, pollMs: 3600000 });
   let workerURL = await listen(worker.server);
   let savedToken;
   const clientOptions = { dataDir: path.join(root, "desktop"), outputDir: path.join(root, "local-output"),
@@ -87,7 +88,7 @@ async function rig(t, { dropSubmit = false, targetedCancel = true, clientFetch =
     async restartClient() { client.close(); client = await createRemoteClient(clientOptions); },
     async restartWorker() {
       const port = worker.server.address().port; await worker.close();
-      worker = await createWorker({ token: TOKEN, comfyURL, inputDir, outputDir, stateDir, pollMs: 3600000 });
+      worker = await createWorker({ token: TOKEN, comfyURL, aceURL: comfyURL, inputDir, outputDir, stateDir, pollMs: 3600000 });
       await new Promise(r => worker.server.listen(port, "127.0.0.1", r));
     },
     async complete() {
@@ -164,6 +165,21 @@ test("references upload with content hashes and bind to remote relative paths", 
   await r.client.tick(); await r.worker.tick();
   assert.equal(r.queue[0][2][2].inputs.image, `aiplay_remote/${asset.asset}`);
   assert.deepEqual(await readFile(path.join(r.inputDir, "aiplay_remote", asset.asset)), PNG);
+});
+
+test("worker advertises ACE training and accepts authenticated dataset audio", async t => {
+  const r = await rig(t);
+  const health = await r.client.verify();
+  assert.deepEqual(health.capabilities, { comfy: true, aceTraining: true });
+  const model = await r.client.trainingAction({ action: "create", name: "Test style", style: "soft piano" });
+  const uploaded = await r.client.trainingUpload(model.id, "sample.wav", Readable.from(Buffer.from("audio")));
+  assert.equal(uploaded.files.length, 1);
+  assert.equal((await r.client.trainingList()).models[0].name, "Test style");
+  const loraDir = path.join(r.root, "models", "loras"); await mkdir(loraDir, { recursive: true });
+  await writeFile(path.join(loraDir, "mine_Test_style.safetensors"), Buffer.from("adapter"));
+  const shelf = await r.client.loras();
+  assert.equal(shelf.loras[0].name, "mine_Test_style.safetensors");
+  assert.equal(shelf.loras[0].fits.fit, "yes");
 });
 
 test("unknown model is rejected before spending GPU time", async t => {

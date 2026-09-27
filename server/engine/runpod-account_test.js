@@ -92,21 +92,26 @@ test("private AIPLAY templates are created once with bounded workload presets", 
   const r = rig(); await r.account.connect(KEY);
   const first = await r.account.createTemplates();
   assert.deepEqual(first.created.map(template => template.name), AIPLAY_POD_TEMPLATES.map(template => template.name));
-  assert.equal(first.templates.length, 4);
+  assert.equal(first.templates.length, 5);
   assert.equal(r.restTemplates.every(template => template.isPublic === false && template.isServerless === false), true);
   assert.equal(r.restTemplates.slice(0, 3).every(template => template.imageName === "runpod/comfyui:1.4.7-cuda13.0"), true);
   assert.equal(r.restTemplates.slice(0, 3).every(template => template.ports.includes("8787/http")), true);
-  const trainer = r.restTemplates.at(-1);
+  const trainer = r.restTemplates.at(-2);
   assert.equal(trainer.name, "AIPLAY Music LoRA Training");
   assert.equal(trainer.imageName, "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04");
   assert.deepEqual(trainer.ports, ["8888/http", "7860/http", "6006/http"]);
   assert.equal(r.restTemplates.every(template => template.volumeMountPath === "/workspace"), true);
-  assert.deepEqual(r.restTemplates.map(template => template.volumeInGb), [60, 120, 100, 120]);
+  const custom = r.restTemplates.at(-1);
+  assert.equal(custom.name, "AIPLAY Custom Music Model");
+  assert.equal(custom.imageName, "runpod/comfyui:1.4.7-cuda13.0");
+  assert.deepEqual(custom.ports, ["8188/http", "8888/http", "8787/http", "6006/http"]);
+  assert.match(custom.readme, /runpod-custom-model\.sh/);
+  assert.deepEqual(r.restTemplates.map(template => template.volumeInGb), [60, 120, 100, 120, 140]);
   assert.equal(r.calls.filter(call => call.url && call.method === "POST").every(call => call.auth === `Bearer ${KEY}`), true);
 
   const second = await r.account.createTemplates();
   assert.equal(second.created.length, 0);
-  assert.equal(r.calls.filter(call => call.url && call.method === "POST").length, 4);
+  assert.equal(r.calls.filter(call => call.url && call.method === "POST").length, 5);
 });
 
 test("start and stop use scoped Pod mutations", async () => {

@@ -50,6 +50,7 @@ import { createEngineRoutes } from "./engine/routes.js";
 /* RunPod rendering (the launcher's "RunPod GPU" mode): the worker client, the
  * account (Pods and billing) and their routes, contributed by nemesisone-dev. */
 import { createRemoteRoutes } from "./engine/remote-routes.js";
+import { createCustomModelRoutes } from "./music/custom-model-routes.js";
 import { JobRunner } from "./jobs.js";
 import { Library } from "./library.js";
 import { isNativeLibraryWav } from "./library-wav.js";
@@ -3128,6 +3129,7 @@ const remoteRoutes = config.remoteOnly ? createRemoteRoutes({ config, getSecret,
     return engineRoutes.adopt(details);
   },
 }) : null;
+const customModelRoutes = createCustomModelRoutes({ config, remoteClient: remoteRoutes ? remoteRoutes.start : null });
 /* MUSIC ON THE POD: the queue builds the same graph it builds for this PC and
  * hands it here instead of to the local engine (jobs.js #runRemote). The song
  * comes back through the adopt above (audio -> the library) and is filed by the
@@ -3178,6 +3180,9 @@ const server = http.createServer(async (req, res) => {
   const p = url.pathname;
 
   try {
+    if (p === "/api/custom-models" || p.startsWith("/api/custom-models/")) {
+      if (await customModelRoutes(req, res, url)) return;
+    }
     if (p === "/api/runpod" || p.startsWith("/api/runpod/")) {
       if (!remoteRoutes) return json(res, 404, { error: "RunPod rendering is the launcher's RunPod GPU mode. Start Studio from there to use it." });
       if (await remoteRoutes(req, res, url)) return;
@@ -8939,6 +8944,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === "/api/loras" && req.method === "GET") {
+      if (remoteRoutes) {
+        const remote = await remoteRoutes.start();
+        if (!remote.status().configured) return json(res, 200, { loras: [], remote: true });
+        try { return json(res, 200, { ...await remote.loras(), remote: true }); }
+        catch (error) { return json(res, 200, { loras: [], remote: true, warning: error.message }); }
+      }
       /* Every base the engine loads from (the Models screen's folder, a ComfyUI
        * Desktop install's extra paths), not only config.modelsDir: the music
        * checkpoint list reads the same shelves, and a LoRA beside a checkpoint

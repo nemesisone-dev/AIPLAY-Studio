@@ -7,6 +7,7 @@ const TEMPLATE_IMAGE = "runpod/comfyui:1.4.7-cuda13.0";
 const TEMPLATE_PORTS = Object.freeze(["8080/http", "8188/http", "8888/http", "8787/http"]);
 const TRAINING_IMAGE = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04";
 const TRAINING_PORTS = Object.freeze(["8888/http", "7860/http", "6006/http"]);
+const CUSTOM_MUSIC_PORTS = Object.freeze(["8188/http", "8888/http", "8787/http", "6006/http"]);
 export const AIPLAY_POD_TEMPLATES = Object.freeze([
   Object.freeze({ id: "images", name: "AIPLAY Images", volumeInGb: 60,
     readme: "AIPLAY image rendering with ComfyUI and worker port 8787. Use a 16 GB or larger NVIDIA GPU. Install the AIPLAY worker and your licensed image checkpoints after the first launch." }),
@@ -40,6 +41,28 @@ uv run acestep
 \`\`\`
 
 Open port 7860 and use the LoRA Training tab. Models download on first launch. Keep datasets and output under \`/workspace\`, and train only on audio you have permission to use.` }),
+  Object.freeze({ id: "custom-music", name: "AIPLAY Custom Music Model", volumeInGb: 140,
+    imageName: TEMPLATE_IMAGE, ports: CUSTOM_MUSIC_PORTS,
+    readme: `# AIPLAY Custom Music Model
+
+Combined ComfyUI, ACE-Step 1.5 training API and authenticated AIPLAY worker.
+
+- Minimum: NVIDIA GPU with 16 GB VRAM
+- Recommended: 24 GB VRAM or more
+- Persistent workspace: 140 GB at \`/workspace\`
+- AIPLAY worker: port 8787
+- JupyterLab: port 8888
+
+In a JupyterLab terminal, clone AIPLAY and run the setup script:
+
+\`\`\`bash
+cd /workspace
+git clone https://github.com/nemesisone-dev/AIPLAY-Studio.git aiplay-studio
+cd aiplay-studio
+bash scripts/runpod-custom-model.sh
+\`\`\`
+
+Before running it, set \`AIPLAY_WORKER_TOKEN\` to the same 32-character or longer token used by AIPLAY Studio. The script installs ACE-Step once, starts its API on loopback, and starts the worker on port 8787. Models download on first launch. Train only on audio you have permission to use.` }),
 ]);
 
 function cleanText(value, name, max = 120) {

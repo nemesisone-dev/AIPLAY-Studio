@@ -102,3 +102,13 @@ test("late waveform response cannot replace the newly chosen source", async () =
   assert.equal(f.run("trSource.file"), "second.wav");
   assert.equal(f.run("trSource.duration"), 40);
 });
+
+test("custom model UI keeps local and RunPod training in one multi-song flow", () => {
+  for (const id of ["cmLocal", "cmRunpod", "cmName", "cmStyle", "cmLibrary", "cmFiles", "cmCreate", "cmPrepare", "cmTrain", "cmStop", "cmModels"]) {
+    assert.match(html, new RegExp(`id="${id}"`), `${id} is present`);
+  }
+  assert.match(app, /\/api\/custom-models/);
+  assert.match(app, /action: "addLibrary"/);
+  assert.match(app, /gradientCheckpointing/);
+  assert.match(html, /Single-song YuE2 experiment/);
+});

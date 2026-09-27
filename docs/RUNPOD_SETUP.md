@@ -81,7 +81,7 @@ On Images or Video, choose **RunPod GPU**, open **Connection…**, and enter the
 
 The same window has **Create or manage a RunPod Pod**. Add a restricted RunPod API key with permission to read GPU inventory and manage Pods. AIPLAY stores that key in the same local secret store and never returns it to the page after saving. It can then show the account balance, current hourly spend, existing Pods, live GPU stock/price estimates, and start/stop controls. See RunPod's [API-key guidance](https://docs.runpod.io/get-started/api-keys) and [Pod GraphQL operations](https://docs.runpod.io/sdks/graphql/manage-pods).
 
-Press **Create private templates** to add four reusable Pod templates to that RunPod account. The operation is idempotent and does not start a GPU. Existing templates with the same names are left unchanged.
+Press **Create private templates** to add five reusable Pod templates to that RunPod account. The operation is idempotent and does not start a GPU. Existing templates with the same names are left unchanged.
 
 | Template | Persistent disk | Suggested GPU | Intended workload |
 | --- | ---: | --- | --- |
@@ -89,10 +89,17 @@ Press **Create private templates** to add four reusable Pod templates to that Ru
 | AIPLAY Video | 120 GB | 32 GB VRAM or more | LTX 2.5 nodes, weights and clips |
 | AIPLAY Audio | 100 GB | 24 GB VRAM or more | YuE2, ACE-Step or MiniMax Music |
 | AIPLAY Music LoRA Training | 120 GB | 24 GB VRAM recommended | ACE-Step 1.5 datasets, checkpoints and LoRA output |
+| AIPLAY Custom Music Model | 140 GB | 24 GB VRAM recommended | Multi-song ACE-Step training controlled from AIPLAY |
 
 The rendering templates are private, use the NVIDIA ComfyUI CUDA 13 image, mount persistent storage at `/workspace`, and expose ports 8080, 8188, 8888 and 8787. They save the deployment shape, not licensed model weights. After the first deployment, run the worker bootstrap and install only the model bundles whose terms you accepted. Selecting a template and pressing RunPod's deploy button is a separate paid action.
 
-The **AIPLAY Music LoRA Training** preset uses RunPod's Python 3.11 PyTorch image and exposes JupyterLab on port 8888, the ACE-Step interface on port 7860 and TensorBoard on port 6006. Its RunPod README pins the official ACE-Step 1.5 source revision and contains the installation commands. ACE-Step's LoRA Training tab handles annotation, preprocessing and training. The publisher documents a small personal example starting with eight songs and about 12 GB VRAM; larger datasets need more GPU memory, storage and time. Keep the source audio and training output under `/workspace` so they survive restarts. Use only recordings you have permission to train on. See the [official ACE-Step repository](https://github.com/ace-step/ACE-Step-1.5) and [LoRA training guide](https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/LoRA_Training_Guide.md).
+The **AIPLAY Music LoRA Training** preset keeps the official manual ACE-Step interface. The **AIPLAY Custom Music Model** preset adds the authenticated worker used by Studio's Training page. Its README starts ACE-Step on the Pod's loopback interface and the AIPLAY worker on port 8787. Choose **RunPod** on the Training page, select or upload several songs, prepare the dataset, and start training. The completed adapter is copied into that Pod's `ComfyUI/models/loras` folder and appears in the Music LoRA picker in RunPod GPU mode.
+
+The official guide lists 16 GB VRAM as a practical minimum and 20 GB or more as recommended. It uses about 800 epochs as a reference for 10 to 20 songs. Actual memory use, time and useful epoch count depend on the dataset and GPU. Keep the source audio and training output under `/workspace` so they survive restarts. Use only recordings you have permission to train on. See the [official ACE-Step repository](https://github.com/ace-step/ACE-Step-1.5) and [LoRA training tutorial](https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/LoRA_Training_Tutorial.md).
+
+For training on the current computer, start ACE-Step's API on loopback with `uv run acestep-api`. AIPLAY checks `http://127.0.0.1:8001` by default. Set `AIPLAY_ACE_URL` before launching Studio only when the local API uses a different loopback port.
+
+See [Custom music models](CUSTOM_MUSIC_MODELS.md) for the complete first-time workflow.
 
 Creating a Pod is a reviewed paid action: choose the GPU, cloud tier and persistent disk, review the current estimated GPU hourly price, and explicitly acknowledge that billing begins before the create button is enabled. The current wizard creates the standard `runpod/comfyui:cuda12.8` image with HTTP ports 8080, 8188, 8888 and 8787. Storage is billed separately and may continue after compute is stopped.
 

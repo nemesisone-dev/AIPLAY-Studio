@@ -3,16 +3,18 @@ import http from "node:http";
 import path from "node:path";
 import { createHash, timingSafeEqual, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, rename, stat, unlink } from "node:fs/promises";
+import { mkdir, readdir, rename, stat, unlink } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { Transform } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { PROTOCOL, MAX_ASSET, TERMINAL, MEDIA_EXT, jobId, relativeFile, containedFile,
   hashFile, digest, readJSON, jsonStore, readBody, sendJSON, validateGraph } from "../server/engine/remote-common.js";
 import { createModelManager } from "./model-manager.js";
+import { createAceTraining } from "../server/music/ace-training.js";
 
 export async function createWorker({ token, comfyURL, inputDir, outputDir, stateDir,
-  modelsDir = path.join(path.dirname(inputDir), "models"), fetchFn = fetch, pollMs = 2000, modelBundles }) {
+  modelsDir = path.join(path.dirname(inputDir), "models"), fetchFn = fetch, pollMs = 2000, modelBundles,
+  aceURL = "http://127.0.0.1:8001", trainingDir = null }) {
   if (typeof token !== "string" || token.length < 32 || /[\r\n]/.test(token)) throw new Error("AIPLAY_WORKER_TOKEN must contain at least 32 characters.");
   const backend = new URL(comfyURL);
   if (backend.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(backend.hostname)) throw new Error("ComfyUI must be on the worker's loopback interface.");
@@ -26,6 +28,7 @@ export async function createWorker({ token, comfyURL, inputDir, outputDir, state
   const save = jsonStore(stateFile);
   await save(state);
   const modelManager = await createModelManager({ modelsDir, fetchFn, ...(modelBundles ? { bundles: modelBundles } : {}) });
+  const aceTraining = await createAceTraining({ rootDir: trainingDir || path.join(stateDir, "training"), lorasDir: path.join(modelsDir, "loras"), aceURL, fetchFn });
   let busy = false, closed = false;
   const request = async (route, init = {}) => {
     const response = await fetchFn(`${base}${route}`, { ...init, redirect: "error", signal: AbortSignal.timeout(30000) });
@@ -134,10 +137,37 @@ export async function createWorker({ token, comfyURL, inputDir, outputDir, state
     try {
       const url = new URL(req.url, "http://worker");
       if (req.method === "GET" && url.pathname === "/v1/health") {
-        const stats = await request("/system_stats");
+        const [stats, aceReady] = await Promise.all([request("/system_stats").catch(() => null), aceTraining.available()]);
+        if (!stats && !aceReady) throw new Error("Neither ComfyUI nor ACE-Step is ready.");
         return sendJSON(res, 200, { protocol: PROTOCOL, workerId: state.workerId, ready: true,
-          version: stats.system?.comfyui_version || null, devices: stats.devices || [], maxAssetBytes: MAX_ASSET,
-          modelSetupVersion: 1 });
+          version: stats?.system?.comfyui_version || null, devices: stats?.devices || [], maxAssetBytes: MAX_ASSET,
+          modelSetupVersion: 1, capabilities: { comfy: !!stats, aceTraining: aceReady } });
+      }
+      if (req.method === "GET" && url.pathname === "/v1/custom-models") return sendJSON(res, 200, await aceTraining.list());
+      if (req.method === "GET" && url.pathname === "/v1/loras") {
+        const dir = path.join(modelsDir, "loras"), rows = [];
+        for (const name of await readdir(dir).catch(() => [])) {
+          if (!name.endsWith(".safetensors")) continue;
+          const info = await stat(path.join(dir, name)).catch(() => null);
+          if (info?.isFile()) rows.push({ name, bytes: info.size, at: Math.round(info.mtimeMs), base: name.startsWith("mine_") ? "ACE-Step 1.5" : null,
+            confidence: name.startsWith("mine_") ? "declared" : null, isLora: true,
+            fits: name.startsWith("mine_") ? { fit: "yes", why: "Created by the ACE-Step trainer on this worker." } : { fit: "unknown", why: "The remote worker does not inspect adapter tensors." } });
+        }
+        rows.sort((a, b) => b.at - a.at); return sendJSON(res, 200, { loras: rows });
+      }
+      if (req.method === "POST" && url.pathname === "/v1/custom-models") {
+        const body = JSON.parse((await readBody(req)).toString("utf8"));
+        if (body.action === "create") return sendJSON(res, 201, await aceTraining.create(body));
+        if (body.action === "prepare") return sendJSON(res, 202, await aceTraining.prepare(body.id));
+        if (body.action === "check") return sendJSON(res, 200, await aceTraining.check(body.id));
+        if (body.action === "start") return sendJSON(res, 202, await aceTraining.start(body.id, body.settings));
+        if (body.action === "stop") return sendJSON(res, 200, await aceTraining.stop(body.id));
+        if (body.action === "delete") return sendJSON(res, 200, await aceTraining.remove(body.id));
+        throw new Error("Unknown custom model action.");
+      }
+      const customUpload = /^\/v1\/custom-models\/([a-f0-9-]{36})\/files$/.exec(url.pathname);
+      if (req.method === "POST" && customUpload) {
+        return sendJSON(res, 200, await aceTraining.upload(customUpload[1], url.searchParams.get("name"), req));
       }
       if (req.method === "GET" && url.pathname === "/v1/models") return sendJSON(res, 200, await request("/object_info"));
       if (req.method === "GET" && url.pathname === "/v1/setup") return sendJSON(res, 200, modelManager.status());
@@ -227,6 +257,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     inputDir: process.env.AIPLAY_WORKER_INPUT || path.join(root, "input"),
     outputDir: process.env.AIPLAY_WORKER_OUTPUT || path.join(root, "output"),
     stateDir: process.env.AIPLAY_WORKER_STATE || "/workspace/aiplay-worker",
-    modelsDir: process.env.AIPLAY_MODELS_DIR || path.join(root, "models") });
+    modelsDir: process.env.AIPLAY_MODELS_DIR || path.join(root, "models"),
+    aceURL: process.env.AIPLAY_ACE_URL || "http://127.0.0.1:8001",
+    trainingDir: process.env.AIPLAY_TRAINING_DIR || "/workspace/aiplay-training" });
   worker.server.listen(Number(process.env.AIPLAY_WORKER_PORT || 8787), "0.0.0.0", () => console.log("AIPLAY remote worker listening; authentication required."));
 }

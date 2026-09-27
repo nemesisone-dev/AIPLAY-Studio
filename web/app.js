@@ -5854,6 +5854,139 @@ $("spMerge").onclick = async () => {
  * page that implied otherwise would cost somebody an hour of their card before
  * they found out. Both sentences come from the door, so there is one author.
  */
+let cmTargetSaved = false;
+let cmTarget = (() => { try { const saved = localStorage.getItem("customModel.target"); cmTargetSaved = !!saved; return saved || "local"; } catch { return "local"; } })();
+let cmCurrent = null, cmPendingFiles = [], cmLibraryRows = [], cmTimer = null, cmBusy = false;
+const cmJson = async (body) => {
+  try {
+    const response = await fetch("/api/custom-models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...body, target: cmTarget }) });
+    return await response.json();
+  } catch (error) { return { error: `Could not reach custom model training: ${error.message || error}` }; }
+};
+function cmSetTarget(target) {
+  cmTarget = target;
+  cmTargetSaved = true;
+  try { localStorage.setItem("customModel.target", target); } catch { /* optional preference */ }
+  $("cmLocal")?.setAttribute("aria-pressed", String(target === "local"));
+  $("cmRunpod")?.setAttribute("aria-pressed", String(target === "runpod"));
+  cmCurrent = null; cmRefresh();
+}
+$("cmLocal")?.addEventListener("click", () => cmSetTarget("local"));
+$("cmRunpod")?.addEventListener("click", () => cmSetTarget("runpod"));
+
+function cmSelectedLibrary() {
+  return [...(document.querySelectorAll?.("#cmLibrary input:checked") || [])].map(input => decodeURIComponent(input.dataset.file || ""));
+}
+function cmPaintLibrary(rows) {
+  cmLibraryRows = rows;
+  const host = $("cmLibrary"); if (!host) return;
+  const selected = new Set(cmSelectedLibrary());
+  host.innerHTML = rows.map(track => {
+    const file = String(track.file), title = String(track.title || track.file);
+    return `<label class="cmsong"><input type="checkbox" data-file="${encodeURIComponent(file)}"${selected.has(file) ? " checked" : ""}><span><b>${esc(title)}</b><br>${esc(file)}</span></label>`;
+  }).join("") || '<div class="cbempty">No audio is in the Library yet. Add files below instead.</div>';
+}
+
+function cmStatusText(model, upstream) {
+  if (!model) return { title: "Not started", text: cmTarget === "runpod" ? "Connect an ACE-Step training worker in RunPod GPU mode." : "Start the ACE-Step API on this computer, then add your songs." };
+  const count = model.files?.length || 0, detail = upstream?.progress || upstream?.status || model.error || "";
+  const labels = { draft: "Dataset ready to fill", preparing: "Preparing songs", ready: "Ready to train", training: "Training", finishing: "Saving the adapter", complete: "Custom model ready", failed: "Training needs attention", stopped: "Training stopped" };
+  return { title: labels[model.stage] || model.stage, text: `${model.name} · ${count} song${count === 1 ? "" : "s"}${detail ? ` · ${detail}` : ""}` };
+}
+function cmPaint(model = cmCurrent, upstream = null) {
+  cmCurrent = model || null;
+  const status = cmStatusText(cmCurrent, upstream), box = $("cmStatus");
+  if (box) box.innerHTML = `<b>${esc(status.title)}</b><span>${esc(status.text)}</span>`;
+  const stage = cmCurrent?.stage;
+  if ($("cmPrepare")) $("cmPrepare").disabled = cmBusy || !cmCurrent || !(cmCurrent.files?.length) || ["preparing", "training"].includes(stage);
+  if ($("cmTrain")) $("cmTrain").disabled = cmBusy || !cmCurrent || !["ready", "failed"].includes(stage);
+  if ($("cmStop")) $("cmStop").disabled = cmBusy || !["preparing", "training"].includes(stage);
+  if ($("cmCreate")) $("cmCreate").disabled = cmBusy;
+  clearTimeout(cmTimer);
+  if (["preparing", "training", "finishing"].includes(stage)) cmTimer = setTimeout(cmCheck, 4000);
+}
+function cmPaintModels(rows) {
+  const host = $("cmModels"); if (!host) return;
+  host.innerHTML = rows.map(model => `<div class="cbpeer"><b>${esc(model.name)}</b><code>${esc(model.adapter)}</code><span class="meta">${esc(model.stage)} · ${model.files?.length || 0} songs</span><button class="btn sm cmopen" type="button" data-id="${esc(model.id)}">Open</button></div>`).join("")
+    || '<div class="cbempty">No custom models on this training computer yet.</div>';
+}
+async function cmRefresh() {
+  if (!$("cmSection")) return;
+  $("cmLocal")?.setAttribute("aria-pressed", String(cmTarget === "local"));
+  $("cmRunpod")?.setAttribute("aria-pressed", String(cmTarget === "runpod"));
+  try {
+    const response = await fetch(`/api/custom-models?target=${cmTarget}`), result = await response.json();
+    if (result.error) throw new Error(result.error);
+    cmPaintModels(result.models || []);
+    const current = (result.models || []).find(model => model.id === cmCurrent?.id) || (result.models || [])[0] || null;
+    cmPaint(current);
+    if (!result.available && !current) {
+      const box = $("cmStatus"); if (box) box.innerHTML = `<b>ACE-Step is offline</b><span>${cmTarget === "runpod" ? "Start the training template and connect its worker." : "Start the ACE-Step API on port 8001."}</span>`;
+    }
+  } catch (error) {
+    cmPaintModels([]); cmPaint(null);
+    const box = $("cmStatus"); if (box) box.innerHTML = `<b>Training is unavailable</b><span>${esc(error.message || error)}</span>`;
+  }
+}
+$("cmModels")?.addEventListener("click", event => {
+  const button = event.target.closest(".cmopen"); if (!button) return;
+  fetch(`/api/custom-models?target=${cmTarget}`).then(response => response.json()).then(result => {
+    const model = (result.models || []).find(row => row.id === button.dataset.id); if (model) cmPaint(model);
+  });
+});
+$("cmChooseFiles")?.addEventListener("click", () => $("cmFiles")?.click());
+$("cmFiles")?.addEventListener("change", event => {
+  cmPendingFiles = [...event.target.files];
+  $("cmFileNote").textContent = cmPendingFiles.length ? `${cmPendingFiles.length} file${cmPendingFiles.length === 1 ? "" : "s"} ready to add.` : "You can combine Library songs with files from this computer.";
+});
+$("cmCreate")?.addEventListener("click", async () => {
+  if (cmBusy) return;
+  const name = $("cmName")?.value.trim();
+  if (!name) { cmPaint(null); $("cmStatus").innerHTML = "<b>Name needed</b><span>Give the custom model a name first.</span>"; return; }
+  cmBusy = true; cmPaint(cmCurrent);
+  let result = await cmJson({ action: "create", name, style: $("cmStyle")?.value, instrumental: $("cmInstrumental")?.checked });
+  if (!result.error) {
+    cmCurrent = result;
+    const libraryFiles = cmSelectedLibrary();
+    if (libraryFiles.length) result = await cmJson({ action: "addLibrary", id: cmCurrent.id, files: libraryFiles });
+    if (!result.error) for (let i = 0; i < cmPendingFiles.length; i++) {
+      const file = cmPendingFiles[i];
+      $("cmStatus").innerHTML = `<b>Uploading songs</b><span>${i + 1} of ${cmPendingFiles.length} · ${esc(file.name)}</span>`;
+      const response = await fetch(`/api/custom-models/${cmCurrent.id}/files?target=${cmTarget}&name=${encodeURIComponent(file.name)}`, { method: "POST", body: file });
+      result = await response.json(); if (result.error) break;
+    }
+  }
+  cmBusy = false;
+  if (result.error) { cmPaint(cmCurrent); $("cmStatus").innerHTML = `<b>Could not create the dataset</b><span>${esc(result.error)}</span>`; return; }
+  cmPendingFiles = []; $("cmFiles").value = ""; $("cmFileNote").textContent = "Songs added. You can prepare the dataset now.";
+  cmPaint(result.model || result); await cmRefresh();
+});
+$("cmPrepare")?.addEventListener("click", async () => {
+  if (!cmCurrent || cmBusy) return; cmBusy = true; cmPaint(cmCurrent);
+  const result = await cmJson({ action: "prepare", id: cmCurrent.id }); cmBusy = false;
+  if (result.error) { $("cmStatus").innerHTML = `<b>Preparation did not start</b><span>${esc(result.error)}</span>`; cmPaint(cmCurrent); return; }
+  cmPaint(result.model, result.task);
+});
+$("cmTrain")?.addEventListener("click", async () => {
+  if (!cmCurrent || cmBusy) return; cmBusy = true; cmPaint(cmCurrent);
+  const result = await cmJson({ action: "start", id: cmCurrent.id, settings: { epochs: Number($("cmEpochs")?.value), rank: Number($("cmRank")?.value), gradientCheckpointing: !!$("cmLowMemory")?.checked } });
+  cmBusy = false;
+  if (result.error) { $("cmStatus").innerHTML = `<b>Training did not start</b><span>${esc(result.error)}</span>`; cmPaint(cmCurrent); return; }
+  cmPaint(result.model, result.upstream);
+});
+$("cmStop")?.addEventListener("click", async () => {
+  if (!cmCurrent || cmBusy) return; cmBusy = true; cmPaint(cmCurrent);
+  const result = await cmJson({ action: "stop", id: cmCurrent.id }); cmBusy = false;
+  if (result.error) { $("cmStatus").innerHTML = `<b>Could not stop</b><span>${esc(result.error)}</span>`; cmPaint(cmCurrent); return; }
+  cmPaint(result.model, result.upstream);
+});
+async function cmCheck() {
+  if (!cmCurrent || !["preparing", "training", "finishing"].includes(cmCurrent.stage)) return;
+  const result = await cmJson({ action: "check", id: cmCurrent.id });
+  if (result.error) { $("cmStatus").innerHTML = `<b>Could not check training</b><span>${esc(result.error)}</span>`; return; }
+  cmPaint(result.model, result.upstream); cmPaintModels((await (await fetch(`/api/custom-models?target=${cmTarget}`)).json()).models || []);
+}
+
 const tr = (body) => fetch("/api/train", {
   method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
 }).then((r) => r.json()).catch((e) => ({ error: `Could not reach training: ${e.message || e}` }));
@@ -5978,7 +6111,14 @@ async function paintTraining() {
   try {
     const r = await (await fetch("/api/status")).json();
     if (r.error) throw new Error(r.error);
+    if (typeof cmTargetSaved !== "undefined" && !cmTargetSaved && r.config?.remoteOnly) {
+      cmTarget = "runpod";
+      $("cmLocal")?.setAttribute("aria-pressed", "false");
+      $("cmRunpod")?.setAttribute("aria-pressed", "true");
+    }
     const rows = (r.library || []).filter((t) => t && t.file && /\.(flac|wav|mp3|ogg|opus|m4a)$/i.test(t.file));
+    if (typeof cmPaintLibrary === "function") cmPaintLibrary(rows.filter((t) => !/\.m4a$/i.test(t.file)));
+    if (typeof cmRefresh === "function") await cmRefresh();
     const sel = $("trFile");
     if (sel) {
       const selected = sel.value;

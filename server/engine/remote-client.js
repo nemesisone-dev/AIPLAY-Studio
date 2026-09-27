@@ -60,6 +60,7 @@ export async function createRemoteClient({ dataDir, outputDir, getToken, setToke
       if (!auth || auth.length < 32 || /[\r\n]/.test(auth)) throw new Error("Enter the worker's token (at least 32 characters). This is not your RunPod account API key.");
       const health = await verify(target, auth);
       target.workerId = health.workerId;
+      target.capabilities = health.capabilities || { comfy: true, aceTraining: false };
       if (active() && (target.url !== connection.url || target.workerId !== connection.workerId)) throw new Error("A job started while connecting. Wait for it before changing workers.");
       await setToken(auth); await saveConnection(target);
       connection = target; token = auth; lastError = null;
@@ -81,6 +82,35 @@ export async function createRemoteClient({ dataDir, outputDir, getToken, setToke
     })());
     return json(`/v1/assets?name=${encodeURIComponent(name)}`, { method: "POST", body, duplex: "half",
       signal: AbortSignal.timeout(300000), headers: { "Content-Type": "application/octet-stream" } });
+  }
+  async function trainingUpload(id, name, stream) {
+    if (connecting) throw new Error("Connection is changing; try again.");
+    relativeFile(name);
+    if (name.includes("/") || !/\.(mp3|wav|flac|ogg|opus)$/i.test(name)) throw new Error("Unsupported training audio file.");
+    const health = await verify();
+    if (!health.capabilities?.aceTraining) throw new Error("This worker does not offer ACE-Step training.");
+    let bytes = 0;
+    const body = Readable.from((async function* () {
+      for await (const chunk of stream) {
+        bytes += chunk.length;
+        if (bytes > MAX_ASSET) throw new Error("Training audio exceeds 512 MiB.");
+        yield chunk;
+      }
+    })());
+    return json(`/v1/custom-models/${encodeURIComponent(id)}/files?name=${encodeURIComponent(name)}`, {
+      method: "POST", body, duplex: "half", signal: AbortSignal.timeout(300000),
+      headers: { "Content-Type": "application/octet-stream" },
+    });
+  }
+  async function trainingList() {
+    const health = await verify();
+    if (!health.capabilities?.aceTraining) return { available: false, models: [], why: "This worker does not offer ACE-Step training." };
+    return json("/v1/custom-models");
+  }
+  async function trainingAction(body) {
+    const health = await verify();
+    if (!health.capabilities?.aceTraining) throw new Error("This worker does not offer ACE-Step training.");
+    return post("/v1/custom-models", body);
   }
   async function submit({ graph, bindings = [], label = "Remote render", actor = "system" }) {
     if (connecting) throw new Error("Connection is changing; try again.");
@@ -186,12 +216,14 @@ export async function createRemoteClient({ dataDir, outputDir, getToken, setToke
     return { ...snapshot(job), remoteState: remote.state };
   }
   const timer = setInterval(() => { tick().catch(() => {}); }, pollMs); timer.unref();
-  return { connect, upload, submit, cancel, tick, verify,
+  return { connect, upload, submit, cancel, tick, verify, trainingUpload, trainingList, trainingAction,
     models: async () => { await verify(); return json("/v1/models"); },
+    loras: async () => { await verify(); return json("/v1/loras"); },
     setup: async () => { await verify(); return json("/v1/setup"); },
     installBundle: async (bundle, acceptLicense) => { await verify(); return post("/v1/setup/install", { bundle, acceptLicense }); },
     cancelInstall: async () => { await verify(); return post("/v1/setup/cancel", {}); },
     status: () => ({ configured: !!connection.url, url: connection.url || "", workerId: connection.workerId || null,
+      capabilities: connection.capabilities || null,
       hasToken: !!token, lastError, jobs: Object.values(jobs).map(snapshot).sort((a, b) => b.createdAt - a.createdAt) }),
     file: (id, fileId) => jobs[id]?.outputs.find(f => f.id === fileId)?.localFile || null,
     close: () => { closed = true; clearInterval(timer); } };

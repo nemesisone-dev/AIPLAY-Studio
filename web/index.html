@@ -2352,14 +2352,74 @@
         #training .params input,#training .params select { max-width:100%; }
         #training #trList .cbpeer { padding:14px; }
         #training #trList .cbres { font-size:12px; }
+        #training .cmhead { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
+        #training .cmhead h3 { margin-bottom:5px; }
+        #training .cmtarget { display:flex; gap:4px; padding:3px; border:1px solid var(--edge); border-radius:10px; background:var(--mfield); }
+        #training .cmtarget button[aria-pressed="true"] { background:var(--primary); color:var(--bg); }
+        #training .cmsongs { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:8px; margin:12px 0; max-height:310px; overflow:auto; }
+        #training .cmsong { display:flex; align-items:flex-start; gap:8px; min-height:64px; padding:10px; border:1px solid var(--edge); border-radius:10px; background:var(--mfield); cursor:pointer; }
+        #training .cmsong:has(input:checked) { border-color:var(--primary); }
+        #training .cmsong span { min-width:0; overflow-wrap:anywhere; font-size:12px; line-height:1.35; }
+        #training .cmdrop { display:flex; align-items:center; gap:10px; padding:14px; border:1px dashed var(--edge); border-radius:10px; }
+        #training .cmstatus { margin-top:12px; padding:12px; border-radius:10px; background:var(--mfield); }
+        #training .cmstatus b { display:block; margin-bottom:4px; }
+        #training .cmmodels .cbpeer { padding:12px; }
         @media(max-width:700px) { #training .trflow { grid-template-columns:repeat(2,minmax(0,1fr)); } #training .trgrid { grid-template-columns:1fr; } #training .trsection { padding:14px; } #training .params { grid-template-columns:1fr; } }
       </style>
       <div class="stagehead">
         <h2>Train a music LoRA</h2>
         <span class="count" id="trCount"></span>
       </div>
-      <p class="hint"><b>Experimental.</b> Train a YuE2 adapter from a recording you own, then test whether it changes the sound usefully. The training loop runs; audible improvement is not validated. Audio and training stay on this computer.</p>
-      <div class="trflow" aria-label="Training workflow"><span><b>1</b> Source &amp; region</span><span><b>2</b> Recipe &amp; hardware</span><span><b>3</b> Train &amp; save</span><span><b>4</b> Listen &amp; compare</span></div>
+      <p class="hint"><b>Experimental.</b> Train adapters from recordings you have permission to use. AIPLAY can prepare an ACE-Step dataset on this PC or a connected RunPod.</p>
+
+      <section class="trsection" id="cmSection">
+        <div class="cmhead">
+          <div><h3>Create a custom music model</h3><p class="hint">Use several songs you own to train an ACE-Step LoRA. Eight or more varied tracks usually give the model more to learn from.</p></div>
+          <div class="cmtarget" role="group" aria-label="Training computer">
+            <button class="btn sm ghost" type="button" id="cmLocal" aria-pressed="true">This PC</button>
+            <button class="btn sm ghost" type="button" id="cmRunpod" aria-pressed="false">RunPod</button>
+          </div>
+        </div>
+        <details class="adv">
+          <summary>First-time setup</summary>
+          <p class="hint"><b>RunPod:</b> Create the AIPLAY Custom Music Model template, deploy it on a 24 GB GPU, run the README command in JupyterLab, then connect its worker in RunPod GPU mode.</p>
+          <p class="hint"><b>This PC:</b> Install ACE-Step 1.5 and start its local API with <code>uv run acestep-api</code>. AIPLAY checks port 8001.</p>
+        </details>
+        <div class="params">
+          <label for="cmName">Model name</label><span class="pv"><input id="cmName" class="sel2" maxlength="48" placeholder="my vocal style"></span>
+          <label for="cmStyle">What these songs share</label><span class="pv"><input id="cmStyle" class="sel2" maxlength="1000" placeholder="warm soul vocals, live drums, close harmonies"></span>
+          <label for="cmInstrumental">Songs</label><span class="pv"><label class="hint"><input id="cmInstrumental" type="checkbox"> All instrumental</label></span>
+        </div>
+        <b class="subhead">Choose songs from your Library</b>
+        <div id="cmLibrary" class="cmsongs"><div class="cbempty">Open this page to load your songs.</div></div>
+        <div class="cmdrop">
+          <input id="cmFiles" type="file" accept="audio/mpeg,audio/wav,audio/flac,audio/ogg,audio/opus,.mp3,.wav,.flac,.ogg,.opus" multiple hidden>
+          <button class="btn sm" type="button" id="cmChooseFiles">Add audio files</button>
+          <span class="hint" id="cmFileNote">You can combine Library songs with files from this computer.</span>
+        </div>
+        <details class="adv">
+          <summary>Training settings</summary>
+          <div class="params">
+            <label for="cmEpochs">Epochs</label><span class="pv"><input id="cmEpochs" class="line" type="number" min="1" max="2000" value="800"></span>
+            <label for="cmRank">Rank</label><span class="pv"><input id="cmRank" class="line" type="number" min="1" max="256" value="64"></span>
+            <label for="cmLowMemory">Lower memory use</label><span class="pv"><label class="hint"><input id="cmLowMemory" type="checkbox"> Use gradient checkpointing</label></span>
+          </div>
+          <p class="hint">ACE-Step recommends adjusting epochs to the dataset size. Its guide uses about 800 epochs as a reference for 10 to 20 songs.</p>
+        </details>
+        <div class="chips">
+          <button class="btn sm primary" type="button" id="cmCreate">Create dataset</button>
+          <button class="btn sm" type="button" id="cmPrepare" disabled>Prepare songs</button>
+          <button class="btn sm" type="button" id="cmTrain" disabled>Start training</button>
+          <button class="btn sm ghost" type="button" id="cmStop" disabled>Stop</button>
+        </div>
+        <div id="cmStatus" class="cmstatus" role="status"><b>Not started</b><span>Choose the training computer and add your songs.</span></div>
+        <b class="subhead">Custom models</b>
+        <div id="cmModels" class="cblist cmmodels"></div>
+      </section>
+
+      <b class="subhead">Single-song YuE2 experiment</b>
+      <div class="trflow" aria-label="YuE2 training workflow"><span><b>1</b> Source &amp; region</span><span><b>2</b> Recipe &amp; hardware</span><span><b>3</b> Train &amp; save</span><span><b>4</b> Listen &amp; compare</span></div>
+      <p class="hint">This older trainer uses one Library song and runs on this computer. The loop runs, but audible improvement is not validated.</p>
 
       <div id="trBlocked" class="cbempty warn" hidden></div>
 
