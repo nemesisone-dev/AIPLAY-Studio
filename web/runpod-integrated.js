@@ -407,6 +407,19 @@ async function init() {
     } catch (error) { $("runpodAccountState").textContent = error.message; $("runpodAccountState").classList.add("warnline"); }
   });
   $("runpodReviewPod").addEventListener("click", reviewPod);
+  $("runpodCreateTemplates").addEventListener("click", async () => {
+    const button = $("runpodCreateTemplates"); button.disabled = true; button.textContent = "Creating templates…";
+    try {
+      const result = await accountApi("/templates", {});
+      const count = result.created?.length || 0;
+      $("runpodTemplateState").textContent = count
+        ? `${count} private template${count === 1 ? "" : "s"} created. They are ready in RunPod.`
+        : "All three private templates already exist.";
+      $("runpodTemplateState").classList.remove("warnline");
+    } catch (error) {
+      $("runpodTemplateState").textContent = error.message; $("runpodTemplateState").classList.add("warnline");
+    } finally { button.disabled = false; button.textContent = "Create private templates"; }
+  });
   $("runpodCopyBootstrap").addEventListener("click", async () => {
     try { await navigator.clipboard.writeText($("runpodBootstrapCommand").value); $("runpodBootstrapState").textContent = "Bootstrap command copied."; }
     catch { $("runpodBootstrapCommand").select(); $("runpodBootstrapState").textContent = "Press Ctrl+C to copy the selected command."; }

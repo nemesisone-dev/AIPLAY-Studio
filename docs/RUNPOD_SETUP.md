@@ -81,6 +81,16 @@ On Images or Video, choose **RunPod GPU**, open **Connection…**, and enter the
 
 The same window has **Create or manage a RunPod Pod**. Add a restricted RunPod API key with permission to read GPU inventory and manage Pods. AIPLAY stores that key in the same local secret store and never returns it to the page after saving. It can then show the account balance, current hourly spend, existing Pods, live GPU stock/price estimates, and start/stop controls. See RunPod's [API-key guidance](https://docs.runpod.io/get-started/api-keys) and [Pod GraphQL operations](https://docs.runpod.io/sdks/graphql/manage-pods).
 
+Press **Create private templates** to add three reusable Pod templates to that RunPod account. The operation is idempotent and does not start a GPU. Existing templates with the same names are left unchanged.
+
+| Template | Persistent disk | Suggested GPU | Intended workload |
+| --- | ---: | --- | --- |
+| AIPLAY Images | 60 GB | 16 GB VRAM or more | ComfyUI checkpoints and image output |
+| AIPLAY Video | 120 GB | 32 GB VRAM or more | LTX 2.5 nodes, weights and clips |
+| AIPLAY Audio | 100 GB | 24 GB VRAM or more | YuE2, ACE-Step or MiniMax Music |
+
+The templates are private, use the NVIDIA ComfyUI CUDA 13 image, mount persistent storage at `/workspace`, and expose ports 8080, 8188, 8888 and 8787. They save the deployment shape, not licensed model weights. After the first deployment, run the worker bootstrap and install only the model bundles whose terms you accepted. Selecting a template and pressing RunPod's deploy button is a separate paid action.
+
 Creating a Pod is a reviewed paid action: choose the GPU, cloud tier and persistent disk, review the current estimated GPU hourly price, and explicitly acknowledge that billing begins before the create button is enabled. The current wizard creates the standard `runpod/comfyui:cuda12.8` image with HTTP ports 8080, 8188, 8888 and 8787. Storage is billed separately and may continue after compute is stopped.
 
 After JupyterLab opens, copy the bootstrap command shown in the setup window into a terminal. It installs Node.js and the AIPLAY worker under `/workspace`, creates a private worker token, adds a ComfyUI restart hook, starts the worker, and prints the connection URL and token. The script is safe to run again and preserves the token. Model files are still a separate step because their licenses, access gates, size and required nodes vary by model.

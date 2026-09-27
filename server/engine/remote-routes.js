@@ -31,6 +31,10 @@ export function createRemoteRoutes({ config, getSecret, setSecret, clearSecret, 
       } else if (req.method === "POST" && url.pathname === "/api/runpod/account/disconnect") sendJSON(res, 200, await account.disconnect());
       else if (req.method === "POST" && url.pathname === "/api/runpod/account/pods") {
         const b = JSON.parse((await readBody(req)).toString("utf8")); sendJSON(res, 201, await account.create(b));
+      } else if (req.method === "GET" && url.pathname === "/api/runpod/account/templates") {
+        sendJSON(res, 200, { templates: await account.templates() });
+      } else if (req.method === "POST" && url.pathname === "/api/runpod/account/templates") {
+        sendJSON(res, 201, await account.createTemplates());
       } else {
         const power = /^\/api\/runpod\/account\/pods\/([a-zA-Z0-9_-]+)\/(start|stop)$/.exec(url.pathname);
         if (req.method === "POST" && power) sendJSON(res, 200, await account[power[2]](power[1]));

@@ -18,6 +18,8 @@ test("the Images and Video screens carry the RunPod controls (shown in RunPod GP
   assert.match(html, /id="runpodReviewPod"/);
   assert.match(html, /id="runpodCostConfirm"[^>]*type="checkbox"/);
   assert.match(html, /id="runpodCreatePod"[^>]*disabled/);
+  assert.match(html, /id="runpodCreateTemplates"/);
+  assert.match(html, /id="runpodTemplateState"/);
   assert.match(html, /id="runpodBootstrapCommand"[^>]*readonly/);
   assert.match(html, /id="runpodModelList"/);
   assert.match(html, /id="runpodCancelModel"/);
