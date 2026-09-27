@@ -414,7 +414,7 @@ async function init() {
       const count = result.created?.length || 0;
       $("runpodTemplateState").textContent = count
         ? `${count} private template${count === 1 ? "" : "s"} created. They are ready in RunPod.`
-        : "All three private templates already exist.";
+        : "All private templates already exist.";
       $("runpodTemplateState").classList.remove("warnline");
     } catch (error) {
       $("runpodTemplateState").textContent = error.message; $("runpodTemplateState").classList.add("warnline");

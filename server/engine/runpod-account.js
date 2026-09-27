@@ -5,6 +5,8 @@ const POD_FIELDS = `id name desiredStatus costPerHr imageName gpuCount volumeInG
 
 const TEMPLATE_IMAGE = "runpod/comfyui:1.4.7-cuda13.0";
 const TEMPLATE_PORTS = Object.freeze(["8080/http", "8188/http", "8888/http", "8787/http"]);
+const TRAINING_IMAGE = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04";
+const TRAINING_PORTS = Object.freeze(["8888/http", "7860/http", "6006/http"]);
 export const AIPLAY_POD_TEMPLATES = Object.freeze([
   Object.freeze({ id: "images", name: "AIPLAY Images", volumeInGb: 60,
     readme: "AIPLAY image rendering with ComfyUI and worker port 8787. Use a 16 GB or larger NVIDIA GPU. Install the AIPLAY worker and your licensed image checkpoints after the first launch." }),
@@ -12,6 +14,32 @@ export const AIPLAY_POD_TEMPLATES = Object.freeze([
     readme: "AIPLAY LTX video rendering with ComfyUI and worker port 8787. Use a 32 GB or larger NVIDIA GPU. Install the AIPLAY worker, LTX nodes, and licensed model bundle after the first launch." }),
   Object.freeze({ id: "audio", name: "AIPLAY Audio", volumeInGb: 100,
     readme: "AIPLAY music rendering with ComfyUI and worker port 8787. Use a 24 GB or larger NVIDIA GPU. Install the AIPLAY worker and the licensed YuE2, ACE-Step, or MiniMax Music models you plan to use." }),
+  Object.freeze({ id: "music-lora", name: "AIPLAY Music LoRA Training", volumeInGb: 120,
+    imageName: TRAINING_IMAGE, ports: TRAINING_PORTS,
+    readme: `# AIPLAY Music LoRA Training
+
+PyTorch Pod preset for the official ACE-Step 1.5 LoRA trainer.
+
+- Minimum: NVIDIA GPU with 12 GB VRAM
+- Recommended: 24 GB VRAM or more
+- Persistent workspace: 120 GB at \`/workspace\`
+- JupyterLab: port 8888
+- ACE-Step: port 7860
+- TensorBoard: port 6006
+
+Open a JupyterLab terminal after deployment and run:
+
+\`\`\`bash
+python -m pip install --upgrade uv
+cd /workspace
+git clone https://github.com/ace-step/ACE-Step-1.5.git
+cd ACE-Step-1.5
+git checkout ca1e85fe9430179831e6bc6be790c332190a3866
+uv sync
+uv run acestep
+\`\`\`
+
+Open port 7860 and use the LoRA Training tab. Models download on first launch. Keep datasets and output under \`/workspace\`, and train only on audio you have permission to use.` }),
 ]);
 
 function cleanText(value, name, max = 120) {
@@ -143,9 +171,9 @@ export function createRunpodAccount({ getApiKey, setApiKey, clearApiKey, fetchFn
       for (const template of AIPLAY_POD_TEMPLATES) {
         if (names.has(template.name)) continue;
         const row = await rest("/templates", { method: "POST", body: {
-          name: template.name, imageName: TEMPLATE_IMAGE, category: "NVIDIA", containerDiskInGb: 20,
+          name: template.name, imageName: template.imageName || TEMPLATE_IMAGE, category: "NVIDIA", containerDiskInGb: 20,
           dockerEntrypoint: [], dockerStartCmd: [], env: { AIPLAY_TEMPLATE_PROFILE: template.id },
-          isPublic: false, isServerless: false, ports: [...TEMPLATE_PORTS], readme: template.readme,
+          isPublic: false, isServerless: false, ports: [...(template.ports || TEMPLATE_PORTS)], readme: template.readme,
           volumeInGb: template.volumeInGb, volumeMountPath: "/workspace",
         } });
         if (!row?.id) throw new Error(`RunPod did not return the created ${template.name} template.`);
