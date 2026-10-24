@@ -6,6 +6,8 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { makeCreativeTemplate as make, validateCreativeTemplate as validate, previewCreativeTemplate as preview, createCreativeTemplates } from './creative-templates.js';
 import { MODEL_PROFILES } from '../shared/model-profiles.js';
 import { musicTemplateSettings, templateFormFields, assertTemplateFields } from '../web/template-forms.js';
+import { runInNewContext } from 'node:vm';
+import { FIT_STATES } from './fit.js';
 const reference=()=>make({name:'Electronic reference',preferredLocation:'runpod',selection:{music:'ace15-xl-sft'}});
 test('portable round trip retains four pinned artifacts and exact workflow; history never establishes current readiness',()=>{
  const t=reference(),r=preview(JSON.parse(JSON.stringify(t)));assert.equal(t.artifacts.length,4);assert.deepEqual(r.template,t);assert.equal(r.canApply,true);
@@ -54,4 +56,43 @@ test('Music capture uses effective ACE controls and never MiniMax defaults or pr
  assert.equal(templateFormFields('video',{width:1280,height:704},'runpod').vidRunPodSize,'1280x704');
  const doc={getElementById:id=>id==='aLm'?{tagName:'SELECT',options:[{value:'qwen_4b_ace15.safetensors'}]}:{type:'range',min:'1',max:'50'}};
  assert.throws(()=>assertTemplateFields(doc,{aLm:'qwen_1.7b_ace15.safetensors'}));assert.throws(()=>assertTemplateFields(doc,{aSteps:60}));assert.doesNotThrow(()=>assertTemplateFields(doc,{aSteps:50,aLm:'qwen_4b_ace15.safetensors'}));
+});
+
+test('two independent users share only the portable template, not store identities or current readiness',async t=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'aiplay-template-users-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ const a=createCreativeTemplates({dir:path.join(root,'a')}),b=createCreativeTemplates({dir:path.join(root,'b')});
+ const savedA=await a.put(reference()),portable=JSON.parse(JSON.stringify(savedA.template));assert.equal((await b.list()).length,0);
+ assert.equal('id'in portable,false);assert.equal('updatedAt'in portable,false);
+ const imported=preview(portable);assert.equal(imported.canApply,true);assert.equal(imported.currentReadinessVerified,false);assert.equal(imported.template.artifacts.length,4);
+ assert.deepEqual(imported.template.settings.music,savedA.template.settings.music);
+ const savedB=await b.put(imported.template);assert.notEqual(savedA.id,savedB.id);await b.put({...savedB.template,name:'User B copy'},savedB.id);
+ assert.equal((await a.list())[0].template.name,savedA.template.name);
+ assert.equal(imported.compatibility[0].state,'unknown');assert.equal(imported.compatibility[0].label,FIT_STATES.unknown.chip);
+ assert.equal(preview(portable,{target:'local'}).compatibility[0].location,'My Computer');
+});
+
+test('cold and mounted planner handoffs await mounting and preserve the reviewed target without carrying extra categories',async()=>{
+ const source=await readFile(new URL('../web/setup-plan.js',import.meta.url),'utf8');
+ const code=source.slice(source.indexOf('export async function openSetupPlanner'),source.indexOf('export async function mountSetupPlanner')).replace('export ','');
+ for(const existing of [false,true]){
+  let release,listener,opened=false,target=existing?'local':null,selection={music:'ace15-xl-sft'};
+  const waiting=new Promise(r=>release=r),events=[];
+  const root={closest:()=>({set open(v){opened=v;}}),scrollIntoView(){},dispatchEvent(e){events.push(e.type);listener?.(e);}};
+  const open=runInNewContext(code+'\nopenSetupPlanner;',{mountSetupPlanner:async(_,options)=>{await waiting;target=existing?target:options.target;listener=e=>{if(e.type==='aiplay:plan-target'){target=e.detail.target;if(e.detail.carry)selection={...selection,pictures:'sdxl-turbo'};}};},Event:class{constructor(type){this.type=type;}},CustomEvent:class{constructor(type,opts){this.type=type;this.detail=opts.detail;}}});
+  const pending=open(root,'runpod');assert.equal(opened,false);assert.equal(events.length,0);release();await pending;
+  assert.equal(opened,true);assert.equal(target,'runpod');assert.deepEqual(selection,{music:'ace15-xl-sft'});assert.deepEqual(events,['aiplay:plan-target','aiplay:plan-refresh']);
+ }
+ for(const file of ['creative-templates.js','model-browser.js'])assert.match(await readFile(new URL('../web/'+file,import.meta.url),'utf8'),/await openSetupPlanner\(/);
+});
+
+test('template preview exposes authoritative compatibility and companion files in a closed disclosure',async()=>{
+ const source=await readFile(new URL('../web/creative-templates.js',import.meta.url),'utf8'),result=preview(reference());
+ const code=source.slice(source.indexOf('async function preview()'),source.indexOf('async function list()'));
+ const node=(tag,text='')=>({tag,textContent:text,children:[],value:'runpod',append(...children){this.children.push(...children);},replaceChildren(){this.children=[];},addEventListener(){}});
+ const elements=new Map(),get=id=>{if(!elements.has(id))elements.set(id,node('div'));return elements.get(id);};
+ const render=runInNewContext(code+'\npreview;',{epoch:0,review:null,$:get,collect:async()=>result.template,api:async()=>result,el:node,guarded:fn=>fn,note:()=>{}});await render();
+ const root=get('templateReview'),all=[];const walk=n=>{all.push(n);n.children.forEach(walk);};walk(root);
+ const required=all.find(n=>n.tag==='details');assert.equal(required.className,'more');assert.equal(!!required.open,false);
+ const text=all.map(n=>n.textContent).join('\n');assert.match(text,/Required model files/);for(const file of result.plan.files)assert.ok(text.includes(file.relative));
+ assert.ok(text.includes('RunPod: '+FIT_STATES.unknown.chip));assert.equal(get('templateLoad').disabled,false);
 });

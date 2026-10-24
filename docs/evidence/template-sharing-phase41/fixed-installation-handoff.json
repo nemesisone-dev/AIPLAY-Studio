@@ -1,0 +1,35 @@
+{
+  "checked": [
+    {
+      "checked": true,
+      "label": "Include Music / Audio"
+    },
+    {
+      "checked": false,
+      "label": "Include Pictures"
+    },
+    {
+      "checked": false,
+      "label": "Include Video"
+    }
+  ],
+  "selects": [
+    {
+      "label": "Music / Audio model",
+      "value": "ace15-xl-sft"
+    },
+    {
+      "label": "Pictures model",
+      "value": "sdxl-turbo"
+    },
+    {
+      "label": "Video model",
+      "value": "ltx25"
+    },
+    {
+      "label": "Plan execution location",
+      "value": "runpod"
+    }
+  ],
+  "text": "1. Models\n2. Location\n3. Review\n4. Install\nMusic / Audio\nYuE2 3B (int8)\nACE-Step 1.5 Turbo\nACE-Step 1.5 XL-SFT (A100 tested)\nACE-Step 1.5 XL-Turbo (experimental)\nACE-Step 1.5 XL-Base (experimental)\nRequirements and terms\nPictures\nSDXL Turbo (fp16)\nVideo\nLTX 2.5 distilled (int8)\n\nReview the computer price next; model installation needs licence approval.\n\nCheck setup"
+}

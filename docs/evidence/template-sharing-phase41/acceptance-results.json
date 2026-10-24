@@ -1,0 +1,698 @@
+{
+  "exportSha256": "37e9398cceae1dc88a6a45622663bdb72751dbd8866649be4fc5a810ee4a415c",
+  "reexportSha256": "37e9398cceae1dc88a6a45622663bdb72751dbd8866649be4fc5a810ee4a415c",
+  "byteIdentical": true,
+  "isolatedAppData": true,
+  "isolatedBrowserOrigins": true,
+  "restored": {
+    "aCfg": "7",
+    "aLm": "qwen_4b_ace15.safetensors",
+    "aSteps": "50",
+    "caption": "Instrumental electronic music, 120 BPM, warm synthesizer chords, clear drum groove, evolving bass line, no vocals.",
+    "codes": true,
+    "instrumental": true,
+    "lyrics": "",
+    "maxDur": "30",
+    "musicEngine": "ace-step15:acestep_v1.5_xl_sft_bf16.safetensors",
+    "seed": "20261019"
+  },
+  "profiles": {
+    "A": {
+      "origin": "http://127.0.0.1:4471",
+      "launchMode": "runpod",
+      "savedTemplates": 1,
+      "renders": 0,
+      "providerActions": [],
+      "forbiddenWrites": [],
+      "writePaths": [
+        "/api/welcome",
+        "/api/setup",
+        "/api/videolab",
+        "/api/runpod/computer/discover",
+        "/api/music/ace-check",
+        "/api/fastcovers",
+        "/api/model-library/templates"
+      ],
+      "syntheticModelFiles": [
+        {
+          "relative": "diffusion_models/acestep_v1.5_xl_sft_bf16.safetensors",
+          "bytes": 31,
+          "sha256": "895ef3af861110be510daefc35c7a27360e5bdfeb3fa6086c2323caf4174a081"
+        },
+        {
+          "relative": "vae/ace_1.5_vae.safetensors",
+          "bytes": 31,
+          "sha256": "c672fe10d6b648fcd1d62ab9e012c177c6a6b355b9e48951b95e1feedf6fe5c1"
+        },
+        {
+          "relative": "text_encoders/qwen_0.6b_ace15.safetensors",
+          "bytes": 31,
+          "sha256": "aea405507a67b6d8633c535451774f22b645b7f892817e0559e01153a56920e5"
+        },
+        {
+          "relative": "text_encoders/qwen_4b_ace15.safetensors",
+          "bytes": 31,
+          "sha256": "42a5e03e738956e0ec1255b73b91cde3780ed71d69ece90979e0dbe45a85408f"
+        }
+      ]
+    },
+    "B": {
+      "origin": "http://127.0.0.1:4481",
+      "launchMode": "runpod",
+      "savedTemplates": 0,
+      "renders": 0,
+      "providerActions": [],
+      "forbiddenWrites": [],
+      "writePaths": [
+        "/api/music/ace-check",
+        "/api/welcome",
+        "/api/setup",
+        "/api/videolab",
+        "/api/runpod/computer/discover",
+        "/api/fastcovers",
+        "/api/model-library/templates",
+        "/api/setup-plan",
+        "/api/music"
+      ],
+      "syntheticModelFiles": [
+        {
+          "relative": "diffusion_models/acestep_v1.5_xl_sft_bf16.safetensors",
+          "bytes": 31,
+          "sha256": "895ef3af861110be510daefc35c7a27360e5bdfeb3fa6086c2323caf4174a081"
+        },
+        {
+          "relative": "vae/ace_1.5_vae.safetensors",
+          "bytes": 31,
+          "sha256": "c672fe10d6b648fcd1d62ab9e012c177c6a6b355b9e48951b95e1feedf6fe5c1"
+        },
+        {
+          "relative": "text_encoders/qwen_0.6b_ace15.safetensors",
+          "bytes": 31,
+          "sha256": "aea405507a67b6d8633c535451774f22b645b7f892817e0559e01153a56920e5"
+        },
+        {
+          "relative": "text_encoders/qwen_4b_ace15.safetensors",
+          "bytes": 31,
+          "sha256": "42a5e03e738956e0ec1255b73b91cde3780ed71d69ece90979e0dbe45a85408f"
+        }
+      ]
+    }
+  },
+  "security": {
+    "runtimeValidatorPassed": true,
+    "noPrivateData": true,
+    "exactCompanions": true
+  },
+  "preview": {
+    "template": {
+      "format": "aiplay-template",
+      "version": 1,
+      "name": "Shared XL-SFT instrumental reference",
+      "description": "",
+      "creator": "",
+      "preferredLocation": "runpod",
+      "selection": {
+        "music": "ace15-xl-sft"
+      },
+      "settings": {
+        "music": {
+          "caption": "Instrumental electronic music, 120 BPM, warm synthesizer chords, clear drum groove, evolving bass line, no vocals.",
+          "lyrics": "",
+          "seed": 20261019,
+          "duration": 30,
+          "bpm": 120,
+          "keyscale": "C major",
+          "timesignature": "4",
+          "language": "en",
+          "dit": "acestep_v1.5_xl_sft_bf16.safetensors",
+          "lm": "qwen_4b_ace15.safetensors",
+          "steps": 50,
+          "cfg": 7,
+          "codes": true,
+          "planTemperature": 0.85,
+          "instrumental": true
+        }
+      },
+      "artifacts": [
+        {
+          "relative": "diffusion_models/acestep_v1.5_xl_sft_bf16.safetensors",
+          "bytes": 9974719930,
+          "sha256": "3c05ae268353b3540fb1fd7db4fd77ffbda9802ec641b624e15648e030ecf3ce"
+        },
+        {
+          "relative": "vae/ace_1.5_vae.safetensors",
+          "bytes": 337431732,
+          "sha256": "6de92e3a862acd287e08b024ac90f0783a8635451b728721a33ff03565bcb2bb"
+        },
+        {
+          "relative": "text_encoders/qwen_0.6b_ace15.safetensors",
+          "bytes": 1191588248,
+          "sha256": "fd4590c82153b8ddb67e15a2e7aaa8afa8b83a858c8a9b82a4831063156aa7a7"
+        },
+        {
+          "relative": "text_encoders/qwen_4b_ace15.safetensors",
+          "bytes": 8379154232,
+          "sha256": "ffe5ffb855086c2ab55e467e9859fb01894781020a0376484dd19de166b79873"
+        }
+      ],
+      "references": [],
+      "workflows": {
+        "music": "a0e15341c36d6beefe4c4a2656e1cf4e9770b622f953404ad42ac2934de23c1e"
+      }
+    },
+    "plan": {
+      "target": "runpod",
+      "selection": {
+        "music": "ace15-xl-sft"
+      },
+      "profiles": [
+        {
+          "id": "ace15-xl-sft",
+          "category": "music",
+          "capability": "musicAceStep15XlSft",
+          "bundle": "ace15-xl-sft",
+          "label": "ACE-Step 1.5 XL-SFT (A100 tested)",
+          "targets": [
+            "local",
+            "runpod"
+          ],
+          "template": "ace-step15",
+          "hardwareAcceptance": {
+            "id": "ace15-xl-sft-a100-2026-10-20",
+            "status": "hardware-validated",
+            "date": "2026-10-20",
+            "report": "docs/ACE_XL_SFT_A100_HARDWARE_ACCEPTANCE_RESULT.md",
+            "source": "docs/evidence/ace15-xl-sft-a100-2026-10-20.json",
+            "archiveSha256": "e5e90296d67e9139a58614ac69e3811784c994e34085cffeee3fd0d4fe51e1ee",
+            "artifactKey": "e27477f233db97eb925e8f04f3ca8e4fb74a78f37aaa74de09bca933e94af077",
+            "workflowKey": "a0e15341c36d6beefe4c4a2656e1cf4e9770b622f953404ad42ac2934de23c1e",
+            "preparedGraphSha256": "89969dd074b61bc40f31504e57ed3e3841ef6a7a4e826cac77766d82fe67f2df",
+            "executedGraphSha256": "7e961fad7cf91debfbe9235ddd6b1022d9d36b210f209276476653f9c8a65640",
+            "tested": {
+              "target": "runpod",
+              "cloud": "SECURE",
+              "gpuId": "NVIDIA A100-SXM4-80GB",
+              "gpuCount": 1,
+              "vramGiB": 80,
+              "allocatedRamGB": 117,
+              "vcpus": 24,
+              "image": "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404"
+            },
+            "runtime": {
+              "workerCommit": "7447b9b5f322aa9312e8227d348980338b9ac69e",
+              "comfyVersion": "0.41.0",
+              "comfyRevision": "ce1e922d8623bb507180e32a0c01a7d0e29edef7",
+              "python": "3.12.3",
+              "torch": "2.8.0+cu128",
+              "cudaRuntime": "12.8"
+            },
+            "observed": {
+              "gpuUsedBytes": 23080206336,
+              "comfyProcessRssBytes": 22331850752,
+              "loaderNodeSeconds": 1.8380317310075043,
+              "samplerNodeSeconds": 13.153547956004331,
+              "generationSeconds": 29.841,
+              "sampleIntervalSeconds": 1,
+              "samples": 375,
+              "containerMemoryMeasured": false,
+              "coldLoadingMeasured": false
+            },
+            "output": {
+              "sha256": "15a832bd96a2ddc92541093e3217b0696729ef90aec172877af9ce721e0c051d",
+              "durationSeconds": 30,
+              "sampleRate": 48000,
+              "channels": 2,
+              "format": "FLAC PCM_16",
+              "humanReview": "sounds good"
+            },
+            "minimumRequirementsEstablished": false,
+            "workload": {
+              "caption": "Instrumental electronic music, 120 BPM, warm synthesizer chords, clear drum groove, evolving bass line, no vocals.",
+              "lyrics": "",
+              "seed": 20261019,
+              "duration": 30,
+              "bpm": 120,
+              "keyscale": "C major",
+              "timesignature": "4",
+              "language": "en",
+              "dit": "acestep_v1.5_xl_sft_bf16.safetensors",
+              "lm": "qwen_4b_ace15.safetensors",
+              "steps": 50,
+              "cfg": 7,
+              "codes": true,
+              "planTemperature": 0.85
+            }
+          },
+          "evidence": "A100 SXM 80 GB tested: 30-second instrumental, 4B planner, 50 steps, CFG 7, batch 1; other configurations unverified.",
+          "settings": {
+            "dit": "acestep_v1.5_xl_sft_bf16.safetensors",
+            "lm": "qwen_4b_ace15.safetensors",
+            "steps": 50,
+            "cfg": 7,
+            "shift": 3,
+            "sampler": "euler",
+            "scheduler": "simple",
+            "precision": "bf16",
+            "duration": 30
+          },
+          "workload": "30-second song, 4B planner, batch 1",
+          "experimental": true,
+          "requires": {
+            "hardwareAcceptance": {
+              "id": "ace15-xl-sft-a100-2026-10-20",
+              "status": "hardware-validated",
+              "date": "2026-10-20",
+              "report": "docs/ACE_XL_SFT_A100_HARDWARE_ACCEPTANCE_RESULT.md",
+              "source": "docs/evidence/ace15-xl-sft-a100-2026-10-20.json",
+              "archiveSha256": "e5e90296d67e9139a58614ac69e3811784c994e34085cffeee3fd0d4fe51e1ee",
+              "artifactKey": "e27477f233db97eb925e8f04f3ca8e4fb74a78f37aaa74de09bca933e94af077",
+              "workflowKey": "a0e15341c36d6beefe4c4a2656e1cf4e9770b622f953404ad42ac2934de23c1e",
+              "preparedGraphSha256": "89969dd074b61bc40f31504e57ed3e3841ef6a7a4e826cac77766d82fe67f2df",
+              "executedGraphSha256": "7e961fad7cf91debfbe9235ddd6b1022d9d36b210f209276476653f9c8a65640",
+              "tested": {
+                "target": "runpod",
+                "cloud": "SECURE",
+                "gpuId": "NVIDIA A100-SXM4-80GB",
+                "gpuCount": 1,
+                "vramGiB": 80,
+                "allocatedRamGB": 117,
+                "vcpus": 24,
+                "image": "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404"
+              },
+              "runtime": {
+                "workerCommit": "7447b9b5f322aa9312e8227d348980338b9ac69e",
+                "comfyVersion": "0.41.0",
+                "comfyRevision": "ce1e922d8623bb507180e32a0c01a7d0e29edef7",
+                "python": "3.12.3",
+                "torch": "2.8.0+cu128",
+                "cudaRuntime": "12.8"
+              },
+              "observed": {
+                "gpuUsedBytes": 23080206336,
+                "comfyProcessRssBytes": 22331850752,
+                "loaderNodeSeconds": 1.8380317310075043,
+                "samplerNodeSeconds": 13.153547956004331,
+                "generationSeconds": 29.841,
+                "sampleIntervalSeconds": 1,
+                "samples": 375,
+                "containerMemoryMeasured": false,
+                "coldLoadingMeasured": false
+              },
+              "output": {
+                "sha256": "15a832bd96a2ddc92541093e3217b0696729ef90aec172877af9ce721e0c051d",
+                "durationSeconds": 30,
+                "sampleRate": 48000,
+                "channels": 2,
+                "format": "FLAC PCM_16",
+                "humanReview": "sounds good"
+              },
+              "minimumRequirementsEstablished": false,
+              "workload": {
+                "caption": "Instrumental electronic music, 120 BPM, warm synthesizer chords, clear drum groove, evolving bass line, no vocals.",
+                "lyrics": "",
+                "seed": 20261019,
+                "duration": 30,
+                "bpm": 120,
+                "keyscale": "C major",
+                "timesignature": "4",
+                "language": "en",
+                "dit": "acestep_v1.5_xl_sft_bf16.safetensors",
+                "lm": "qwen_4b_ace15.safetensors",
+                "steps": 50,
+                "cfg": 7,
+                "codes": true,
+                "planTemperature": 0.85
+              }
+            },
+            "experimental": true,
+            "experimentalWhy": "ComfyUI BF16 XL with the 4B planner: a minimum hardware floor has not been established. Native-backend minima do not establish this configuration’s fit."
+          },
+          "licence": "MIT (ACE-Step's LICENSE; the ComfyUI repack's card tags apache-2.0 with no licence text)",
+          "licenseUrl": "https://huggingface.co/Comfy-Org/ace_step_1.5_ComfyUI_files",
+          "dependencies": {
+            "runtime": "ComfyUI",
+            "nodes": [
+              "UNETLoader",
+              "DualCLIPLoader",
+              "TextEncodeAceStepAudio1.5",
+              "ConditioningZeroOut",
+              "KSampler",
+              "VAEDecodeAudio",
+              "SaveAudio",
+              "EmptyAceStep1.5LatentAudio",
+              "ModelSamplingAuraFlow",
+              "VAELoader"
+            ],
+            "installation": "Existing AI service installer or guided worker update"
+          },
+          "requiresToken": false,
+          "outputRights": {
+            "class": "unrestricted",
+            "sellable": true,
+            "quote": "Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:",
+            "clause": "MIT License, grant paragraph (ACE-Step-1.5 LICENSE, Copyright (c) 2026 ACEStep)",
+            "url": "https://github.com/ace-step/ACE-Step-1.5/blob/main/LICENSE",
+            "note": "This licence says nothing about generated output at all — its conditions are about redistributing the software itself. There is no term to comply with when you sell a picture, a stem or a clip. ACE-Step's model card adds, of the music: \"You can strictly use the generated music for commercial purposes.\" A LoRA you add is licensed by its own author, and some forbid commercial use."
+          },
+          "region": null,
+          "install": {
+            "capability": "musicAceStep15XlSft",
+            "bundle": "ace15-xl-sft",
+            "target": "runpod"
+          },
+          "files": [
+            {
+              "relative": "diffusion_models/acestep_v1.5_xl_sft_bf16.safetensors",
+              "bytes": 9974719930,
+              "sha256": "3c05ae268353b3540fb1fd7db4fd77ffbda9802ec641b624e15648e030ecf3ce"
+            },
+            {
+              "relative": "vae/ace_1.5_vae.safetensors",
+              "bytes": 337431732,
+              "sha256": "6de92e3a862acd287e08b024ac90f0783a8635451b728721a33ff03565bcb2bb"
+            },
+            {
+              "relative": "text_encoders/qwen_0.6b_ace15.safetensors",
+              "bytes": 1191588248,
+              "sha256": "fd4590c82153b8ddb67e15a2e7aaa8afa8b83a858c8a9b82a4831063156aa7a7"
+            },
+            {
+              "relative": "text_encoders/qwen_4b_ace15.safetensors",
+              "bytes": 8379154232,
+              "sha256": "ffe5ffb855086c2ab55e467e9859fb01894781020a0376484dd19de166b79873"
+            }
+          ],
+          "totalBytes": 19882894142,
+          "localFilesPresent": false,
+          "fit": null
+        }
+      ],
+      "choices": [
+        {
+          "id": "yue2-comfy",
+          "category": "music",
+          "capability": "musicYue2Comfy",
+          "bundle": "yue2-comfy",
+          "label": "YuE2 3B (int8)",
+          "targets": [
+            "local",
+            "runpod"
+          ],
+          "template": "yue2-comfy",
+          "evidence": "catalogue estimate; int8 inference not accepted here",
+          "settings": {
+            "checkpoint": "yue2_3b_int8_convrot.safetensors",
+            "maxDuration": 30,
+            "steps": 32
+          },
+          "workload": "30-second song, batch 1"
+        },
+        {
+          "id": "ace15-turbo",
+          "category": "music",
+          "capability": "musicAceStep15",
+          "bundle": "ace15-turbo",
+          "label": "ACE-Step 1.5 Turbo",
+          "targets": [
+            "local",
+            "runpod"
+          ],
+          "template": "ace-step15",
+          "hardwareAcceptance": null,
+          "evidence": "publisher manifest and ComfyUI template verified; live inference unverified",
+          "settings": {
+            "dit": "acestep_v1.5_turbo.safetensors",
+            "lm": "qwen_4b_ace15.safetensors",
+            "steps": 8,
+            "cfg": 1,
+            "shift": 3,
+            "sampler": "euler",
+            "scheduler": "simple",
+            "precision": "default",
+            "duration": 30
+          },
+          "workload": "30-second song, 4B planner, batch 1",
+          "experimental": false
+        },
+        {
+          "id": "ace15-xl-sft",
+          "category": "music",
+          "capability": "musicAceStep15XlSft",
+          "bundle": "ace15-xl-sft",
+          "label": "ACE-Step 1.5 XL-SFT (A100 tested)",
+          "targets": [
+            "local",
+            "runpod"
+          ],
+          "template": "ace-step15",
+          "hardwareAcceptance": {
+            "id": "ace15-xl-sft-a100-2026-10-20",
+            "status": "hardware-validated",
+            "date": "2026-10-20",
+            "report": "docs/ACE_XL_SFT_A100_HARDWARE_ACCEPTANCE_RESULT.md",
+            "source": "docs/evidence/ace15-xl-sft-a100-2026-10-20.json",
+            "archiveSha256": "e5e90296d67e9139a58614ac69e3811784c994e34085cffeee3fd0d4fe51e1ee",
+            "artifactKey": "e27477f233db97eb925e8f04f3ca8e4fb74a78f37aaa74de09bca933e94af077",
+            "workflowKey": "a0e15341c36d6beefe4c4a2656e1cf4e9770b622f953404ad42ac2934de23c1e",
+            "preparedGraphSha256": "89969dd074b61bc40f31504e57ed3e3841ef6a7a4e826cac77766d82fe67f2df",
+            "executedGraphSha256": "7e961fad7cf91debfbe9235ddd6b1022d9d36b210f209276476653f9c8a65640",
+            "tested": {
+              "target": "runpod",
+              "cloud": "SECURE",
+              "gpuId": "NVIDIA A100-SXM4-80GB",
+              "gpuCount": 1,
+              "vramGiB": 80,
+              "allocatedRamGB": 117,
+              "vcpus": 24,
+              "image": "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404"
+            },
+            "runtime": {
+              "workerCommit": "7447b9b5f322aa9312e8227d348980338b9ac69e",
+              "comfyVersion": "0.41.0",
+              "comfyRevision": "ce1e922d8623bb507180e32a0c01a7d0e29edef7",
+              "python": "3.12.3",
+              "torch": "2.8.0+cu128",
+              "cudaRuntime": "12.8"
+            },
+            "observed": {
+              "gpuUsedBytes": 23080206336,
+              "comfyProcessRssBytes": 22331850752,
+              "loaderNodeSeconds": 1.8380317310075043,
+              "samplerNodeSeconds": 13.153547956004331,
+              "generationSeconds": 29.841,
+              "sampleIntervalSeconds": 1,
+              "samples": 375,
+              "containerMemoryMeasured": false,
+              "coldLoadingMeasured": false
+            },
+            "output": {
+              "sha256": "15a832bd96a2ddc92541093e3217b0696729ef90aec172877af9ce721e0c051d",
+              "durationSeconds": 30,
+              "sampleRate": 48000,
+              "channels": 2,
+              "format": "FLAC PCM_16",
+              "humanReview": "sounds good"
+            },
+            "minimumRequirementsEstablished": false,
+            "workload": {
+              "caption": "Instrumental electronic music, 120 BPM, warm synthesizer chords, clear drum groove, evolving bass line, no vocals.",
+              "lyrics": "",
+              "seed": 20261019,
+              "duration": 30,
+              "bpm": 120,
+              "keyscale": "C major",
+              "timesignature": "4",
+              "language": "en",
+              "dit": "acestep_v1.5_xl_sft_bf16.safetensors",
+              "lm": "qwen_4b_ace15.safetensors",
+              "steps": 50,
+              "cfg": 7,
+              "codes": true,
+              "planTemperature": 0.85
+            }
+          },
+          "evidence": "A100 SXM 80 GB tested: 30-second instrumental, 4B planner, 50 steps, CFG 7, batch 1; other configurations unverified.",
+          "settings": {
+            "dit": "acestep_v1.5_xl_sft_bf16.safetensors",
+            "lm": "qwen_4b_ace15.safetensors",
+            "steps": 50,
+            "cfg": 7,
+            "shift": 3,
+            "sampler": "euler",
+            "scheduler": "simple",
+            "precision": "bf16",
+            "duration": 30
+          },
+          "workload": "30-second song, 4B planner, batch 1",
+          "experimental": true
+        },
+        {
+          "id": "ace15-xl-turbo",
+          "category": "music",
+          "capability": "musicAceStep15XlTurbo",
+          "bundle": "ace15-xl-turbo",
+          "label": "ACE-Step 1.5 XL-Turbo (experimental)",
+          "targets": [
+            "local",
+            "runpod"
+          ],
+          "template": "ace-step15",
+          "hardwareAcceptance": null,
+          "evidence": "publisher manifest and ComfyUI template verified; live inference unverified",
+          "settings": {
+            "dit": "acestep_v1.5_xl_turbo_bf16.safetensors",
+            "lm": "qwen_4b_ace15.safetensors",
+            "steps": 8,
+            "cfg": 1,
+            "shift": 3,
+            "sampler": "euler",
+            "scheduler": "simple",
+            "precision": "bf16",
+            "duration": 30
+          },
+          "workload": "30-second song, 4B planner, batch 1",
+          "experimental": true
+        },
+        {
+          "id": "ace15-xl-base",
+          "category": "music",
+          "capability": "musicAceStep15XlBase",
+          "bundle": "ace15-xl-base",
+          "label": "ACE-Step 1.5 XL-Base (experimental)",
+          "targets": [
+            "local",
+            "runpod"
+          ],
+          "template": "ace-step15",
+          "hardwareAcceptance": null,
+          "evidence": "publisher manifest and ComfyUI template verified; live inference unverified",
+          "settings": {
+            "dit": "acestep_v1.5_xl_base_bf16.safetensors",
+            "lm": "qwen_4b_ace15.safetensors",
+            "steps": 50,
+            "cfg": 6,
+            "shift": 3,
+            "sampler": "euler",
+            "scheduler": "simple",
+            "precision": "bf16",
+            "duration": 30
+          },
+          "workload": "30-second song, 4B planner, batch 1",
+          "experimental": true
+        },
+        {
+          "id": "sdxl-turbo",
+          "category": "pictures",
+          "capability": "imageSdxlTurbo",
+          "bundle": "sdxl-turbo",
+          "label": "SDXL Turbo (fp16)",
+          "targets": [
+            "local",
+            "runpod"
+          ],
+          "template": "checkpoint",
+          "evidence": "A40 image acceptance documented; other hardware estimated",
+          "settings": {
+            "checkpoint": "sd_xl_turbo_1.0_fp16.safetensors",
+            "width": 512,
+            "height": 512,
+            "steps": 4,
+            "cfg": 1
+          },
+          "workload": "512 × 512, 4 steps, batch 1"
+        },
+        {
+          "id": "ltx25",
+          "category": "video",
+          "capability": "videoLtx",
+          "bundle": "ltx25",
+          "label": "LTX 2.5 distilled (int8)",
+          "targets": [
+            "local",
+            "runpod"
+          ],
+          "template": "ltx",
+          "evidence": "existing catalogue measurement: 16 GB, 5 s, 1280 × 704; RunPod inference unverified",
+          "settings": {
+            "width": 1280,
+            "height": 704,
+            "duration": 5,
+            "seconds": 5
+          },
+          "workload": "5-second clip, 1280 × 704, batch 1"
+        }
+      ],
+      "files": [
+        {
+          "relative": "diffusion_models/acestep_v1.5_xl_sft_bf16.safetensors",
+          "bytes": 9974719930,
+          "sha256": "3c05ae268353b3540fb1fd7db4fd77ffbda9802ec641b624e15648e030ecf3ce"
+        },
+        {
+          "relative": "vae/ace_1.5_vae.safetensors",
+          "bytes": 337431732,
+          "sha256": "6de92e3a862acd287e08b024ac90f0783a8635451b728721a33ff03565bcb2bb"
+        },
+        {
+          "relative": "text_encoders/qwen_0.6b_ace15.safetensors",
+          "bytes": 1191588248,
+          "sha256": "fd4590c82153b8ddb67e15a2e7aaa8afa8b83a858c8a9b82a4831063156aa7a7"
+        },
+        {
+          "relative": "text_encoders/qwen_4b_ace15.safetensors",
+          "bytes": 8379154232,
+          "sha256": "ffe5ffb855086c2ab55e467e9859fb01894781020a0376484dd19de166b79873"
+        }
+      ],
+      "storage": {
+        "modelBytes": 19882894142,
+        "workingReserveBytes": 20000000000,
+        "minimumGB": 40,
+        "note": "Shared files counted once; allow extra space for outputs and partial downloads."
+      },
+      "hardware": {
+        "vramMinGb": null,
+        "vramRecGb": null,
+        "ramMinGb": null,
+        "ramRecGb": null,
+        "unknown": true,
+        "execution": "sequential",
+        "note": "One workflow at a time with ComfyUI model unloading; larger workloads need a fresh fit check."
+      },
+      "modeRequired": "RunPod GPU"
+    },
+    "issues": [],
+    "workflows": [
+      {
+        "category": "music",
+        "workflowKey": "a0e15341c36d6beefe4c4a2656e1cf4e9770b622f953404ad42ac2934de23c1e",
+        "matches": true,
+        "historicalHardwareValidated": true,
+        "currentWorkerReady": false,
+        "minimumRequirementsEstablished": false
+      }
+    ],
+    "compatibility": [
+      {
+        "id": "ace15-xl-sft",
+        "location": "RunPod",
+        "state": "unknown",
+        "label": "Cannot tell",
+        "why": "Check the selected cloud computer and runtime before relying on its hardware."
+      }
+    ],
+    "missingModels": [
+      "ace15-xl-sft"
+    ],
+    "licenses": [
+      {
+        "id": "ace15-xl-sft",
+        "url": "https://huggingface.co/Comfy-Org/ace_step_1.5_ComfyUI_files"
+      }
+    ],
+    "references": [],
+    "canApply": true,
+    "requiresInstallApproval": true,
+    "currentReadinessVerified": false
+  }
+}

@@ -1,4 +1,5 @@
 import { appConfirm } from './dialog.js';
+import { openSetupPlanner } from './setup-plan.js';
 const $=id=>document.getElementById(id);
 const el=(tag,text)=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;return n;};
 let draft=null,editingId=null,review=null,epoch=0,listEpoch=0;
@@ -12,13 +13,16 @@ async function collect(){if(!draft)throw Error('Choose a template first.');let s
 }
 async function preview(){const serial=++epoch;review=null;$('templateLoad').disabled=true;const template=await collect(),result=await api({action:'preview',template,target:$('templateLocation').value});if(serial!==epoch)return;review=result;const root=$('templateReview');root.replaceChildren();const title=el('p',result.canApply?'Template checked':'Review required');title.className='chip '+(result.canApply?'ok':'warn');root.append(title);
   for(const p of result.plan.profiles){const line=el('p',`${p.label} · ${p.experimental?'Experimental':'Supported workflow'} · ${p.localFilesPresent && result.plan.target==='local'?'Files present; verify before use':'Installation needs checking'}`);line.className='hint';root.append(line);}
+  for(const fit of result.compatibility||[]){const chip=el('p',`${fit.location}: ${fit.label}`);chip.className='chip '+(['fits','streams','reduced'].includes(fit.state)?'ok':'warn');chip.title=fit.why;root.append(chip);}
+  const required=el('details');required.className='more';required.append(el('summary','Required model files'));const files=el('ul');
+  for(const file of result.plan.files)files.append(el('li',`${file.relative} · ${(file.bytes/1e9).toFixed(2)} GB`));required.append(files);root.append(required);
   for(const issue of result.issues){const line=el('p',issue);line.className='hint warnhint';root.append(line);}
   for(const w of result.workflows)if(w.historicalHardwareValidated){const n=el('p','Historical A100 reference only; this computer still needs readiness checks.');n.className='hint';root.append(n);}
   for(const r of result.references){const line=el('p',`${r.provider}: ${r.id} · Unknown workflow compatibility`);line.className='hint';root.append(line);}
   for(const license of result.licenses){const link=el('a','Model terms');link.href=license.url;link.target='_blank';link.rel='noreferrer';link.className='edtool sm';link.title=license.id;root.append(link);}
   const install=el('button','Review installation');install.type='button';install.className='edtool';install.disabled=!result.canApply;install.addEventListener('click',guarded(async()=>{
     const r=await fetch('/api/setup-plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target:result.plan.target,selection:result.template.selection})});const p=await r.json();if(!r.ok)throw Error(p.error);
-    const host=$('localModelPlan');host.parentElement.open=true;host.dispatchEvent(new CustomEvent('aiplay:plan-target',{detail:{target:result.plan.target,carry:false}}));host.dispatchEvent(new Event('aiplay:plan-refresh'));host.scrollIntoView({block:'center'});
+    await openSetupPlanner($('localModelPlan'),result.plan.target);
   }));root.append(install);
   const hint=el('p',`${(result.plan.storage.modelBytes/1e9).toFixed(2)} GB curated files; review model terms and installation separately.`);hint.className='hint';root.append(hint);$('templateLoad').disabled=!result.canApply;note('Preview only. Load fills forms; generation and installation require their own actions.');return result;
 }

@@ -6,6 +6,7 @@ import { MODEL_BUNDLES } from '../shared/model-bundles.js';
 import { setupPlan, profileGraph } from './setup-plan.js';
 import { workflowEvidenceKey, hardwareWorkflowMatches } from './engine/workflow-evidence.js';
 import { jsonStore, readJSON, relativeFile } from './engine/remote-common.js';
+import { FIT_STATES } from './fit.js';
 
 const FORMAT = 'aiplay-template', VERSION = 1;
 const keys = (v, allowed) => {
@@ -98,7 +99,10 @@ export function previewCreativeTemplate(raw, { target, localFiles = [], machine 
     identities.push({ category:p.category, workflowKey, matches, historicalHardwareValidated: matches && template.settings[p.category]?.instrumental !== false && hardwareWorkflowMatches(p.hardwareAcceptance, graph),
       currentWorkerReady:false, minimumRequirementsEstablished:false });
   }
-  return { template, plan, issues, workflows:identities, missingModels:plan.profiles.filter(p => !p.localFilesPresent || location === 'runpod').map(p=>p.id),
+  return { template, plan, issues, workflows:identities,
+    compatibility:plan.profiles.map(p=>({id:p.id,location:location==='local'?'My Computer':'RunPod',state:p.fit?.state||'unknown',label:FIT_STATES[p.fit?.state||'unknown'].chip,
+      why:p.fit?.why||'Check the selected cloud computer and runtime before relying on its hardware.'})),
+    missingModels:plan.profiles.filter(p => !p.localFilesPresent || location === 'runpod').map(p=>p.id),
     licenses:plan.profiles.map(p=>({id:p.id,url:MODEL_BUNDLES[p.bundle].licenseUrl})),
     references:template.references.map(r=>({...r,compatibility:'unknown',note:'Reference only; verify its adapter, model terms and companions before installing.'})),
     canApply:issues.length === 0, requiresInstallApproval:true, currentReadinessVerified:false };
